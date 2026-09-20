@@ -59,12 +59,21 @@ jobs:
           make build-mac
           make build-win
 
+      # make build-mac produces real (ad-hoc-signed) .app bundles, not bare
+      # binaries — a directory isn't a valid single-file release asset, so
+      # zip each one before upload. -y preserves the bundle's symlinks.
+      - name: Zip the macOS .app bundles
+        working-directory: desktop/build/bin
+        run: |
+          zip -r -y go-xslt-darwin-arm64.app.zip go-xslt-darwin-arm64.app
+          zip -r -y go-xslt-darwin-amd64.app.zip go-xslt-darwin-amd64.app
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-windows
           path: |
-            desktop/build/bin/go-xslt-darwin-arm64
-            desktop/build/bin/go-xslt-darwin-amd64
+            desktop/build/bin/go-xslt-darwin-arm64.app.zip
+            desktop/build/bin/go-xslt-darwin-amd64.app.zip
             desktop/build/bin/go-xslt-windows-amd64.exe
             desktop/build/bin/go-xslt-windows-arm64.exe
           if-no-files-found: error

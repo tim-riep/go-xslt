@@ -47,15 +47,29 @@ build: frontend
 ## build-mac-arm64: macOS build for Apple Silicon. Native CGo (webkit) via the
 ## wails3 task pipeline (icon/bindings generation included) — cross-compiles
 ## cleanly from an Intel Mac too, since Xcode's clang targets both Apple archs.
+## Uses `darwin:package`, not `darwin:build` — the latter alone only emits a
+## bare Mach-O executable (no Info.plist/icon/bundle structure), which
+## Finder can't launch and Gatekeeper won't run via double-click; `package`
+## wraps it into a real, ad-hoc-signed `.app` (see build/darwin/Taskfile.yml
+## create:app:bundle + codesign:adhoc). `package`'s own output path isn't
+## configurable — it always writes to plain `bin/` (wails3's own default,
+## same mismatch build-win-* below already works around), not $(BIN) — so
+## the resulting bin/go-xslt.app is moved into $(BIN) and renamed after.
 build-mac-arm64:
 	mkdir -p $(BIN)
-	$(TASKPATH) $(WAILS) task darwin:build ARCH=arm64 OUTPUT=$(BIN)/$(APP)-darwin-arm64
+	$(TASKPATH) $(WAILS) task darwin:package ARCH=arm64
+	rm -rf $(BIN)/$(APP)-darwin-arm64.app
+	mv bin/$(APP).app $(BIN)/$(APP)-darwin-arm64.app
+	rm -f bin/$(APP)
 
 ## build-mac-amd64: macOS build for Intel. Same pipeline, cross-compiles
 ## cleanly from an Apple Silicon Mac too.
 build-mac-amd64:
 	mkdir -p $(BIN)
-	$(TASKPATH) $(WAILS) task darwin:build ARCH=amd64 OUTPUT=$(BIN)/$(APP)-darwin-amd64
+	$(TASKPATH) $(WAILS) task darwin:package ARCH=amd64
+	rm -rf $(BIN)/$(APP)-darwin-amd64.app
+	mv bin/$(APP).app $(BIN)/$(APP)-darwin-amd64.app
+	rm -f bin/$(APP)
 
 ## build-mac: both macOS architectures (Apple Silicon + Intel)
 build-mac: build-mac-arm64 build-mac-amd64

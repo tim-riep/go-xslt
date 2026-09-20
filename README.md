@@ -166,8 +166,14 @@ make build-all      # every platform above in one go
 make bindings       # regenerate TS bindings after changing a Go service
 ```
 
-Output binaries land in `desktop/build/bin/`, one per target
-(`go-xslt-windows-amd64.exe`, `go-xslt-darwin-arm64`, …). GUI features: three modes — an
+Output lands in `desktop/build/bin/`, one per target: a bare executable for
+Windows/Linux (`go-xslt-windows-amd64.exe`, `go-xslt-linux-amd64`), a real,
+ad-hoc-signed `.app` bundle for macOS (`go-xslt-darwin-arm64.app`) — since
+macOS won't launch a bare CLI-style binary via Finder/double-click. An
+ad-hoc-signed (not notarized — that needs a paid Apple Developer account)
+app downloaded from the internet still gets one Gatekeeper prompt on first
+launch; right-click → Open (or System Settings → Privacy & Security → Open
+Anyway) past it once. GUI features: three modes — an
 **XSLT** tester (CodeMirror 6 editor with XSLT/XML highlighting, a lint gutter
 wired to engine diagnostics, stylesheet parameters, and secondary/message
 output panes), an **XSD** validator (schema + instance panes, pass/fail with
