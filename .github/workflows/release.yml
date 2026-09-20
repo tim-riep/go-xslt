@@ -86,13 +86,17 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/frontend/package-lock.json
 
-      # Linux needs real CGo (webkitgtk) — installing these lets wails3's
-      # own build:native task run directly on this runner instead of
-      # falling back to the ~800MB wails-cross Docker image.
+      # Linux needs real CGo (GTK4 + WebKitGTK 6.0 — Wails v3's default,
+      # non-legacy Linux stack per its own internal/doctor/packagemanager/
+      # apt.go; the older libgtk-3-dev/libwebkit2gtk-4.1-dev pair is only
+      # for a build opting into `-tags gtk3`, which this one doesn't).
+      # Installing these lets wails3's own build:native task run directly
+      # on this runner instead of falling back to the ~800MB wails-cross
+      # Docker image.
       - name: Install Linux GUI build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@${{ env.WAILS3_VERSION }}
