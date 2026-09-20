@@ -1,0 +1,214 @@
+.output-pane {
+  background: var(--bg);
+}
+.output-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Transform's output pane hosts a CodeMirror editor, which already fills
+   100% of this container and scrolls internally (see editor.css's
+   .output-body .cm-editor) — overflow:hidden here just avoids a redundant
+   second scrollbar for that one. XPath's result <table> and Validate's
+   plain validity/diagnostics div have no scroll mechanism of their own, so
+   they opt into this container itself scrolling instead. */
+.output-body.output-body-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---- messages & secondary outputs ---- */
+.messages,
+.secondary {
+  border-top: 1px solid var(--border);
+  max-height: 30%;
+  overflow: auto;
+  background: var(--bg-2);
+  font-size: var(--text-sm);
+}
+.messages-header,
+.secondary-header {
+  padding: 4px 10px;
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.messages ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.msg-item {
+  padding: 2px 10px;
+  border-left: 2px solid var(--accent);
+  user-select: text;
+}
+.secondary-doc {
+  padding: 2px 10px;
+}
+.secondary-doc summary {
+  cursor: pointer;
+  color: #9cdcfe;
+}
+
+/* ---- diagnostics ---- */
+.diagnostics {
+  border-top: 1px solid var(--border);
+  max-height: 35%;
+  overflow: auto;
+  background: var(--bg-2);
+}
+.diagnostics-header {
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+  position: sticky;
+  top: 0;
+  background: var(--bg-2);
+}
+.diagnostics ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.diag {
+  display: flex;
+  gap: var(--sp-3);
+  padding: 3px 10px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.diag:hover {
+  background: var(--bg-3);
+}
+.diag-error {
+  border-left-color: var(--error);
+}
+.diag-warning {
+  border-left-color: var(--warning);
+}
+.diag-loc {
+  color: var(--fg-dim);
+  min-width: 42px;
+}
+.diag-code {
+  color: var(--warning);
+  min-width: 64px;
+}
+.diag-msg {
+  flex: 1;
+  user-select: text;
+}
+
+/* ---- validation ---- */
+.valid-badge {
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-sm);
+}
+.valid-badge.ok {
+  color: var(--success);
+  background: rgba(78, 201, 176, 0.12);
+}
+.valid-badge.bad {
+  color: var(--error);
+  background: rgba(241, 76, 76, 0.12);
+}
+.validation-result .validity {
+  padding: var(--sp-4);
+  font-size: 14px;
+  font-weight: 600;
+}
+.validation-result .validity.ok {
+  color: var(--success);
+}
+.validation-result .validity.bad {
+  color: var(--error);
+}
+
+/* ---- xpath item table ---- */
+table.xpath-items {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.xpath-items th,
+table.xpath-items td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.xpath-items th {
+  color: var(--fg-dim);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--bg-2);
+}
+table.xpath-items td.idx,
+table.xpath-items th.idx {
+  width: 32px;
+  color: var(--fg-dim);
+  text-align: right;
+}
+table.xpath-items td.ty,
+table.xpath-items th.ty {
+  width: 130px;
+  color: var(--success);
+  font-family: var(--font-mono);
+}
+table.xpath-items td.val {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- missing-file banner (FileEditorView on a deleted/moved-away file) ---- */
+.missing-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: rgba(241, 76, 76, 0.12);
+  color: var(--error);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ---- generic empty state (no project / no tabs open) ---- */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  color: var(--fg-dim);
+  font-size: var(--text-sm);
+  text-align: center;
+  padding: var(--sp-6);
+}
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* ---- status bar ---- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 22px;
+  padding: 0 var(--sp-4);
+  background: var(--bg-2);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}

@@ -1,0 +1,223 @@
+.sidebar {
+  /* Direct child of react-resizable-panels' <Panel>, which is not a flex
+     container for its own content and sets no explicit size of its own —
+     height/width:100% is what actually fills the Panel's resolved (and
+     user-resizable) box; a fixed width here would fight the drag-to-resize
+     handle instead of tracking it. */
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+}
+
+/* ---- project switcher ---- */
+.project-switcher {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.project-switcher-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+}
+.project-switcher-trigger:hover {
+  background: var(--bg-hover);
+}
+.project-switcher-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-switcher-caret {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+}
+.project-switcher-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: var(--sp-2);
+  right: var(--sp-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  z-index: var(--z-menu);
+  padding: var(--sp-1) 0;
+  max-height: 60vh;
+  overflow: auto;
+}
+.project-switcher-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-switcher-item:hover {
+  background: var(--bg-hover);
+}
+.project-switcher-item.active {
+  background: var(--bg-selected);
+}
+.project-switcher-item-dir {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-switcher-sep {
+  height: 1px;
+  background: var(--border);
+  margin: var(--sp-1) 0;
+}
+.project-switcher-action {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+.project-switcher-action:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* ---- sidebar section switch (Files / Runs) ---- */
+.sidebar-section-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sidebar-section-tab {
+  flex: 1;
+  padding: var(--sp-2) 0;
+  text-align: center;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+}
+.sidebar-section-tab:hover {
+  color: var(--fg);
+}
+.sidebar-section-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.sidebar-section {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.sidebar-empty {
+  padding: var(--sp-4);
+  color: var(--fg-dim);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* ---- run list ---- */
+.run-list {
+  flex: 1;
+  overflow: auto;
+  padding-bottom: var(--sp-3);
+}
+.run-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--row-h);
+  padding: 0 var(--sp-3);
+  font-size: var(--text-sm);
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.run-group-header:hover {
+  background: var(--bg-hover);
+}
+.run-group-caret {
+  width: 10px;
+  font-size: 10px;
+  transition: transform 0.1s ease;
+}
+.run-group-caret.collapsed {
+  transform: rotate(-90deg);
+}
+.run-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--row-h);
+  padding: 0 var(--sp-3) 0 var(--sp-5);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  user-select: none;
+}
+.run-item:hover {
+  background: var(--bg-hover);
+}
+.run-item.active {
+  background: var(--bg-selected);
+}
+.run-item-icon {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+.run-item-icon.kind-transform {
+  color: var(--success);
+}
+.run-item-icon.kind-validate {
+  color: var(--warning);
+}
+.run-item-icon.kind-xpath {
+  color: #9cdcfe;
+}
+.run-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-add-btn {
+  padding: 1px 6px;
+  font-size: 14px;
+  line-height: 1;
+}

@@ -1,0 +1,132 @@
+name: Release desktop builds
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+# The wails3 CLI version is pinned to match desktop/go.mod's
+# github.com/wailsapp/wails/v3 require line, so the CLI's task/bindings
+# glue never drifts out of sync with the library the app actually imports.
+env:
+  WAILS3_VERSION: v3.0.0-alpha2.103
+  NODE_VERSION: '22'
+
+jobs:
+  test:
+    name: Test library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  build-macos-windows:
+    name: Build macOS + Windows
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@${{ env.WAILS3_VERSION }}
+
+      # Both macOS archs build natively (Xcode's clang cross-targets Apple
+      # Silicon + Intel from either host arch) and both Windows archs are
+      # pure-Go cross-compiles (CGO_ENABLED=0), so this one macOS runner
+      # covers all four of those variants without Docker.
+      - name: Build macOS (arm64 + amd64) and Windows (amd64 + arm64)
+        working-directory: desktop
+        run: |
+          make build-mac
+          make build-win
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-windows
+          path: |
+            desktop/build/bin/go-xslt-darwin-arm64
+            desktop/build/bin/go-xslt-darwin-amd64
+            desktop/build/bin/go-xslt-windows-amd64.exe
+            desktop/build/bin/go-xslt-windows-arm64.exe
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      # Linux needs real CGo (webkitgtk) — installing these lets wails3's
+      # own build:native task run directly on this runner instead of
+      # falling back to the ~800MB wails-cross Docker image.
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@${{ env.WAILS3_VERSION }}
+
+      - name: Build Linux (amd64)
+        working-directory: desktop
+        run: make build-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: desktop/build/bin/go-xslt-linux-amd64
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [build-macos-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts into one release directory
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+
+      - name: Create/update the GitHub release for this tag
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true

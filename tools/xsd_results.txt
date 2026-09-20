@@ -1,0 +1,2027 @@
+XSD 1.0 / 1.1 conformance — progress log
+========================================
+
+Harness:  test/conformance/xsd_test.go  (TestXSD)
+Suite:    W3C XML Schema Test Suite (github.com/w3c/xsdtests, local-only clone
+          at test/conformance/xsdtests/, gitignored). Verdict-only oracle:
+          each <schemaTest>/<instanceTest> asserts valid|invalid.
+Engine:   internal/xsd  (from-scratch, pure Go). Public API: engine.Validate.
+
+Run (compiled binary, live progress):
+  go test -c -o /tmp/conf.bin ./test/conformance/
+  cd test/conformance && XSD_PROGRESS=1 /tmp/conf.bin -test.run=TestXSD -test.v
+  Knobs: XSD_ONLY=<set-substring>  XSD_VERSION=1.0|1.1  XSD_SEQ=1
+
+Denominator = applicable schemaTest + instanceTest cases per version (a testGroup
+or <expected> may carry version="1.0|1.1"; absent = both). "unsupported" = the
+validator returned ErrUnsupported (could not decide) — neither pass nor fail, so
+the baseline is honest.
+
+--------------------------------------------------------------------------------
+M0 baseline (harness + API skeleton) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  0.0% pass  (0/0 ran)  — unsupported=39550  skip=78
+XSD 1.1:  0.0% pass  (0/0 ran)  — unsupported=41532  skip=78
+
+  skip[no-schema-test]=55   skip[no-schema-verdict]=12   skip[no-instance-verdict]=11
+
+Everything is "unsupported" because internal/xsd.Compile / Schema.Validate are
+skeletons (return ErrUnsupported). The harness enumerates the suite, resolves
+per-version applicability + expected verdicts, reads the schema/instance files,
+and buckets outcomes.
+
+--------------------------------------------------------------------------------
+M1 (minimal loader + simple-type / datatype validation + facets) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  99.0% pass  (22886/23109 ran)  — unsupported=16441  skip=78
+XSD 1.1:  98.8% pass  (22989/23278 ran)  — unsupported=18254  skip=78
+
+("ran" = cases the datatype validator can decide. "unsupported" = schemas using
+complex types / groups / imports etc. — deferred to M2. Of ALL 39,550 applicable
+1.0 cases, 22,886 now pass = 57.9%; the rest await M2's structural layer.)
+
+Implemented: a minimal schema loader (global element decls + named simpleTypes;
+restriction/list/union; anything else ⇒ ErrUnsupported so no wrong verdicts), the
+facet subsystem (pattern via xpath.CompileRegex anchored, enumeration by value,
+length/minLength/maxLength, min/max In/Exclusive via exact xpath.CompareAtomic —
+new, big.Rat-exact for 18-digit decimals — totalDigits/fractionDigits, whiteSpace,
+list/union facet inheritance), derived-string + integer/decimal lexical checks
+(xpath.CastTo alone truncates "1.5"→1), and simple-content instance validation
+(xsi:nil/xsi:type, no-child / no-attr checks).
+
+Key triage wins this milestone: length family gated to applicable types (QName/
+numeric length ⇒ always-satisfied per the suite); a restriction of a list/union
+inherits that variety so its facets bound the whole list/union; patterns our
+XSD→RE2 translator can't render (\i/\c in class-subtraction) ⇒ ErrUnsupported, not
+a false "invalid".
+
+--------------------------------------------------------------------------------
+M2 (complex types + content models + attributes + groups + subst. groups) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  92.0% pass  (33973/36935 ran)  — unsupported=2615  skip=78
+XSD 1.1:  91.0% pass  (35083/38536 ran)  — unsupported=2996  skip=78
+
+(Of ALL 39,550 applicable 1.0 cases, 33,973 pass = 85.9%, up from 57.9% at M1.
+Unsupported collapsed 16,441 → 2,615: complex-type schemas are now handled.)
+
+Implemented (single-document): complexType (named/inline/anonymous), simple &
+complex content with extension/restriction (effective content model + attrs
+computed lazily by walking the base chain), model groups (sequence/choice/all)
++ minOccurs/maxOccurs, named groups + group refs, local/ref elements, attributes
+(local/ref/use/default/fixed), attribute groups, xs:any / xs:anyAttribute
+wildcards, substitution groups (+abstract), xsi:type/xsi:nil, mixed/empty content.
+
+Content-model matcher (content.go): a memoized position-set NFA — O(polynomial)
+instead of exponential backtracking; an in-stack "active" set breaks cyclic
+(invalid) group references; a step budget + a >600-child cap make the suite's
+stress instances "no verdict" (unsupported) rather than a hang or wrong answer.
+The harness gained a per-group panic guard.
+
+Still deferred / long tail: identity constraints (key/keyref/unique — M3; the
+IdentityConstraint set's fails+unsupported are mostly this), xs:import/include/
+redefine (multi-document), UPA schema-validity, some gregorian/date bound-facet
+comparisons, and assorted schema-validity edge cases we don't yet reject.
+
+--------------------------------------------------------------------------------
+M3 (identity constraints: key / keyref / unique) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  92.4% pass  (34108/36932 ran)  — unsupported=2618  skip=78
+XSD 1.1:  91.4% pass  (35221/38533 ran)  — unsupported=2999  skip=78
+
+(IdentityConstraint_w3c set: ~64% → 80%. The overall gain is modest because
+id-constraints touch only a fraction of cases, but we now correctly REJECT
+duplicate keys / dangling keyrefs that M2 accepted.)
+
+Implemented (identity.go): xs:key/xs:keyref/xs:unique parsed on element decls;
+selector/field XPaths compiled with the engine's own xpath.Parse and evaluated
+via (*Parsed).Eval against the instance subtree (context = scope element, NS =
+the constraint's in-scope namespaces, DefaultElemNS = xpathDefaultNamespace).
+Per scope element: build key/unique tuple tables (uniqueness + key completeness),
+then check keyrefs against the in-scope tables (threaded down the recursion so a
+keyref can reference an ancestor's key). Field values compared by
+whitespace-collapsed string (typed-value comparison would need PSVI — a later
+refinement).
+
+Still deferred / long tail: xs:import/include/redefine (multi-document), the 1.1
+additions (assert / conditional type assignment / open content), typed-value key
+comparison, UPA schema-validity, some selectors our XPath parser rejects
+(bucketed unsupported), and assorted schema-validity edge cases.
+
+--------------------------------------------------------------------------------
+M4 (XSD 1.1 assert + conditional type assignment; multi-document import/include) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  91.5% of ran (35149/38416)  — unsupported=1134  skip=78   [88.9% of ALL applicable]
+XSD 1.1:  90.5% of ran (36349/40145)  — unsupported=1387  skip=78   [87.5% of ALL applicable]
+
+(The "% of ran" dipped slightly vs M3 only because ~1,500 harder multi-document
+cases moved OUT of "unsupported" INTO the denominator; absolute passes rose
++1,041 (1.0) with no net regression, and unsupported more than halved. The
+honest all-applicable rate rose: 1.0 86.3% → 88.9%.)
+
+Implemented:
+- XSD 1.1 xs:assert on complex types (xsd11.go): compiled with xpath.Parse,
+  evaluated (xpath.ToBool) against the element after content/attribute validation;
+  inherited down the derivation chain; enforced in 1.1 mode only. Sets: Assert
+  fails 34→23, typeAlternatives fails 13→4.
+- XSD 1.1 conditional type assignment (xs:alternative): the element's type is
+  chosen by evaluating each alternative's test against the element (xsi:type still
+  wins); unresolved alternative types ⇒ ErrUnsupported (honest).
+- Multi-document xs:include/xs:import/xs:redefine/xs:override (imports.go): the
+  loader (loader.go Compile) now resolves the document graph from baseDir into a
+  flat list and registers/parses components across all of them with each
+  document's own namespace context (setDoc). Missing import locations are legal
+  (skipped). Schema_w3c: 141 unsupported → 0 (110 pass).
+
+Still deferred / long tail: simple-type xs:assertion facet, open content
+(interleave/suffix), inheritable attributes, wildcard notQName/notNamespace,
+xs:notation, patterns our XSD→RE2 translator can't render (Regex ~455 unsup),
+typed-value key comparison, UPA schema-validity, and assorted schema-validity
+edge cases. redefine/override are loaded as plain includes (redefinition
+semantics not applied).
+
+--------------------------------------------------------------------------------
+M5 (push to 91%: schema-validity checks + XSD-regex \i\c class-subtraction) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  93.2% of ran (35982/38596)  — unsupported=954   skip=78   [90.98% of ALL applicable]
+XSD 1.1:  92.3% of ran (37207/40325)  — unsupported=1207  skip=78   [89.6% of ALL applicable]
+
+Both versions now exceed 91% on the standard "of decided cases" metric (the same
+metric QT3/XSLT30 report). Changes, all verified against NIST (stays 100%, no
+false positives), QT3 fn-matches (no regression) and the EN16931 gate (0-mismatch):
+- Facet-value validity (facets.go validateFacetValues): a bound/enumeration facet
+  value must itself be a valid value of the base type (empty/out-of-range values
+  ⇒ invalid schema). DataTypes +512.
+- Facet applicability + mutual consistency: length only on string/anyURI/binary/
+  QName; bounds only on ordered types; totalDigits/fractionDigits only on
+  decimal/integer; min/maxInclusive vs min/maxExclusive exclusivity; length vs
+  min/maxLength; minLength≤maxLength; fractionDigits≤totalDigits; lower≤upper
+  bound (exact CompareAtomic); duplicate single-valued facets. DataTypes +79.
+- XSD-regex \i / \c inside class subtraction (internal/xpath/regex_class.go): the
+  class-subtraction expander now reduces \i (":A-Z_a-z") and \c ("-.0-9:A-Z_a-z")
+  to ranges, so patterns like [\i-[:]][\c-[:]]{16} compile. NIST unsupported
+  426 → 246 (+180 passes).
+
+Remaining to lift all-applicable further is mostly the open-ended Schema
+Component Constraint battery (Particles/ComplexType/ModelGroups schemaTest-invalid
+cases) and RE2 back-references (unfixable in RE2).
+
+--------------------------------------------------------------------------------
+M6 (schema-validity / "schema for schemas" checks) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  93.8% of ran (36217/38607)  — unsupported=943   skip=78   [91.57% of ALL applicable]
+XSD 1.1:  92.8% of ran (37441/40341)  — unsupported=1191  skip=78   [90.11% of ALL applicable]
+
+Added a batch of structural / schema-validity checks (structure.go), all verified
+against NIST (stays 100% — zero false positives on valid schemas), QT3 and the
+EN16931 gate:
+- complexType/simpleType element grammar: at most one leading annotation; exactly
+  one content model / derivation; no bare <element>/<any> directly in a
+  complexType.
+- Names: global names must be valid NCNames (no colon/leading-digit); duplicate
+  global type/element/attribute definitions rejected.
+- Attribute values: boolean attrs (abstract/nillable/mixed) must be true/false/1/0;
+  form/use/processContents against their vocabularies; block/final/blockDefault/
+  finalDefault against #all + the derivation keywords.
+- Element Declarations Consistent (EDC): two element particles with the same name
+  in one content model must share a type.
+- ref/name and ref/type mutual exclusion for element & attribute; duplicate
+  attribute uses; circular model-group references.
+
+Reaching a clean ≥94% of-ran further needs the deep SCC battery (particle
+restriction validity, full UPA, group-based complexType restrictions in the ctH
+cluster) — higher effort and false-positive risk, so left for a dedicated pass.
+
+--------------------------------------------------------------------------------
+M7 (more schema-validity: id/constraint/restriction checks) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  94.0% of ran (36304/38607)  — unsupported=943   skip=78   [91.79% of ALL applicable]
+XSD 1.1:  93.0% of ran (37532/40341)  — unsupported=1191  skip=78   [90.37% of ALL applicable]
+
+Added (all NIST-verified 100%, zero false positives):
+- @id must be a valid NCName (id=""/"123" ⇒ invalid) — applies to every element.
+- Duplicate identity-constraint names (key/keyref/unique share a namespace).
+- Complex restriction (conservative): a restriction may not introduce an element
+  absent from the base content model, and a restricted element's type must derive
+  from the base element's type (xpath.AtomDerivesFrom); skipped whenever the base
+  has a wildcard/substitution or the types are union/list/complex (so it never
+  rejects a valid schema).
+
+--------------------------------------------------------------------------------
+M8 (UPA + conservative particle restriction) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  94.1% of ran (36317/38607)  — unsupported=943   skip=78   [91.83% of ALL applicable]
+XSD 1.1:  93.1% of ran (37547/40341)  — unsupported=1191  skip=78   [90.42% of ALL applicable]
+
+- Unique Particle Attribution (upa.go): a Glushkov position automaton over the
+  content model (first/last/follow); flags a decision set containing two distinct
+  element positions with the same expanded name. Conservative — wildcard overlaps
+  and substitution-group expansion are NOT flagged, so it never rejects a valid
+  schema. (effectiveParticle/effectiveAttrs gained a derivation-cycle guard —
+  UPA runs them over ALL types, including cyclic-derivation ones, which
+  previously stack-overflowed.)
+
+--------------------------------------------------------------------------------
+M9 (full Particle-Valid-Restriction + schema-validity — reached 95%) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  95.0% of ran (36676/38607)  — unsupported=943   skip=78   [92.73% of ALL applicable]
+XSD 1.1:  94.0% of ran (37919/40341)  — unsupported=1191  skip=78   [91.30% of ALL applicable]
+
+Reached the 95% target for 1.0 (94% for 1.1) — and did it WITHOUT breaking the
+invariant: **NIST datatypes stayed 100% throughout; the validator never rejects a
+valid schema.** (One false positive was briefly introduced — NOTATION/QName
+enumeration values failing CastTo — and immediately fixed by treating those
+name-typed values leniently.) The correct implementation of the spec rules
+rejects exactly the invalid schemas, so "compliance" and "no false positives" are
+not in tension after all.
+
+Landed this milestone:
+- **Particle Valid (Restriction)** (restriction.go): the full recursive check —
+  occursOK (occurrence-range subset), element-element (name + type derivation),
+  element-wildcard (NSCompat), wildcard-wildcard (NSSubset), and the group
+  recursions Recurse (seq), RecurseLax (choice), RecurseUnordered (all / seq-vs-
+  all), plus element-vs-group. Particles +135.
+- Structural: attributes must be inside extension/restriction (not direct in a
+  complexType with simple/complexContent); duplicate xs:ID values; identity-
+  constraint name must be an NCName; @block blocks xsi:type substitution by a
+  blocked derivation method (derivationMethodsTo); fixed/default value must be a
+  valid value of the type; wildcard @namespace token validity (## keywords).
+- Robustness: effectiveParticle/effectiveAttrs derivation-cycle guard (UPA runs
+  over all types).
+
+Remaining ~940 (1.0) unsupported = RE2 back-references (unfixable) + a few exotic
+constructs; remaining fails = the long tail of subtle SCC edge cases
+(group-based complex restriction in ctG/ctH, some instance-level block/final).
+
+--------------------------------------------------------------------------------
+M10 (toward 96% — false-positive fixes + notation; held at 95%) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  95.0% of ran (36695/38608)  — unsupported=942   skip=78   [92.78% of ALL applicable]
+XSD 1.1:  94.0% of ran (37937/40342)  — unsupported=1190  skip=78
+
+Small net gain (+19), still 95.0%. Landed:
+- Cyclic-import false positive fixed: a schema whose import resolves back to
+  itself was collected twice → duplicate registration → wrongly rejected. Now
+  deduped by content (imports.go), seeded with the primary.
+- Basic xs:notation validation: name is a required NCName, needs public or
+  system, and must be unique.
+- Investigated a real restriction false positive (particlesHa080: multiple
+  elements restricting a repeatable base wildcard). A multi-consume rewrite of
+  recurseSeq FIXED it but regressed 85 other (correctly-rejected) cases — the
+  spec's Recurse mapping is stricter than naive multi-consume — so it was
+  reverted. That edge remains a known false positive.
+
+Why 96% is a wall: the remaining fails are (a) introspection (92 — validating
+schema documents against the XSD *schema-for-schemas*, i.e. running the meta-
+schema; a large separate subsystem), (b) suntest combined tests (61 — varied
+per-directory instance edges, no shared pattern), (c) ctG/ctH group-based
+complex restriction validity (98 — the subtlest corner of Particle-Valid-
+Restriction), and (d) dozens of scattered 1–10-case constraints. Each additional
+percent now costs disproportionately and several require whole features, so 95%
+is the point of steeply diminishing returns for the clean, regression-free
+approach.
+
+--------------------------------------------------------------------------------
+M11 (toward 97% — schema-for-schemas validator; reached 95.5%) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  95.5% of ran (36882/38621)  — unsupported=929   skip=78   [93.25% of ALL applicable]
+XSD 1.1:  94.5% of ran (38124/40355)  — unsupported=1177  skip=78   [91.79% of ALL applicable]
+
+Classified every remaining fail (see plan): ~240 false positives (we reject
+valid), ~936 missed-invalid schemas, ~200 missed-invalid instances, introspection
+92 (out of scope), Regex back-refs ~455 (unfixable). Landed +187 (1.0):
+- **False positives fixed**: name regexes broadened to the real XML NameStartChar/
+  NameChar categories (\p{Nl}, \p{M}, extenders) — `ↀ02`-style Unicode NCNames are
+  now accepted (simpletype.go).
+- **"Schema for schemas" structural validator** (schemavalid.go, modeled on
+  internal/xslt/validate.go): a per-element allowed-attribute table + child-element
+  grammar (incl. context-aware restriction/extension children) + "no attribute in
+  the XSD namespace on an xs: element". Child grammar was the big lever (+127).
+- keyref @refer → keyref detection (conservative; the dangling-refer case can't be
+  flagged without a full-schema constraint collection, which would false-positive).
+
+Attempted + REVERTED: a backtracking `recurseSeq` for the repeatable-wildcard
+restriction case (particlesHa080). Both the naive and the DP versions REGRESSED
+net (rejected valid restrictions elsewhere — Particles FPs 46→135). The ~46
+"multiple particles restrict a repeatable wildcard" cases remain a known FP.
+
+Did NOT reach 97%. Remaining +568 (1.0) is the deep, subtle SCC frontier:
+Particle-Valid-Restriction repeatable-wildcard correctness (resisted two attempts),
+ctG/ctH group-based restriction, ModelGroups/Group component constraints, full
+block/final instance enforcement, and introspection (meta-schema, 92). Each is
+disproportionate and several carry real false-positive risk — 95.5% is where the
+clean, NIST-100%-preserving approach stands.
+
+--------------------------------------------------------------------------------
+M12 (97% push — false-positive fixes + structural/derivation SCCs) — 2026-07-04
+--------------------------------------------------------------------------------
+XSD 1.0:  97.0% of ran (37716/38879)  — unsupported=671  skip=78
+XSD 1.1:  96.0% of ran (38969/40612)  — unsupported=920  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch; QT3
+regex + internal unit tests green.
+
+Reached 97% (1.0) with NO new false positives (held at 181, all pre-existing hard
+cases) and NIST kept at 100% after every change. Net +834 pass (1.0) over M11.
+
+False-positive fixes (pure correctness, also lifted the NIST canary back to 100%):
+- xs:double/xs:float overflow lexicals (e.g. 28364477384374416E294) map to ±INF and
+  are VALID — validate the lexical shape directly instead of via CastTo, whose
+  parseNumber turned an out-of-range value into NaN→error (simpletype.go).
+- Empty element with a default/fixed value constraint validates the CONSTRAINT
+  value, not "" (cvc-elt.5.1) — threaded the decl through validateAgainstType
+  (instance.go effectiveSimpleText).
+- <?xml version="1.1"?> documents: Go's encoding/xml rejects them; rewrite the
+  prolog version to 1.0 length-preservingly before decoding (xmltree/parse.go).
+- xs:all / group-ref whose members are all optional now matches empty content —
+  the matcher counted only position-advancing occurrences, so a required-but-
+  nullable term was never satisfied (content.go nullable()).
+- xml:lang/space/base/id resolve as built-in attribute refs without an import
+  (fallback in parseAttrUse, so schemas that declare them still work).
+
+Missed-invalid detection added (each measured NIST=100% + FP not rising):
+- XSD-regex grammar validator: a schema whose xs:pattern is XSD-invalid but
+  RE2-accepted is now rejected — reluctant quantifiers (*? +? ?? }?), \digit
+  back-ref/octal escapes, (?:…) groups, bare ']' , malformed {…} (simpletype.go
+  validateXSDRegex). Biggest single lever (~+420); \p{…} handled so property
+  classes never false-positive.
+- At most one xs:annotation per component, and it must be first (schemavalid.go).
+- Context-sensitive block/final value vocabularies per element/attribute.
+- xs:attribute / xs:element syntax SCCs (default⊕fixed, ref exclusivity,
+  type⊕inline-type, name≠xmlns, default⇒use=optional) (checkDeclConstraints).
+- Complex-type body structure: ≤1 model-group child, ≤1 anyAttribute, model group
+  before attributes, anyAttribute last (schemavalid.go).
+- xsi:type must be validly derived from the element's declared type
+  (cvc-elt.4.3, complex + simple via the atomic hierarchy) (instance.go derivesFrom).
+
+Still out of reach / deferred: xs:redefine self-reference (base should bind to the
+pre-redefine component; ~8 content-model FPs), the Particle-Valid-Restriction
+repeatable-wildcard case, deep complex-restriction derivation validity, and
+introspection (meta-schema, 92, out of scope).
+
+--------------------------------------------------------------------------------
+M13 (toward 99% — structural SCC grind, Phases 1–2 + parts of 3) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  97.5% of ran (37941/38898)  — unsupported=652  skip=78
+XSD 1.1:  96.3% of ran (39138/40636)  — unsupported=896  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. False-positive count held at 181 (all pre-existing
+hard cases) after every change. Net +225 pass (1.0) over M12.
+
+Did NOT reach 99% — landed at 97.5%. Every change was FP-safe (the invariant held).
+The remaining ~570 (1.0) is dominated by the particle/complexType restriction-
+derivation crux (~155, resisted twice, FP-prone) and a long heterogeneous tail
+(saxon/addB/Negative ~150, regex char-class grammar ~30) that yields only a few
+tests per bespoke rule.
+
+Rules added this round (all structural, FP-gated, NIST=100%):
+- Occurrence-value validity: minOccurs = nonNegativeInteger, maxOccurs =
+  nonNegativeInteger|"unbounded", minOccurs ≤ maxOccurs (schemavalid checkOccurs).
+  Biggest single lever (~+113) — the mg* occurrence tests.
+- xs:all constraints: minOccurs/maxOccurs ∈ {0,1}/1, member maxOccurs ≤ 1, and an
+  xs:all may only be the top-level content model (never nested in sequence/choice).
+- Top-level element/attribute/group/attributeGroup must be a definition (no ref,
+  minOccurs, maxOccurs, form) — the global-vs-local distinction.
+- NCName validity for every named component's @name (local decls included).
+- A simpleType restriction may not derive from xs:anySimpleType/xs:anyType.
+- @final (and finalDefault) blocks complexType derivation by that method
+  (checkFinalDerivation); @block/blockDefault now applied to xsi:type substitution
+  with name-based derivation matching (derivationMethodsTo via typeIdentityEqual).
+- abstract/final/substitutionGroup permitted only on global (top-level) elements.
+- Identity constraint selector/field validated against the restricted-XPath subset
+  (no absolute path, single leading './/' , child::/attribute:: axes, '@' only as a
+  field's last step, defined prefixes) (identity.go validateIdentityXPath).
+- Circular attributeGroup references rejected (structure.go checkAttrGroupCycles).
+
+Deferred (risk/complexity): xs:redefine self-reference FP recovery, the Particle-
+Valid-Restriction derivation crux (Phase 5), regex character-class range grammar,
+and introspection (meta-schema, 92, out of scope; ceiling ~99.76%).
+
+--------------------------------------------------------------------------------
+M14 (toward 98% — regex char-class + facet/import SCCs; Phases B–C) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  97.7% of ran (38015/38904)  — unsupported=646  skip=78
+XSD 1.1:  96.4% of ran (39183/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. Net +74 pass (1.0) over M13, and the false-positive
+count DROPPED from 181 to 141 (never rose after any change).
+
+Reached 97.7% (short of the 98% target). Every change FP-safe (invariant held).
+Rules added this round:
+- **xs:redefine done properly** (loader.go applyRedefinitions): the redefinitions
+  were previously skipped in Pass 1 (a plain include — the ORIGINAL content model
+  was used, so redefine instances FP'd on "content does not match"). Now each
+  redefinition is compiled AFTER Pass 2 INTO the original component (mutated in
+  place, so existing type references see it), with a snapshot of the pre-redefine
+  component installed as c.redefine{Type,Group,AttrGroup} so a self-reference from
+  inside the redefine block (detected via withinRedefine on the node's Parent
+  chain) binds to the original. Missing-original redefinitions are skipped (not
+  rejected) to stay FP-safe. Recovered the idF/idG/idH content-model FPs (net
+  FP 181→168, +20 pass).
+- Particle-restriction FP recovery (restriction.go): (a) restricting an empty base
+  now accepts a derived particle that matches only empty (matchesOnlyEmpty), (b) a
+  lenient recurseSeq fallback (tried ONLY after the strict one-to-one mapping
+  fails, so it can never reject what strict accepted) lets a repeatable base
+  wildcard absorb a run of derived particles whose SUMMED occurrence fits the
+  wildcard's — recovers the particlesHa "multiple particles restrict a repeatable
+  wildcard" cases that resisted two prior attempts. FP 168→141.
+- Same-facet bounds narrowing (loader.go checkFacetConsistency): a derived
+  inclusive/exclusive bound may not loosen the base's (catches the invalid
+  int_maxInclusive/… cases the empty-base fix would otherwise unmask).
+- Undeclared document root assessed via xsi:type (instance.go validateElement):
+  a root with no global declaration but an xsi:type is validated as that type
+  (ST_targetNS cases) rather than rejected.
+Earlier this round (Phases B–C):
+- Regex character-class grammar (simpletype.go validateCharClass): rejects
+  XSD-invalid classes RE2 accepts — chained ranges (range–dash–range, e.g.
+  [a-c-1-4]), bare '[' inside a class ([^[a-b]]), backref/octal escapes, unclosed
+  class — while accepting literal dashes ([a-z-+]) and '-[…]' subtraction. FP-gated
+  hard against the 723 valid regex tests (a first heuristic FP'd on [a-z-+] and
+  [a-z--[b-z]] and was refined to the precise range–dash–range condition).
+- Facet consistency (loader.go checkFacetConsistency): a restriction's length/
+  digit facets must narrow the base's, and whiteSpace may only strengthen
+  (preserve→replace→collapse) — with a base-chain cycle guard.
+- Import/include/redefine namespace consistency (imports.go collect): an include's
+  referenced schema must share the target namespace or have none (chameleon); an
+  import's @namespace must equal the imported document's targetNamespace.
+
+Did NOT reach 98% (landed 97.7%, +111 short). The remainder is a heterogeneous
+tail: element/attribute @block instance edges (elemT/elemZ), attribute/complex
+derivation-in-restriction (attZ/ctZ), saxon combined tests (test./simple), the
+sun Negative set, residual pattern FPs (\i/\c XML-name classes — shared xpath
+regex, not touched), and the restriction-derivation crux (particles/ct). Each
+yields only a few tests per bespoke rule.
+
+--------------------------------------------------------------------------------
+M15 (toward 98% — FP recovery + instance/structural SCCs; Phases A–C) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  97.8% of ran (38059/38904)  — unsupported=646  skip=78
+XSD 1.1:  96.5% of ran (39227/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. Net +44 pass (1.0) over M14; false-positive count
+dropped further from 141 to 128 (never rose after any kept change).
+
+Reached 97.8% (short of the 98% target, +67 remaining). Every kept change FP-safe.
+Rules added / recoveries this round:
+- Restriction leniency extended: recurse{Seq,Choice,Unordered} now skip "removed"
+  particles (maxOccurs=0 / empty groups), recovering the particlesJq/mgH FPs
+  (restriction.go).
+- processContents="skip" wildcard children are no longer assessed against their
+  global declaration (instance.go collectWildcards) — recovered the QFE1700 cluster.
+- Top-level attribute may not carry @use (schemavalid.go); inline (non-top-level)
+  simpleType/complexType must be anonymous (nested in restriction/list/union or
+  element); attribute derivation-in-restriction: fixed value must match the base
+  and a required base attribute can't be relaxed (structure.go checkAttrDerivation).
+- xsi:type derivation for simple types fixed: the atomic-hierarchy fallback applies
+  only when the base is a built-in primitive, not a named user type sharing a
+  primitive (instance.go simpleDerivesFrom) — catches elemT supertype-xsi:type.
+- Identity selector/field name tests now use the strict NCName regex, rejecting
+  predicates like qname[type="x"] (identity.go).
+- Undeclared document root assessed via xsi:type (M14) retained.
+
+Reverted (regressed / broke the invariant, per FP-gating):
+- Strict-wildcard "element must be declared" enforcement (FP 128→153: ignored
+  xsi:type-assessable and mis-resolved elements).
+- Making unknown xs: type references invalid in resolveType — BROKE NIST (xs:NMTOKENS
+  /IDREFS/ENTITIES are built-in LIST types absent from builtinAtom, so the
+  ErrUnsupported fallback is load-bearing).
+
+Remaining +67 to 98%: heterogeneous @block/substitution instance edges
+(elemT/elemZ), sun Negative set (spread across all sets), addB adhoc, saxon
+combined, and the restriction-derivation crux — each a few tests per bespoke rule.
+
+--------------------------------------------------------------------------------
+M16 (reached displayed 98.0% — fixed-value + union substitutability) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  98.0% of ran (38114/38904)  — unsupported=646  skip=78   [exact 97.97%]
+XSD 1.1:  96.7% of ran (39282/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. Net +55 pass (1.0) over M15; false-positive count
+dropped 128 → 126 (never rose after any KEPT change).
+
+Crossed the rounded 98.0% (exact 97.97%; a solid ≥98.0% needs 38126, +12 more).
+Rules added / recoveries this round:
+- Element fixed value-constraint enforcement (instance.go): a non-empty element
+  with @fixed must equal it, compared in the type's VALUE space (boolean "1"=="true",
+  decimal "2"=="2.0"; union via first-matching-member) — simpletype.go fixedEqual.
+  Sibling fixed values are threaded so several same-named local decls with different
+  fixeds (isdefault079) don't false-positive. Biggest lever this round (~+31).
+- Attribute fixed check upgraded to the same value-space comparison (recovered the
+  xs:float "+INF" FP).
+- xsi:type union substitutability (instance.go simpleDerivesFrom): a union member
+  (or a type derived from one) is substitutable for the union; a union is NOT
+  substitutable for an atomic base sharing a primitive (elemT020/071).
+- import without @namespace requires a targetNamespace (imports.go, src-import).
+- xs:redefine may only redefine types/groups/attributeGroups, not elements/
+  attributes (schemavalid.go xsdAllowedChildren).
+
+Reverted (broke NIST/FP, per the gates — the discipline caught THREE landmines this
+round): strict-wildcard enforcement (FP), unknown-xs:-type-as-invalid (broke NIST —
+list types), and a cyclic-type-derivation walk (typed-nil interface → nil-deref
+panic on every schema, NIST→0). Each was caught immediately and reverted.
+
+Remaining +12 to a solid 98.0%: @block/@final for anyType-declared elements
+(elemT026 — needs union/list base tracking to walk to anyType), and the
+heterogeneous saxon-union-derivation / Negative / addB tail — all FP-prone
+instance/derivation edges. The restriction crux stays out of scope.
+
+--------------------------------------------------------------------------------
+M17 (toward 98.2% — restriction/chameleon FP recovery + block/subst SCCs) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  98.0% of ran (38136/38904)  — unsupported=646  skip=78   [exact 98.03%]
+XSD 1.1:  96.7% of ran (39301/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. Net +22 pass (1.0) over M16; false-positive count
+DROPPED 126 → 111 (never rose after any KEPT change). Now solidly ≥98.0% (38136).
+
+Landed at 98.03% (target 98.2% needs 38204, +68 remaining). Rules this round:
+- Repeatable-wildcard restriction leniency now uses the effective ELEMENT-COUNT
+  bounds of nested derived particles (restriction.go particleElementBounds), so a
+  nested sequence/choice restricting a repeatable base wildcard is accepted —
+  recovered the particlesHa/Q/R nested cases. FP 126→120.
+- @block/@final for anyType-declared elements: derivationMethodsTo now reaches
+  xs:anyType from a simple-type root (union/list included; their ultimate base is
+  xs:anySimpleType→anyType by restriction), with typed-nil pointer guards so the
+  block check fires for union/list xsi:type. Caught the elemT026 cluster. +8.
+- Chameleon-namespace porting (imports.go collect adoptNs): a no-namespace
+  include/redefine/override adopts the including document's target namespace, so
+  its global components resolve under it. FP 120→111. (Residual: unqualified
+  references WITHIN a chameleon doc — the ipo "SKU" case — still resolve to the
+  empty namespace; full chameleon ref-rewriting is deferred as FP-prone.)
+- Cyclic substitution-group affiliation rejected (loader.go
+  checkSubstGroupCycles; name-based walk, no typed-nil risk). xsd009/010.
+
+Guardrails observed (5 landmines total across the campaign, all reverted by the
+NIST+FP gate): never touch resolveType/builtinAtom xs:-fallback; guard EVERY
+type-chain walk against typed-nil (the M16 cyclic-type walk panicked NIST→0 — this
+round's derivationMethodsTo/substGroup walks are guarded).
+
+Remaining +68 to 98.2%: typed-value identity-constraint comparison (idF012 —
+boolean 1 vs decimal 1; needs PSVI), chameleon internal-ref resolution, the saxon
+union-derivation corner cases, the Negative/addB tail, and the restriction crux.
+
+--------------------------------------------------------------------------------
+M18 (typed-value identity comparison + inline-type cardinality) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  98.0% of ran (38140/38904)  — unsupported=646  skip=78   [exact 98.04%]
+XSD 1.1:  96.7% of ran (39305/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests green. Net +4 pass (1.0) over M17; false-positive count
+DROPPED 111 → 107.
+
+Landed at 98.04% (target 98.2% = 38204, +64 remaining). Rules this round:
+- Typed-value identity-constraint comparison (identity.go fieldKeyValue): when a
+  selected element carries xsi:type, the field value is canonicalised in that
+  type's value space and prefixed with the type, so boolean "1" and decimal "1"
+  are distinct keys (idF012 cluster) and "1"/"01" of one type coincide. Recovered
+  4 duplicate-key/uniqueness FPs. (Residual keyref cases need key/keyref both to be
+  typed — left for later.)
+- xs:attribute / xs:element may hold at most one inline type definition
+  (schemavalid.go, attI006).
+
+Reverted this round (FP gate — 2 more landmines, campaign total 7): tightening the
+component @name check to the reNCName regex (over-rejected valid Unicode names —
+middle-dot U+00B7, Arabic marks, etc. — that the approximate regex misses; FP
+107→123), and rejecting targetNamespace = the XSI namespace (attKb018/attKc018 are
+valid schemas that use it; net-zero pass, +2 FP).
+
+The remaining +64 to 98.2% is an increasingly FP-prone tail: the att cluster keeps
+snagging valid Unicode-name / reserved-namespace edge cases; the saxon
+union-derivation corner cases; typed keyref; the Negative/addB set; and the
+restriction crux. Progress is now +1..3 tests per rule with a landmine roughly
+every third attempt — the clean, NIST-100%/FP-safe frontier is thinning.
+
+--------------------------------------------------------------------------------
+M19 (ordering + wildcard/attribute correctness) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  98.2% of ran (38189/38904)  — unsupported=646  skip=78   [exact 98.16%]
+XSD 1.1:  96.9% of ran (39368/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch;
+internal unit tests + go vet green. Net +49 pass (1.0) over M18 (+63 on 1.1),
+false-positive count 199 -> 156 (session baseline recount: FP is measured as raw
+"FAIL exp=valid"; earlier "107" tracked a filtered subset). ZERO valid schemas
+newly rejected across the whole round; MI 564 -> 558. Twelve rules, no reverts.
+
+Rules this round (all FP-safe, NIST + FP re-measured after each):
+- Chameleon internal-ref resolution (loader.go chamAlt + imports.go schemaDoc.
+  chameleon): in a no-namespace document included/redefined into a schema with a
+  target namespace, an *unqualified* reference to a same-document component
+  resolves to the adopted namespace (a widely-implemented reading). A pure fallback
+  (exact name first, adopted-ns only on miss) for type/simpleType refs — cannot turn
+  a resolving ref unresolved. Recovered ipo3/5/6, ctE018/019 (type), schB1/2, schD11,
+  addB072, and their instances (+19). (Element/attribute/attributeGroup fallbacks
+  net-zero — traded FP for MI 1:1 — and the group-ref fallback crashed on a
+  chameleon-mediated group cycle, so only the type fallback was kept.)
+- src-redefine.5/6 (loader.go redefineSelfDerives): a redefined simpleType must
+  restrict, and a redefined complexType must derive from, the type it redefines.
+  Caught schJ2/schK2/schK3 (which the chameleon fix would otherwise have exposed).
+- Prohibited attribute is *absent*, not banned (attributes.go): a use="prohibited"
+  attribute present in the instance falls through to the attribute wildcard rather
+  than being hard-rejected (test71818/84188, attZ002).
+- Union member whiteSpace (simpletype.go): union members are validated with their
+  own whiteSpace (m.validate, not m.check) — a list member now collapses first
+  (stH005/007).
+- Explicitly-declared xml:* attribute is validated & counted present (attributes.go)
+  so ref="xml:base" use="required" works (adhocAddC001).
+- Attribute-group redefinitions applied before complex-type bodies flatten them
+  (loader.go: split group vs type redefinitions), and attributeGroups compiled in
+  topological (dependency) order (nested A->B->globalAtt now fully flattens):
+  attJ018, attgD005/020/022, and more.
+- Attribute wildcard UNION on extension (components.go wildcard.parts + content.go):
+  a type extending a base with both carrying an attribute wildcard now matches the
+  union of the two namespace constraints (ctH011/035, test328873b/c, sunData/008).
+- simpleContent restriction body: facets and attribute uses coexist — parseFacets
+  skips the attribute family (ctD035); and facets must precede attributes in the
+  child order (ctD042, an order the schema-for-schemas grammar didn't check).
+- simpleTypes compiled in dependency order (loader.go simpleTypeDeps) so a
+  restriction/list/union base is built before the deriving type — resolvePrim and
+  facet-applicability are then correct (schT3). A back-edge through a restriction/
+  list edge is rejected as a circular derivation (xsd023.e, simple018/019, elemM003);
+  a pure-union cycle is tolerated so the suite's valid stE110 is NOT rejected.
+
+Remaining frontier to the 38204 (98.20% exact) target is +15, now individually
+hard: chameleon attributeGroup/element refs gated behind an un-implemented
+src-redefine.7; the attributeGroup redefine-chain (ext->car) needing lazy
+expansion; typed keyref (key+ref both schema-typed); the content-model matcher's
+skip-wildcard assignment (QFE1700c2); and the restriction-derivation crux.
+
+--------------------------------------------------------------------------------
+M20 (98.3% attempt — frontier confirmed exhausted) — 2026-07-05
+--------------------------------------------------------------------------------
+XSD 1.0:  98.2% of ran (38189/38904)  — NO NET CHANGE vs M19  [exact 98.16%]
+XSD 1.1:  96.9% of ran (39368/40642).  NIST 100%; EN16931 0-mismatch; internal
+tests + go vet + gofmt clean; FP 156 / MI 558 unchanged.
+
+Target was 98.3% (harness ~38223 / exact 38243). FIVE distinct rules attempted;
+all net-negative or FP-raising and REVERTED (measure NIST+FP, revert on regression):
+- src-redefine.7 "attributeGroup redefinition needs exactly one self-reference":
+  WRONG — many valid attributeGroup redefinitions have zero self-refs (schT3/6/9/10,
+  schU1/2, complex016, attgC017). The real rule requires the no-self-ref case to be
+  a valid *restriction* of the original (attribute-group restriction validity — the
+  crux). FP 156->168. Reverted.
+- Chameleon group-ref fallback (with a new upaNullable cycle guard to stop the
+  earlier stack overflow): recovered schD10 (+2 FP) but resolved group refs in 9
+  invalid schemas (schL*/schN*/schO2) -> +9 MI, -7 pass. Reverted the fallback;
+  KEPT the upaNullable cycle guard (upa.go upaNullableSeen) as crash-safety — it
+  changes no current verdict but prevents a stack overflow on a cyclic content model.
+- UPA same-name/same-type relaxation (for mgZ005, a sequence b{2,2},b that is
+  deterministic by occurrence counting): the Glushkov automaton can't tell
+  sequence-counting from choice ambiguity, so relaxing accepted 12 genuinely
+  non-deterministic models the suite marks invalid (mgQ/mgS/particles*). FP 156->155
+  but MI +12, -11 pass. Reverted.
+- Typed key/keyref comparison via declared global-element type (for idL090 and the
+  sunData keyref cluster): raised FP 156->159 — canonicalising by declared type
+  breaks keyref matching when key and keyref fields resolve to different types
+  (idH027/idH031/idL051 keyrefs stop matching). The flagged typed-keyref landmine.
+  Reverted.
+- (Phase C skip-wildcard non-assessment for QFE1700c2 not attempted: requires the
+  content-model matcher to emit per-child particle assignments — a deep matcher
+  change, not the isolated fix the plan assumed.)
+
+Conclusion: the FP-safe frontier above the M19 result is EXHAUSTED. Every remaining
+catchable 1.0 test needs machinery that is out of scope or that trades FP for MI:
+attribute-group restriction validity (schM/ctE018/019), occurrence-counting UPA
+(mgZ005), matcher position assignment (QFE1700c2), consistent typed keyref
+(idL090/keyref cluster), or saxon leniencies that would explode MI (missing00x,
+addB193, simple003). 98.16% (38189) stands as the honest FP-safe ceiling for now;
+reaching 98.3% requires the restriction-derivation crux, which stays out of scope.
+
+--------------------------------------------------------------------------------
+M21 (the MI campaign: facet validity + QName + the restriction crux) — 2026-07-06
+--------------------------------------------------------------------------------
+XSD 1.0:  98.5% of ran (38324/38904)  — unsupported=646  skip=78   [exact 98.51%]
+XSD 1.1:  97.2% of ran (39504/40642)  — unsupported=890  skip=78
+NIST datatypes: 100.0% (22924/22924) throughout. EN16931 gate 0-mismatch; internal
+tests + go vet + gofmt clean. Net +135 pass (1.0), +136 (1.1) over M20. FP-SET
+INVARIANT UPGRADED AND HELD: the "FAIL exp=valid" SET (not just the count) was
+diffed after every rule — ZERO new entries all round (156 before, 156 after).
+MI (accepting invalid) dropped 558 → 423.
+
+TARGET 98.5% EXCEEDED (needed 38320+). This round was different in kind: all gains
+came from ADDING rejection machinery (MI recovery), the direction M20 showed was
+the only one left.
+
+Phase A (+26) — fractionDigits > 0 on integer-derived types (facets.go): integer
+  fixes fractionDigits {0, fixed}; any >0 in the family is invalid.
+Phase B (+17) — bounds narrowing completed (loader.go checkFacetConsistency):
+  cross-KIND bound comparison (maxInclusive=11 under maxExclusive=10 loosens),
+  cross-DIRECTION empty ranges (derived max below base min), builtin implicit
+  integer bounds (positiveInteger>=1, byte in [-128,127], ...) compared as
+  xs:integer, direct-builtin-restriction whiteSpace weakening (linkBase leaves
+  st.base nil, so the check never ran for e.g. normalizedString+preserve).
+Phase C (+10) — QName/NOTATION structural lexical validation (simpletype.go
+  validQNameLexical): (NCName ':')? NCName with a DELIBERATELY permissive NCName
+  (first rune letter/_, later runes name-ish or ANY non-ASCII — no Unicode-class
+  false rejections), "xmlns" prefix reserved. No prefix-in-scope resolution (the
+  FP-prone half stays off). anyURI subcluster skipped (murky expected verdicts).
+Phase D (+82) — Particle-Valid-Restriction substantially corrected
+  (restriction.go/structure.go):
+  * checkAllRestrictions now covers ANONYMOUS complex types (compiler.allCTs,
+    registered in parseComplexTypeInto) — inline restrictions were never checked.
+  * pointless-particle normalization as MONOTONE retry only (raw pass first, then
+    derived-side collapse; base-side collapse ONLY when the base reduces to a
+    wildcard -> the strict NSRecurseCheckCardinality path). Blanket normalization
+    in either direction traded FP for MI and was rolled back to this shape.
+  * Forbidden compositor pairs per the spec case table (choice:seq, all:seq,
+    all:choice, choice:all) now reject; seq:choice = MapAndSum mapping step (each
+    derived particle must restrict some base branch; sum step left conservative).
+  * NSRecurseCheckCardinality: a group restricting a wildcard compares its TOTAL
+    element-count range (particleElementBounds), not the group particle's occurs.
+  * RecurseAsIfGroup honors the BASE particle's occurs (a choice minOccurs>=2
+    cannot be restricted to a lone element).
+  * NameAndTypeOK completed: nillable narrowing, disallowed-substitutions
+    superset (@block), fixed value preservation (value-space compare).
+  * typeRestrictsFrom rebuilt: chain membership first (all varieties); named
+    complex-type chains walked (anyType root accepted); base-simple/derived-
+    complex walked through simpleContent; union member substitutability
+    (depth-guarded — pure-union cycles exist); cross-variety derivation rejected;
+    named list/union bases require chain membership; user-defined atomic bases no
+    longer fall back to the primitive hierarchy (xs:string is NOT a restriction
+    of a user restriction of xs:string).
+  * wildcard processContents may not weaken (strict > lax > skip).
+Phase E not needed — target reached inside Phase D.
+
+Mis-steps caught by the FP-set diff and immediately reshaped (not shipped): full
+particle normalization (8 FPs), b-side monotone retry (+26 MI), strict-name-check
+on typeRestrictsFrom without the anyType/union/anySimpleType escapes (8 FPs).
+
+Remaining 1.0 fails (~580): particles tail ~35 (Z 15, Dc 5, Ob 4 rest, Ha/Fb/T/
+If/Ik singles — deeper occurrence-sum/subst-group cases), regex reJ/reG 22 (out of
+scope), introspection 92 (out of scope), heterogeneous addB/test/Negative/elemZ/
+simple tail, gMonth/URI-3986/ST_facets FPs (shared-code, out of scope).
+
+--------------------------------------------------------------------------------
+M22 (the XSD 1.1 feature round: all / wildcards / xsi / ID-IDREF) — 2026-08-16
+--------------------------------------------------------------------------------
+Target was stated as "95.55% XSD compliance", clarified with the user to mean XSD
+1.1 over ALL applicable cases (unsupported counted as failures, since an
+unsupported case is one we cannot validate):
+
+XSD 1.1:  39716 / 41532 = 95.63% of applicable  (was 39504 / 41532 = 95.12%)
+          97.8% of ran (39716/40630) — unsupported=902 skip=78   [was 97.20%]
+XSD 1.0:  38340 / 38904 = 98.55% of ran (harness prints 98.6%)   [was 98.51%]
+NIST datatypes: 100.0% (22924/22924) both versions. EN16931 gate 0-mismatch;
+internal tests + go vet + gofmt clean. Net +212 pass (1.1), +16 (1.0).
+
+FP-SET INVARIANT HELD, in both versions, comparing FP *identities* rather than
+whole log lines: a message change (e.g. a schema now rejected for a different
+reason) renames an existing entry, which a raw line diff reports as new. The
+identity diff (strip " || msg", keep the test basename) showed ZERO new entries
+in 1.0 and 1.1 after every rule. 1.1 FP 417 -> 345, MI 721 -> 569; 1.0 FP 156
+unchanged, MI 423 -> 408.
+
+Why this round was available at all: the 1.1-only sets (All/Wild/Open/Override/
+Id/idIDREF/openContent/assert*) do not run under 1.0 (0,0,0,0 rows in
+xsd_byset_1.0.csv), so most of the work carried no 1.0 risk by construction.
+
+Phase A (+55) — XSD 1.1 relaxed xs:all:
+  * cos-all-limited's member-maxOccurs<=1 clause gated to 1.0 (schemavalid.go);
+    1.1 allows any bounds on members.
+  * matcher.all (content.go) now matches wildcard members and flattens a 1..1
+    group reference to another xs:all (allMembers, cycle-guarded); element
+    members are preferred over wildcards when both could take a child.
+  * 1.1 all-extends-all composes ONE all group with the union of both member
+    lists (effParticle), not sequence(base, ext) — an order the spec does not
+    impose. All.testSet 47 -> 86.
+Phase B (+83, of which +10 landed in 1.0) — 1.1 wildcard negation:
+  * @notNamespace / @notQName on xs:any and xs:anyAttribute (wildcard.notNS /
+    notNames / notDefNames), including ##local, ##targetNamespace, ##defined and
+    ##definedSibling (siblings resolved from the enclosing content model by
+    fillWildcardSiblings; ##defined expanded from the pass-1 global registry).
+  * wildcardMatches now takes the full QName (4 call sites) so notQName applies.
+  * Schema-representation rules that come with them: namespace+notNamespace are
+    mutually exclusive, notNamespace must be non-empty, an undeclared prefix in
+    notQName is an error, and a notQName member must lie in a namespace the
+    wildcard admits. ##definedSibling is not allowed on xs:anyAttribute.
+  * nsSubset extended to negated constraints (a larger exclusion list is the
+    SMALLER set, so the subset direction inverts) and the restriction check now
+    also covers the ATTRIBUTE wildcard (Attribute Wildcard Subset) — that clause
+    alone is worth +10 in 1.0. Wild.testSet 169 -> 242.
+  * Two FPs this created were fixed rather than shipped: a union of two negative
+    attribute wildcards keeps ##defined only when EVERY operand carries it
+    (wild083 — explicit names intersect naturally under "any operand matches",
+    ##defined does not); and a derived wildcard that no single base particle
+    subsumes is accepted when the base offers several wildcards whose union
+    covers it (coveredByWildcardUnion, wild049 — the general sum stays out).
+Phase C (+26) — the xsi:* attributes are implicitly declared in every schema
+  (seedXSIAttributes: type=QName, nil=boolean, schemaLocation=list of anyURI,
+  noNamespaceSchemaLocation=anyURI), so xs:attribute ref="xsi:type" resolves; and
+  a *declared* xsi:* attribute is now validated and counted present instead of
+  being skipped wholesale (the rule xml:* already had). Complex.testSet 49 -> 81.
+Phase D (+48) — xs:ID / xs:IDREF instance rules (cvc-id), which did not exist:
+  * Validate works on a shallow copy of the Schema carrying an idTable, so the
+    binding is per-call and concurrent Validate stays safe.
+  * ID binding semantics taken from the suite: an ID *attribute* binds its
+    element, an ID in element *content* binds that element's PARENT — which is
+    what makes id003.v01 (two <id>zzz</id> children of one node) valid while
+    id003.n01/n02 (the same value on two different elements) are invalid. One
+    element may bind the same value twice (1.1 allows several ID attributes).
+  * Sources covered: atomic ID/IDREF, list-of-ID and list-of-IDREF (each token),
+    a union member that the value validates against, and the value constraint of
+    an ABSENT attribute (default/fixed still contribute). Every one of these was
+    an FP the first cut produced and each was fixed, not gated away.
+  Id 61 -> 75, idIDREF 81 -> 99.
+Bug fixed on the way: a nil-pointer PANIC in derivesFrom (instance.go) on a typed
+  nil *SimpleType — a builtin's base assigned into a Type interface is non-nil.
+  It aborted whole groups (stZ055 in 1.0, complex005 in 1.1) so their tests were
+  never scored at all; isNilType now guards the chain walk. Uncovering it also
+  needed the anySimpleType rule: every type derives from xs:anySimpleType, which
+  resolves to a fresh unnamed wrapper per reference and so is never found by
+  identity/name — except xs:anyType, which sits above it (stZ056).
+
+Remaining 1.1 (~1816 of 41532): open content 111 (Open 41 fail + 70 unsup, plus
+openContent 10+18) and xs:override 34 — both still unimplemented and the largest
+single pots; regex back-refs 55+186 and introspection 92 (out of scope); assert/
+CTA unsupported ~116; Wild 36 (instance-level strict/lax assessment, EDC with
+type tables); All 24 (all-restriction subsumption: the occurrence-sum crux);
+Id 35 + idIDREF 35 (identity-constraint ref= form, UTF-16 source files — 93 suite
+files are UTF-16LE and fail to parse, a genuine xmltree gap left for a round that
+can measure its EN16931 blast radius).
+
+================================================================================
+M23 — XSD 1.0 to 99% of ran
+================================================================================
+Target (user's choice of denominator): 99% of RAN for XSD 1.0, i.e. pass/(pass+
+fail), with the 646 unsupported cases outside the denominator. Stated as an
+ABSOLUTE pass count (>= 38,515, aim 38,530) rather than a percentage, because
+under a ratio metric the cheapest way to "win" is to reclassify failures as
+ErrUnsupported and shrink the denominator. That was ruled out as a strategy up
+front; the one legitimate reclassification this round (5 cases, Phase A) is
+recorded below and deliberately NOT counted toward the target.
+
+RESULT
+XSD 1.0:  99.1% of ran (38531/38899) — unsupported=651 skip=78   [exact 99.05%]
+                                       was 98.5% (38340/38904)   [+191]
+          97.42% of ALL applicable (38531/39550), was 96.94%
+XSD 1.1:  98.2% of ran (39899/40625) — unsupported=907 skip=78   [+183, free]
+          96.07% of ALL applicable (39899/41532), was 95.63%
+FP 1.0 156 -> 37, MI 1.0 408 -> 331;  FP 1.1 345 -> 224, MI 1.1 569 -> 502.
+NIST 22924/22924 both versions. PANICs 0. ZERO new FP identities in either
+version after every rule. go vet / gofmt / go test ./internal/... / EN16931
+differential all clean.
+
+MEASUREMENT NOTE (worth keeping): XSD_ONLY=. matches every href in suite.xml, so
+it runs the WHOLE suite without rewriting tools/xsd_byset_*.csv — use it while
+iterating and a plain run only at the end. A full 1.0+1.1 run takes ~5s.
+Failures map back to sets by walking the CSV's fail column in order, since the
+harness logs each set's failures in CSV order.
+
+The premise that made this round cheap: the 1.0 loss was NOT a long tail. Six
+root causes covered 60% of it, and the biggest was one unresolvable reference.
+
+PHASES KEPT
+A  XLink built-in attribute catalogue (+87 1.0, +87 1.1)
+   common/xsts.xsd — the test suite's OWN schema — imports XLink with a remote
+   schemaLocation (http://www.w3.org/XML/2008/06/xlink.xsd) that we never
+   dereference, so `ref="xlink:type"` was unresolved and the schema rejected.
+   The harness then scores the schema test AND all 91 instance tests as failures
+   (xsd_test.go's `cerr != nil` branch): the entire introspection.testSet, 92
+   cases, on one missing attribute declaration. builtinXLinkAttr (structure.go)
+   supplies the ten XLink 1.0 globals on a lookup miss, exactly like the existing
+   builtinXMLAttr does for xml:lang/base/space/id. Measured before implementing,
+   by supplying the declarations from disk: 86/91 instances + the schema pass.
+   The other 5 are the five largest .testSet files, which hit the >600-child
+   content-model cap and become `unsupported` — the reclassification noted above.
+B  XML Name productions for \i, \c, xs:Name, xs:NCName, xs:NMTOKEN (+17, +17)
+   regex_class.go defined \i as ":A-Z_a-z" and \c as "-.0-9:A-Z_a-z", commented
+   as "ASCII subset", while the lexical checks used a \p{L}\p{Nl}… approximation.
+   Both now come from ONE pair of range tables (xmlNameStartRanges /
+   xmlNameCharRanges) rendered either as [][2]rune (class-subtraction reduction)
+   or as a class body (NameStartClass/NCNameCharClass/… used to build reNCName,
+   reName, reNmtoken). A value and a pattern can no longer disagree about what a
+   name character is.
+C  Internal DTD entity declarations in xmltree (+13, +13)
+   wgData/IRI/*.xsd build their RFC 3986/3987 patterns out of <!ENTITY>
+   declarations; encoding/xml does not process DTDs, so the whole IRI.testSet
+   died on "invalid character entity &URI;". entities.go extracts the internal
+   subset's general entities into Decoder.Entity. Two rules are load-bearing:
+   FIRST declaration wins (these files declare each entity twice — hand-written
+   form first, mechanically-generated form second, and the second yields
+   patterns like (a|+|-|.) that no processor accepts), and the replacement text
+   must have character references and the five predefined entities resolved
+   HERE, because encoding/xml inserts a Decoder.Entity value verbatim without
+   rescanning it (otherwise the pattern kept a literal "&amp;" and "&#37;").
+   Probed before implementing: 12/12 instances + the schema pass.
+D  Identity constraints compare in the VALUE space (+9, +11)
+   Keys were compared lexically unless the instance carried an xsi:type, so
+   xs:decimal "1.0" != "1.00". declaredTypeOf (identity.go) resolves a field's
+   type by walking from the document element down through each parent's content
+   model — NOT by recording types during validation, because key tables are
+   built at a scope element before its subtree is walked. Memoised per call.
+   Three corrections were needed before this was FP-free, each found by the FP
+   guard: fall back to the GLOBAL declaration when the chain breaks (a child of
+   a lax wildcard, e.g. idc006, otherwise types resolve on one side of a
+   comparison only); QNames compare by namespace, not prefix (p:abc == q:abc);
+   and a singleton LIST equals the same value held atomically (id022).
+E  (rejected — see below)
+F  Compile every supplied schema document (+3, +2)
+   Compile parsed docs[0] and silently ignored docs[1:]. Only 3 failures came
+   from the 168 multi-document groups, because the rest link by schemaLocation.
+   Two refinements were forced by measurement: skip a document already reached
+   through the include/import graph (collecting it standalone loses the
+   namespace it adopted there — cost 5 ipo* FPs), and skip one that fails to
+   parse rather than failing the schema (the UTF-16 files; that is our gap, and
+   before this change those documents were invisible anyway — cost 1 1.1 FP).
+G  cvc-elt.4.3 uses the DECLARED TYPE's @block, not only the element's (+21,+21)
+   ComplexType had `final` but no `block`, so `<xs:complexType block="extension">`
+   constrained nothing. Modelled it (with @blockDefault) and merged it into the
+   element's {disallowed substitutions} at the xsi:type check. Found via
+   sunData/combined/002 + 003a (8 cases); it fires across many more sets.
+H  Substitution blocked by the head's @block (+24, +24)
+   matchesElementName accepted any substitution-group member without consulting
+   the head. substitutionAllowed now bars substitution outright when the head's
+   block set (its own @block plus its type's) contains "substitution", and bars
+   a member whose type reaches the head's type by a blocked derivation method.
+   The elemT0xx cluster and much of elemZ/ElemDecl.
+I  cos-all-limited for 1.0 extensions (+9, +0)
+   An xs:all may only BE a content type, never sit inside a larger group; an
+   extension concatenates base and extension content, so an xs:all on either
+   side of a non-empty extension ends up nested. 1.0-only: 1.1's all-extends-all
+   is merged into one group by effParticle (M22). The ctH cluster.
+J  src-redefine shape rules (+4, +4)
+   No name may be redefined twice inside one xs:redefine, and a redefined
+   group/attributeGroup may reference itself at most once and only with
+   minOccurs = maxOccurs = 1 (the self-reference stands for the original).
+K  elementFormDefault / attributeFormDefault value vocabulary (+4, +4)
+   Only "form" was in enumAttrValues; the two *FormDefault attributes accepted
+   anything, so elementFormDefault="" and ="Unqualified" passed. The elemH
+   cluster.
+
+MEASURED AND REJECTED
+E  Tolerating references to absent components — REVERTED IN FULL.
+   14 FPs say an unresolved ref should not invalidate a schema (saxonData/Missing
+   6, ctE018/ctE019 4, schD10 2, xsd024 2), and XSD does describe schemas as
+   possibly incomplete. But every one of the five reference kinds is a NET LOSS
+   on its own, measured separately against the 1.0 baseline of 38466:
+     type 38461, group 38453, element 38460, attrgroup 38447, attr 38457
+     (attr also produced a new FP, ctE019.xml)
+   and all five together gave 38416 (-50). The suite is emphatic that src-resolve
+   errors are errors; the 14 FPs are the minority view. Kept out.
+   simpleType @final="extension" (saxonData/Simple simple003 says 1.0's
+   disallowing it is a spec bug, and XSD 1.1 allows it): +2 there, -3 elsewhere.
+   Net -1, reverted.
+
+NOT ATTEMPTED, AND WHY
+   reJ* (14 MI): \p{Lu}/\p{Ll}/\p{Lo}/\p{M} against astral-plane characters whose
+   category changed after Unicode 3.1. The suite marks these `status="queried"`.
+   Matching them needs a pinned historical Unicode table, not a rule.
+
+CORRECTION TO THE RECORD
+The claim in CLAUDE.md that the `unsupported` bucket is "mostly RE2 back-refs"
+is wrong, and was checked directly this round by classifying every xs:pattern in
+the suite and every unsupported group. Of 1.0's 646: ~276 are xs:NMTOKENS /
+xs:IDREFS / xs:ENTITIES — the built-in LIST types are simply missing from
+builtinAtom, which forwards to xpath.AtomTypeByName and only knows atomic types
+(this alone is all 246 NIST unsupported, every one a list/NMTOKENS case); ~175
+are XSD-INVALID patterns ()(, *a, a{37,17}, a**, \b, \z, \x41, [b-a], …) on
+which we bail instead of rejecting, and which are predominantly negative tests;
+~96 are identity-constraint XPath forms, XML 1.1 documents, and the >600-child
+content-model cap. Back-references are not a measurable part of it. Those three
+pots are the plan for an "of applicable" round — they are worth ~0.001pp each
+under the of-ran metric, which is why none of them was touched here.
+
+Remaining 1.0 (368 fails: 37 FP, 331 MI): Particles_w3c 32, Element_w3c 27,
+IdentityConstraint_w3c 26, Additional_w3c 25 (addB, judged heterogeneous since
+M21), Regex_w3c 24 (14 of them the Unicode-version cases above), ComplexType_w3c
+24, SimpleType_w3c 21, Simple 19, suntest 18, Schema_w3c 18, Attribute_w3c 17,
+Wildcards_w3c 16. The 37 FPs are
+now dominated by the absent-component group (14, deliberately out), the
+Particle-Valid-Restriction tail (6) and XML 1.1 source documents (5).
+
+================================================================================
+M24 — XSD 1.0 toward 99.5% of ran  (LANDED SHORT: 99.38%)
+================================================================================
+Target: 99.5% of ran for XSD 1.0, stated as an absolute pass count so the
+unsupported bucket could not be used as a denominator sink: pass >= 38,705
+(later 38,714, because every unsupported -> decided conversion raises the bar).
+
+RESULT — the target was NOT met.
+XSD 1.0:  99.4% of ran (38667/38908) — unsupported=642 skip=78   [exact 99.381%]
+                                       was 99.1% (38531/38899)   [+136, needed +183]
+          97.77% of ALL applicable (38667/39550), was 97.42%
+XSD 1.1:  98.5% of ran (40035/40634) — unsupported=898 skip=78   [+136, free]
+          96.40% of ALL applicable, was 96.07%
+FP 1.0 37 -> 36, MI 1.0 331 -> 205;  FP 1.1 224 -> 223, MI 1.1 502 -> 376.
+NIST 22924/22924 both versions. PANICs 0. ZERO new FP identities in either
+version. go vet / gofmt / go test ./internal/... / EN16931 all clean.
+Short by 47 cases. The honest read: ~40 rules were attempted, 24 kept, 16
+measured as net-negative and reverted. The plan predicted a ~70% landing rate on
+~250 clustered cases; the actual rate was ~55% on the rules and the clusters
+were smaller than their case counts suggested, because within one "cluster" the
+suite often splits between 1.0 and 1.1 or contradicts itself.
+
+KEPT (1.0 yield, then 1.1)
+  +17/+0   value constraints: ID-typed declarations may not have default/fixed,
+           and element-only content cannot carry one. BOTH are 1.0-only — the
+           first cut cost 1.1 41 cases and a large FP set before version-gating.
+  +12/+12  wildcard-matched attributes are ASSESSED against their global
+           declaration (strict and lax), not silently accepted.
+  +7/+7    identity-constraint child grammar: annotation first, exactly one
+           selector, fields after it, @name / @refer required.
+  +8/+8    keyref cross-checks: @refer must name a key/unique, and field arity
+           must match it; constraint names are unique.
+  +5/+5    xs:NOTATION is usable only through a restriction that pins it with an
+           enumeration — at element, attribute, list-item and union-member sites.
+  +11/+11  child grammar for xs:annotation (appinfo/documentation only),
+           xs:include, xs:import and xs:schema. This is what makes a top-level
+           declaration such as xs:notation invalid inside an annotation, and it
+           moved 8 cases out of `unsupported` into decided.
+  +4/+4    src-import: no empty @namespace / @targetNamespace, and a schema may
+           not import its own target namespace.
+  +7/+7    substitution-group affiliation honours the head's @final.
+  +6/+6    simpleType structure: a local one has no @name and a top-level one
+           must; a restriction/list takes its base by @base/@itemType XOR inline.
+  +7/+7    simpleType @final / finalDefault actually blocks restriction/list/union.
+  +8/+8    src-ct.2: simpleContent bases. A restriction needs a simple-content
+           complex base OR a mixed one with an emptiable particle (src-ct.2.1.2 —
+           without that clause cta0001 and the s3_12 family are false positives).
+  +2/+3    src-ct.1: a complexContent derivation needs a complex-type base.
+  +5/+5    ct-props-correct.4: an attributeGroup may not reintroduce an attribute
+           name the type already has.
+  +3/+3    a @ref carries no content: element/attribute/group/attributeGroup with
+           a ref may hold nothing but an annotation.
+  +2/+2    UPA for overlapping WILDCARDS (1.0 only — 1.1 lifted UPA for wildcards
+           entirely). Element-vs-wildcard overlap was tried and reverted: it costs
+           particlesJd005/Jf005.
+  +1/+1    a redefinition must have something to redefine.
+  +5/+5    the content of a NAMED xs:group carries no minOccurs/maxOccurs.
+  +3/+3    src-resolve: a QName may only reach a namespace the referring DOCUMENT
+           imports (types, then element/attribute/group/attributeGroup refs +2).
+  +5/+5    strict element wildcards require a declaration — but only for a
+           namespace we actually hold components for (knowsNamespace), otherwise
+           particlesB013/schA1/wildI005 are false positives. Same guard then let
+           the strict ATTRIBUTE rule back in (+2).
+  +5/+10   attribute wildcards INTERSECT (XSD §3.4.2 "complete wildcard") instead
+           of the last one winning. Two attributeGroups admitting disjoint
+           namespaces together admit nothing (sunData/combined 007/008).
+  +1/+1    a declaration's @name is whiteSpace-collapsed before use (addB193).
+  +2/+2    au-props-correct.2: an attribute ref may repeat its declaration's fixed
+           value but not change it, nor turn it into a default.
+  +3/+9    a use with no value constraint inherits the declaration's.
+  +3/+3    cvc-elt.5.2.2.1: an element with a fixed value and mixed content must
+           have no element children.
+  +4/+7    cos-ct-extends: an EXTENSION may not change mixedness (restriction may
+           — that variant costs cta0001/particlesL012/ctZ010h/addB150).
+  +0/+0    XSD 1.1-only built-ins (dateTimeStamp, dayTimeDuration, …) do not
+           resolve in 1.0; xs:anyAtomicType deliberately still does (simple050).
+  +0/+0    a schema document may not redefine itself (by path).
+
+MEASURED AND REVERTED (do not re-try without new information)
+  Substitution-group expansion in the restriction checker. checkAllRestrictions
+    SKIPS any type whose base declarations head substitution groups; expanding
+    each head into a choice of its members gets elemZ028b–f3 (+3) but makes
+    elemZ025 a false positive, because the derived side then compares an element
+    against a choice. Expanding BOTH sides fixes elemZ025 and breaks
+    elemZ027_e/f instead. This is the Particle-Valid-Restriction crux that also
+    resisted M21–M23; it needs a substitution-aware NameAndTypeOK inside
+    restriction.go, not a particle rewrite.
+  +INF rejected for float/double (float018/double018 want it invalid) — but
+    saxonData simple001/002 use it in a facet and expect VALID, and 1.1 allows
+    it outright. Net -6 with 4 FPs.
+  The legacy "--MM--" xs:gMonth form (gMonth002/004 want it valid): net -24,
+    because the NIST gMonth pattern tests require it to be invalid.
+  Mixedness equality for RESTRICTION as well as extension: -2, 10 FPs.
+  Nillable elements may not carry a fixed value (addB065): -5, 5 FPs — the suite
+    puts that error at instance level, not schema level.
+  A schema may not target the XSI namespace (attKa015): 0, 2 FPs.
+  Circular unions (simple017/020): 0 in 1.0, and ste110 became an FP.
+  Identity fields taking an absent attribute's default/fixed (idF016/017,
+    idG011/012): -2, 3 FPs (idH015/016, idK004) — keyrefs must not resolve
+    through a supplied default.
+  A local xs:complexType must not have a name: 1 FP (addB194).
+  complexContent extension from a simple-content base (addB033/036): +2 then +1,
+    but particlesZ031 is a false positive either way.
+  "Absent component" tolerance stays reverted from M23 (all five reference kinds
+    are net-negative individually).
+
+Remaining 1.0 (241 fails: 36 FP, 205 MI): Particles_w3c 28 and the elemZ028
+family — the Particle-Valid-Restriction crux, now the single largest pot and the
+one thing that would most move this number; Regex_w3c 24 (14 are Unicode-version
+cases the suite marks `status="queried"`); Element_w3c 16, Simple 14,
+IdentityConstraint_w3c 14, Additional_w3c 13, DataTypes_w3c 12 (every one of its
+lexical rules was measured net-negative this round), Wildcards 11, Schema_w3c 11,
+ComplexType_w3c 11. The 36 FPs are dominated by the 14 absent-component cases
+that are deliberately out.
+
+================================================================================
+M25 — XSD 1.0 to 99.5% of ran, QUERIED EXCLUDED  (TARGET MET: 99.51%)
+================================================================================
+Metric change (user decision): status="queried" (W3C-disputed) tests leave the
+denominator. The harness now parses <current status> on schemaTest/instanceTest
+(xsd_test.go: xsdCurrent, isQueried — LAST <current> wins; <prior> ignored) and
+counts them in a visible queried=N bucket, like skip, in both versions. 52
+queried tests are reached per run (82 exist in suite.xml-referenced sets; the
+"941" first measured was a script artifact). CSVs gained a queried column.
+
+Post-exclusion Step-0 baseline: 1.0 38647/38862 (99.447%), 215 fails; 1.1
+40015/40588, 573 fails. Bar: pass >= ceil(.995*38862) = 38668 (+21).
+
+RESULT — target MET with margin:
+XSD 1.0:  99.5% of ran (38672/38862) — unsupported=636 skip=78 queried=52
+          [exact 99.511%; bar 38668 exceeded by 4; fails 215 -> 190]
+XSD 1.1:  98.7% of ran (40048/40588) — unsupported=892 skip=78 queried=52
+          [was 40015; +33, zero regressions]
+FP identities 1.0: 33 -> 25 (8 fixed, ZERO new vs Step 0 — verified by comm
+against the Step-0 log); 1.1: 213 -> 201, zero new. NIST 22924/22924 both.
+PANICs 0. go vet / go test ./internal/... / EN16931 gate clean. (gofmt -l shows
+pre-existing drift in internal/xpath+xslt files untouched this round; xsd clean.)
+
+RECORD CORRECTIONS (trust these over M21–M24 notes)
+  - elemZ028c/d/f1–f3 were never Particle-Valid-Restriction cases: the suite's
+    own annotation says TSTF ruled them UPA violations. They fell to a
+    substitution-aware UPA, not to restriction.go. elemZ028b/e fell to plain
+    skip-guard removal + NameAndTypeOK routes.
+  - The particlesZ cluster is FOUR families: derivation-validity (Z013/14/18/21/
+    39), 1.0 pointless rules (Z023/24; Z028 fell via the MapAndSum version
+    gate), subst-aware UPA (Z033_e/f/g), and two accept-more bugs (Z001
+    RecurseAsIfGroup occurrence; V003 MapAndSum sum step).
+  - wildI009/010/013/014 were never wildcard-semantics gaps: checkAllUPA simply
+    skipped ANONYMOUS complex types (it iterated sch.types); iterating allCTs
+    fixed all four for free.
+  - All six "Negative" fails live in suntest.testSet (XSD_ONLY=suntest).
+  - xsi:schemaLocation instance-time loading (targetNS/name/nillable/typeDef/
+    ST_variety sun fails) remains a confirmed feature gap in instance.go — NOT
+    built this round (reserve phase not needed).
+
+KEPT (1.0 yield, then 1.1)
+  +1/+2    RecurseAsIfGroup wrapper-occurs reading, gated b.max==unbounded
+           (particlesZ001; the ungated form wrongly accepts Ha161/K006 in 1.0 —
+           the suite calls the rule "ambiguous" and grants only the repeatable-
+           base case).
+  +2/+2    MapAndSum occurrence-sum step as an ACCEPT route: seq(min,max){n
+           particles} sums to (min*n,max*n) vs the base choice range
+           (particlesV003 + .v).
+  +1/+1    UPA: a counted particle with min==max never offers a loop-vs-exit
+           choice — no loop-follow edge (mgZ005; unrolled it is deterministic,
+           entering edges already carry the cross-iteration first-set).
+  +1/+1    An attributeGroup's {attribute uses} contain no prohibited uses:
+           prohibited only acts as a DIRECT restriction child; via group ref it
+           neither adds nor erases (attZ015.v, TSTF-confirmed).
+  +1/+4    prohibited+fixed on an attribute: 1.0 keeps the fixed use alive
+           (attP031 schema valid + instance valid); 1.1 makes the combination a
+           schema error (bug 14245). Checked BEFORE ref-constraint inheritance,
+           so a prohibited ref to a fixed global stays prohibited.
+  +1/+3    skip-wildcard parse probe: when a named child fails validation but
+           SOME parse attributes its position to a processContents="skip"
+           wildcard, it is unassessed under that parse. Probe = re-match with
+           the child renamed to an undeclarable name; name must match only skip
+           (not lax/strict) wildcards. QFE1700c2 fixed, QFE1700c1.i kept
+           invalid (the naive name-set tolerance broke it), wild075/080 in 1.1.
+  +1/+1    Pattern/enum facets on a union restriction also hold against the
+           ACCEPTING MEMBER's whiteSpace-normalized value (simple085; raw
+           still accepted; NIST clean).
+  +2/+6    Substitution campaign, restriction side: restriction.go refactored
+           onto restrictionChecker{sch}; NameAndTypeOK route (a) name-equality
+           OR transitive substitution member (matchesElementName /
+           substitutionAllowed reused; equality first — abstract heads don't
+           match themselves; in 1.0 NOT granted inside MapAndSum, which is
+           exactly what keeps particlesZ028 invalid-in-1.0/valid-in-1.1);
+           route (b) a GROUP restricts an element when every leaf is
+           substitutable, on element-count bounds like NSRecurseCheckCardinality
+           (elemZ027a/b) — in 1.0 leaves must be PROPER members (a name-equal
+           leaf is the Forbidden seq:elt case, particlesHb011); recurseUnordered
+           gained substitution FAN-IN (several members map onto one base
+           element, occurs summed — saxon all221/225/226 would otherwise become
+           FPs, all216/223/224/227 bonus); skip guard at checkAllRestrictions
+           REMOVED (elemZ028b/e), attr-wildcard subset check re-enabled for
+           subst types (±0).
+  +6/+7    Substitution-aware UPA: element positions collide when their MATCH
+           NAME SETS intersect — own name (unless abstract) plus transitive
+           members honoring abstract + substitutionAllowed, expansion only for
+           the actual global head declaration (a local element sharing the name
+           is not a head). elemZ028c/d/e/f1/f2/f3; canary elemZ028a stays valid
+           because the c/d heads carry block="substitution".
+  +6/+3    checkAllUPA iterates allCTs (anonymous complex types were never UPA-
+           checked): particlesZ033_e/f + the whole wildI009/010/013/014 quad in
+           1.0; addB089 + Z033_e/f in 1.1.
+  +2/+2    e-props-correct.4 provable case: a union/list member type is never
+           validly derived from an atomic head type (particlesZ014/Z021).
+  +1/+1    derivation-ok-restriction 2.1.2: a redeclared attribute use's type
+           must satisfy typeRestrictsFrom vs the base use's (particlesZ013).
+
+MEASURED AND ADJUSTED IN FLIGHT (not standalone reverts)
+  - Ungated RecurseAsIfGroup wrapper-occurs: -1 in 1.0 (Ha161, K006) -> gated.
+  - Name-set skip tolerance (no probe): QFE1700c1.i regressed -> probe form.
+  - Route (b) with name-equal leaves in 1.0: particlesHb011 regressed -> gate.
+  - First subst-routes landing produced 3 NEW 1.1 FP identities (all221/225/
+    226) -> recurseUnordered fan-in added before keeping anything.
+
+Remaining 1.0 (190 fails; 25 FP of which 9 absent-component + 5 xv XML-1.1 are
+settled decisions): Particles_w3c 17, IdentityConstraint_w3c 14, Simple 13,
+Additional_w3c 12, Schema_w3c 11, ComplexType_w3c 11, SimpleType_w3c 10,
+Missing 9, DataTypes_w3c 9, Wildcards 7, suntest 6 (Negative — likely the
+xsi:schemaLocation gap), TargetNS 6. Identified-but-unbuilt pots for a next
+round: xsi:schemaLocation instance loading (~6–8), 1.0 pointless-particle rules
+Z023/Z024 (high FP risk, two-variant stop-loss designed in the M25 plan),
+particlesZ018/Z039 derivation-validity siblings, elemZ026/Z027_c are queried.
+
+================================================================================
+M26 — XSD 1.0 to 99.75% of ran  (TARGET EXCEEDED: 99.87%)
+================================================================================
+Metric change (user decision): the harness now honors the suite's version=
+attribute at ALL levels — testSet (12 saxon 1.1-only sets no longer run under
+1.0; CTA's xs:alternative tests are unsatisfiable for a 1.0 processor by
+construction), and schemaTest/instanceTest (51 tests; stZ073b.i had been
+COUNTED TWICE via its v1.0/v1.1 twin groups). Token-list semantics per
+xsts.xsd: "1.0 1.1" applies to both runs (this ADDED the previously-never-run
+vc014/VC entrants), "Unicode_4.0.0" applies to neither (removes reS17.v).
+
+Step-0 baseline after the fix: 1.0 38550/38718 (99.566%), 168 fails; bar =
+ceil(.9975*ran) = 38622 → +72 needed (ran drifted to 38722/bar 38626 as three
+unsupported cases became decided during the round).
+
+RESULT — target EXCEEDED with margin:
+XSD 1.0:  99.9% of ran (38671/38722) — unsupported=629 skip=77 queried=52
+          [exact 99.868%; bar 38626 exceeded by +45; fails 168 -> 51]
+XSD 1.1:  99.0% of ran (40190/40606) — unsupported=897 skip=76 queried=52
+          [was 40063 at Step 0; +127, zero regressions]
+FP identities 1.0: 23 -> 11; 1.1: 201 -> 167; ZERO new FP identities kept in
+either version (every violation found mid-round was fixed or reverted before
+keeping). NIST 22924/22924 both. PANICs 0. go vet / go test ./internal/... /
+EN16931 clean. QT3 side effect of the regex fixes: 86.6% -> 88.2%
+(19111/21671, +351) — no regression.
+
+RECORD CORRECTIONS (trust over M23–M25 notes)
+  - Absent-component tolerance is DEAD FOREVER: msData elemM002.xsd/mgP057.xsd
+    are byte-identical constructions to saxonData Missing/missing001.xsd with
+    OPPOSITE expected verdicts. The suite contradicts itself at identical
+    syntax; no discriminator exists. (Exposure list if ever reopened: elemM002/
+    M005, addA003/B009, idB005, mgO012/P057-P062, schG10, simple006,
+    stD009/019, stJ003 + attr/union kinds.)
+  - M25's "the six Negative fails live in suntest.testSet" was WRONG — suntest
+    contains none; they live across sunMeta CType/MGroup/Wildcard/ElemDecl.
+    suntest's actual fails were test.10.n/test.11.n/xsd007.e/xsd021.n02/xsd024.
+  - ctE018/ctE019/schD10/xsd024 were never absent-component cases: chameleon-
+    include REFERENCE bugs (chamAlt was applied to type refs only).
+  - gMonth002/004 had already left via the M25 queried exclusion.
+  - XmlVersions xv00x is unwinnable without a hand-rolled XML tokenizer
+    (encoding/xml's 4th-edition name tables reject U+0133; C0 char refs).
+    UTF-16 is a PURE 1.1 pot (~66 of the 1.1 fails; BOM pre-decode in
+    xmltree/charset.go is the next-round lever there).
+  - schU1 (disputed-test, bug 4135) holds a mutual-redefine cycle VALID while
+    ibm s4_2_4si01 holds the identical topology INVALID — the ibm pair stays
+    failed; only redefines targeting an already-PATH-collected document are
+    rejected.
+
+KEPT (1.0 yield, then 1.1) — 30 rules; every rule zero-new-FP in both versions
+  Step0     version-attr honoring (denominator: -172/-22 vs M25 shape)
+  +3/+3     vc:* conditional inclusion (minVersion/maxVersion/typeAvailable/
+            typeUnavailable/facetAvailable/facetUnavailable; Unavailable forms
+            retain on ANY unavailable — vc013's mixed list pins it; vc001/014/024)
+  +17ish/+  W1-A: dup group/attrGroup registration (attgB010, groupC001,
+            name00101m2, +attgB011 early); chamAlt for attribute/element refs
+            (ctE019+.v); subst-head type inheritance (typeDef00204m1_n);
+            NOTATION enum names a declared notation (name00101m2-Notation);
+            include requires schemaLocation (schB3); import-ns check before
+            visited-dedup via tnsByPath (schF6); two-ID-attrs 1.0 (ctM004);
+            type-derivation cycles (addB101); element IC-after-type +
+            simpleType-before-attrs order (idZ003, ctD041); 1.0 rejects
+            openContent/assert/alternative (complex018); local NCName checks
+            (elemP005); +xsd007.e bonus
+  +3/+5     W1-B: xsi:nil PRESENCE is the cvc-elt.3.1 error (elemO011,
+            nillable00201m2); untypedAtomic/1.1-builtin gate on instance
+            xsi:type; @refer reachability (idC019). [knowsNamespace("") was
+            tried, broke schA1 pre-hints, deferred into W4]
+  +7/+6     W1-C: xml:lang is xs:language (annotF001/003); hexBinary/base64
+            full lexical grammars incl. final quantum; year 0000 invalid in
+            1.0; cos-list-of-atomic (stJ019)
+  +14/+11   W1-D: wildcard processContents non-weakening in the lenient-absorb
+            branch + attr-wildcard subset (wildZ008/9, errC008/9);
+            namespace=""=empty list (wildZ010.v, TSTF); 1.0 all: no wildcards
+            (particles00104m1); cos-all-limited placement/occurs walk
+            (particlesEa025, mgA020); empty choice min>0 unsatisfiable
+            (complex022.n1); ONE-DIRECTIONAL mixedness: mixed restriction
+            needs mixed base + empty-extension DECLARING mixed over
+            element-only base (ctF006, ctZ010e, ctF008, complex025/6 — the
+            valid direction ctZ012b/complex001 protected; the reverted
+            equality form stays out)
+  +7/+7     W2-A: identity fields must be simple-typed via declaredTypeOf
+            (idF018, idG006, idK012, idZ015, +idZ010); keyref resolves ONLY at
+            its own scope element — key tables propagate upward, never down
+            (addB049.v, TSTF); field key values honor the type's whiteSpace
+            (idK003)
+  +7/+1     W2-B: local element sharing a head's name has no subst members —
+            content.go mirror of the M25 upa guard (elemZ021b/f, elemZ023);
+            1.0 ORDER-PRESERVING all:all (Recurse=recurseSeq) and
+            choice:choice (RecurseLax=recurseChoiceOrdered) mappings,
+            version-gated (particlesS002, T002, T009); rcase-NameAndTypeOK
+            excludes extension steps — typeRestrictsFromStrict
+            (particlesIj008)
+  +11/+12   W2-C: local-element value constraints checked at all (stZ070!);
+            union memberTypes with undeclared prefix (stE008); ur-type base
+            for simpleContent (stZ010→see remaining, the schema variant);
+            required→prohibited ban (attZ012); union facet gate on xsi:type
+            member route + member route counts as RESTRICTION for @block
+            (stZ073b, elemT074); e-props-correct.4 provable variety/kind
+            mismatches (stZ048/49, addB141); S4S no-text/no-foreign-children
+            outside appinfo/documentation (notatG001/2/3); complexContent
+            restriction/extension of simple-content bases (particlesZ018/Z039,
+            addB033/036 with the non-empty gate — particlesZ031 protected)
+  +16/+17   W3: src-redefine 6.2.2/7.2.2 — a no-self-ref redefined group must
+            validly RESTRICT the original (restrictionChecker reuse), a
+            redefined attributeGroup may drop nothing required, add nothing
+            (absent wildcard), weaken nothing, and must preserve fixed AND
+            attribute types (schM10, schZ006, schR5, schN7, schN12, schS1,
+            attgC028, attgZ002/3, mgO013, schM4 caught in-flight); THEN the
+            chameleon group/attrGroup repair (ctE018+.v, schD10+.v,
+            xsd024+.v00) — the 13 schL/M/N/O canaries held through both;
+            redefine of an already-path-collected document rejected
+  +11/+2    W4: xsi:schemaLocation/noNamespaceSchemaLocation instance-time
+            loading — recompile-with-hints via Schema.sourceDocs, non-fatal on
+            broken hints (targetNS00101m1_p, ST_targetNS00101m2_p); then the
+            strict-wildcard excuse redesign: 1.0 = no excuse (addB013, addB087,
+            ctL020 + sun Negatives), 1.1 keeps the unknown-namespace excuse
+            (tns5/ns5_1 protected), and the strict error is POSITIONAL — it
+            never fires when a lax/skip wildcard also admits the name
+            (wildI005 protected; extends M25's skip-probe philosophy)
+  +9/+10    W5 forbidden retries WITH NEW INFO, canary-gated: absent-attribute
+            defaults contribute to KEY/UNIQUE sequences only (idF016/17,
+            idG011/12, idZ011_a; canaries idH015/16+idK004 all keyref — M24's
+            counter-evidence was about keyref resolution; the value must take
+            the canonAtomic key form or defaulted "test" never collides);
+            extension-of-simpleContent gated on non-empty particle
+            (addB033/036; particlesZ031 protected); PRECISE per-declaration
+            no-xsi rule (attKa015, attKb018a; unqualified locals attKb018/
+            Kc018 stay valid — the M24 revert was the coarse whole-schema form)
+  +6/+6     W6 regex: ^/$ are literal in XSD patterns (escapeXSDAnchors on the
+            pattern-facet path only, fn:matches keeps anchors) (reZ001.v);
+            in-class \w = L∪M∪N∪S exactly, no underscore (reZ002); in-class \S
+            as explicit ranges (reG25); charClassSub needs a non-empty base
+            before -[ (RegexTest_469/470); negated-base subtraction algebra
+            ¬B-S=¬(B∪S), ¬B-¬S=S\B (RegexTest_430). NIST clean per rule; QT3
+            +351 as a bonus.
+  +4/0      W7: maxOccurs=0 particles pruned from UPA position sets — THE new
+            information that de-forbids element-vs-wildcard UPA (M24's
+            canaries particlesJd005/Jf005 are maxOccurs=0 wildcards); then
+            elt×wc collision with substitution-aware match names, 1.0 only
+            (particlesFb003, particlesZ033_g, addB121, addB153)
+
+MEASURED AND REVERTED
+  fixedEqual/attribute fixed whiteSpace honesty: -10 in 1.0, 14 FPs (attP011/
+    attLb004/schT3/stE066 family) — the suite RELIES on lenient collapsed
+    fixed-value comparison even for preserve types; attO008.i/stE063.i are
+    unwinnable without contradicting it. FORBIDDEN.
+  Redefine-cycle rejection via content-dedup: catches ibm s4_2_4si01s/bs but
+    schU1 (disputed-test) holds the identical topology valid. Reverted to the
+    path-based check only. The ibm pair stays failed. FORBIDDEN as-is.
+  knowsNamespace("")→true before hint loading existed (schA1) — superseded by
+    the W4 redesign, not an open item.
+
+Remaining 1.0 (51 fails; 11 FP identities): Missing 9 + missing*.n1 (suite
+self-contradiction, out); XmlVersions 5 (tokenizer); DataTypes 6 (4 anyURI
+lexical + float/double +INF forbidden); Particles 7 (Z023/24 pointless rules,
+Ik025/27 union-base identity, V005 sum-reject, Ig003.v block-chain,
+Z001.i net-zero); 5 sun Negatives + test.10/11.n + 2 CType (strict-wildcard
+positional tail); s4_2_4si01 pair + stZ033.i + schN10 (redefine chains);
+complex017 (EDC unimplemented); addB065.i/addB105.i/attO008.i/stE063.i (fixed-
+value leniency contradictions, forbidden); attC006, ctO004, groupH021v,
+idJ016, stZ010, wildZ013, s3_10_1ii09i (metadata bug), test93160.i. Next-round
+levers: EDC; anyURI RFC-2396 grammar; UTF-16 BOM pre-decode (pure 1.1, ~66);
+xs:openContent (1.1, ~111).
+
+================================================================================
+== M27 INTERIM CHECKPOINT (2026-09-05) — 1.1-to-99.2% round, PAUSED mid-W3 ====
+================================================================================
+Target: XSD 1.1 >= 99.2% of ran (pass/(pass+fail); unsupported+skip+queried
+excluded). Bar at current denominator: ceil(0.992*40606) = 40282.
+
+STATUS: TARGET MET AND EXCEEDED at this checkpoint. All invariants green.
+  XSD 1.1:  99.3% of ran (40324/40606) — 282 fails, unsupported=897, +134 vs M26
+  XSD 1.0:  99.9% of ran (38676/38724) — 48 fails, unsupported=627, +5 vs M26
+  Margin over bar: +42. FP identities 1.0: 11 -> 11; 1.1: 167 -> 124; ZERO new
+  FP identities kept anywhere. NIST 22924/22924 both. EN16931 PASS. go vet +
+  go test ./internal/... clean. CSVs regenerated. QT3 untouched (internal/xpath
+  had zero edits this round — the regex fix lives in internal/xsd).
+
+Step 0 (harness, test-only): XSD_ERR labels now carry the doc href for
+exp=invalid fails too (" <<href>>"); identities/counts byte-stable. The six sun
+"Negative" fails are CType/baseTD x2 + ElemDecl x3 + Wildcard/psContents x1;
+the three "schemaTest" fails are wgData/sg upa/upa2/edc.
+
+KEPT (16 rules, chronological; 1.1 delta then 1.0 delta):
+  +30/ 0  W1.1 regex "chained range in char class" is a 1.0-only rule
+          (validateXSDRegex/validateCharClass take Version; 1.1 App G reads
+          [a-c-1-4] as literal '-'; Go regexp already matches 1.1 semantics).
+          reF20-23, reG26-33, reH19-21 schema+instance. 1.0 Regex still 100%.
+  + 6/ 0  W1.2 circular attributeGroup legal in 1.1 (DFS gated Version10;
+          flatten order already cycle-safe). attgC010/a/b, attgC020/031, attgD015.
+  + 3/ 0  W1.3 simpleType @final="extension" legal in 1.1 + cos-ct-extends 1.5
+          enforced on simpleContent extension of a simple base (both halves
+          together; simple004 canary held). simple003 pair, simple005.
+  + 5/ 0  W1.4 vc:* completion: root-element exclusion (stripVersioning keep()
+          return was DISCARDED) + 1.1 lexical checks (minVersion decimal,
+          typeUnavailable QName/prefix). vc006/vc007 n-side, vc901/902/904/905.
+          NOTE: vc007 trio (xsd/v1/n1) honestly moved fail->unsupported — they
+          now reach the real simpleType xs:assertion gap. Recovering them =
+          implement the assertion facet (candidate, not landed).
+  +14/ 0  W1.5 xpathDefaultNamespace resolver: ##targetNamespace/##default-
+          Namespace/##local expansion + inheritance from xs:schema + per-
+          selector/field resolution (xsd11.go parseAssert/parseAlternatives,
+          identity.go). assert008/008a/020/021, id050-053, d4_3_15v21/25/27,
+          ibm assertions ns1/test11.
+  + 4/ 0  W1.6 ID/IDREF collected through list-of-union items (noteIDValues
+          recurses per token). id006/id007 n-pairs.
+  +10/+3  W1.7 misc: complexType/complexContent @mixed conflict (src-ct.1,
+          1.1); idJ016 whitespace-inside-QName in identity XPath (raw-text
+          check before the collapse — BOTH versions); wild038 notQName lexical
+          QName; openContent S4S minimal (allowed-children entry + mode/any
+          consistency incl. defaultOpenContent-no-none; open036, s3_4_1si01s/
+          si03s); xs:all maxOccurs=0 legal in 1.1 (mgO001/018).
+  +18/ 0  W2.1 All Group Limited is STILL LIVE in 1.1 (checkAllPlacement/
+          checkAllLimited were wrongly 1.0-gated): 1.1 branch = all may be the
+          whole content type (min,max in {0,1}); inside an all only a 1..1 ref
+          to another all group (all008-011); all x non-all extension invalid
+          both directions (ctH013/019-023, all309-312, particlesFb002); all-
+          extends-all requires equal minOccurs (all313); never inside seq/
+          choice (mgA020, particlesEa025). 1.0 branch byte-identical.
+  + 8/ 0  W2.2 wildcard-vs-wildcard UPA still applies in 1.1 (upa.go skipped
+          ALL wildcard UPA; 1.1 only made wildcards weak vs ELEMENTS) + notNS-
+          aware overlap refinement (any-with-notNamespace vs finite list).
+          wildI009/010/013/014, all243, all305, particlesZ022, addB177 (!) —
+          addB177 was never an elt-x-wc case.
+  + 8/+1  W2.3 ##definedSibling: moved to a post-pass after substitution
+          groups are built + closes over substitutable elements. sns1, s1sn,
+          sns1a, snn1a, wild071 x2, wild072 — AND s3_10_1ii09i in BOTH runs.
+          RECORD CORRECTION: M26 called s3_10_1ii09i "suite metadata bug,
+          unwinnable" — wrong; it is a definedSibling substitution case.
+  + 6/ 0  W2.4 undeclared xml:* attributes no longer bypass a present 1.1
+          attribute wildcard (notQName/##local can reject them); xsi:* stays
+          always-permitted; no-wildcard leniency kept. wild027/045/046/055/056.
+  + 2/ 0  W2.5 ##defined survives attribute-wildcard INTERSECTION (M26's
+          intersectWildcards dropped notDefined/notDefNames). wild058/059.
+  + 1/ 0  W2.6a QName-level half of Attribute Wildcard Subset: base notQName
+          names must stay excluded, and ##defined cannot be traded for a fixed
+          list (wild057). Element-side name subset (wild048) NOT attempted.
+  + 7/ 0  W3.1 multi-head substitutionGroup (1.1 QNameList): ElementDecl.
+          substGroups []xname; registration/cycles/type-inheritance (first
+          head) updated. all242/303, subsgroup903, subsgroup001.v x2,
+          s2_2_2v01/v02.
+  + 1/ 0  W3.1b e-props-correct.4: DIRECT-builtin member vs direct-builtin
+          head with different XSD primitives (via xsdPrimitiveOf — raw
+          resolvePrim does NOT collapse builtins and broke ipo*/subsgroup002/
+          wild064/065 in two attempts before the collapse fixed it).
+          s2_2_2si02s.
+  + 7/+1  W3.2 ur-type rules: simpleContent RESTRICTION from anySimpleType
+          content invalid (1.1 always; 1.0 when facets present — stZ010 was
+          the 1.0 fail; inline <simpleType> child legitimizes, s3_12v04);
+          anySimpleType/anyAtomicType not a union member (1.1, stE053);
+          anyAtomicType not a restriction base (1.1, simple051); complex-
+          Content extension of simpleContent base invalid in 1.1 even with
+          empty particle (particlesZ031). stZ007/047/055 too.
+  + 3/ 0  W3.3 cos-no-circular-unions in 1.1: union edges are hard cycle
+          edges under 1.1 (1.0 keeps the pure-union tolerance for stE110).
+          simple017/020, s3_16_2si01s/si05s. Documented price: ste110.i -1
+          (its schema twin is queried-excluded; accepted up front).
+
+MEASURED AND REVERTED (in-place, never committed): two broader forms of W3.1b
+(atomic-prim mismatch via bare resolvePrim, then xsNS-named guard) — both broke
+ipo3-6/ipo_1/ipo_2 (redefine chains) + subsgroup002 + wild064/065 with 19 new
+FP identities; the direct-builtin + xsdPrimitiveOf form is the safe one.
+
+REMAINING per plan (majestic-wiggling-kay.md), not yet attempted: W3.4 local
+@targetNamespace (TargetNS, ~+6), W3.5 none left; W4 identity/datatypes: IC
+@ref (+18), explicitTimezone facet family (+24), zone206 value-space keys (+2),
+IC-skips-unassessed (+6), xs:ENTITY/NDATA (+5); W5 defaultAttributes (+16)
+then UTF-16 BOM pre-decode (+56 gross, two-step, land AFTER defaultAttributes);
+W6 stretch (CTA rules/inherited attrs, assert subtree isolation, EDC pass,
+openContent full matching ~+38 + ~85 unsupported, xs:override XL ~+24); W7
+high-risk tail. Next census pots and the forbidden list are in the plan file
+and M26 section; scratchpad ledger/baselines were session-local (re-derive
+fails/id baselines from fresh runs when resuming — protocol in the plan).
+
+================================================================================
+== M28 (2026-09-06) — XSD 1.0 honest maximum: 99.987%, 5 fails left ==========
+================================================================================
+Target: 100% of ran (user request). Full classification of all 48 remaining
+fails against the CURRENT (2026-04) suite proved 4 to be accepted-status suite
+self-contradictions — exact 100.0% is unreachable by a deterministic processor.
+USER DECISION: honest maximum, no metric change, contradictions stay failed.
+
+RESULT — the ceiling was reached EXACTLY as computed:
+  XSD 1.0:  99.99% of ran (38718/38723) — 5 fails, unsupported=628  [+42 net]
+  XSD 1.1:  99.4%  of ran (40359/40606) — 247 fails                 [+35 free]
+  FP identities: 1.0 11 -> ZERO (every remaining fail is exp=invalid);
+  1.1 124 -> 117. ZERO new exp=valid FP identities kept anywhere. NIST
+  22924/22924 both. EN16931 PASS. vet + internal tests clean. QT3 unchanged
+  within its ±3 run-to-run noise (measured 19108-19113 across identical
+  binaries — record this: QT3 comparisons need repeated runs from here on).
+
+THE REMAINING FIVE (documented floor, all status="accepted"):
+  particlesZ001.i   its own schemaTest (exp=valid, passing via the M25
+                    wrapper-occurs reading) is the counter-test; net -1 to "fix".
+  particlesZ023/Z024/groupH021v  choice-drops-branches shapes; refuted by the
+                    version-less exp=valid twins particlesT003/T005/T006 (same
+                    mapping with element branches). No derivable 1.0 clause.
+  idB005            the accepted price of the Missing family: its only
+                    mechanically detectable defect is a case-typo type ref
+                    (keyinfo vs keyInfo); schema-wide @id uniqueness is refuted
+                    by ~20 exp=valid cross-document-@id tests.
+
+RECORD CORRECTIONS (each verified against current suite metadata):
+  - elemM002 has been status="queried" since 2015 (bug 29085): M26's
+    "absent-component tolerance DEAD FOREVER" was void. The M26 exposure list
+    resolved item-by-item: mgP057/mgO012 die on the top-level-group-ref S4S
+    rule, addB009 on src-resolve, elemM005 on ref/type exclusion, addA003 on
+    NCName, stD009 on an undeclared prefix, mgP059-062 on the xs:schema child
+    grammar, ctZ002 on the xsNS gate. Only idB005 remained (taken as price).
+  - Disputed census: only SIX last-<current> disputed entries suite-wide
+    (schU1 disputed-test 4135; idH031/idK011/idL076/idL077/stZ073b.i
+    disputed-spec 4060/4065), all passing. Earlier "24+25" counts included
+    <prior> rows.
+  - M24's ±INF revert was obsolete: Simple.testSet is version="1.1" at SET
+    level, the ibm +INF twins are 1.1 at GROUP level — float018/double018 were
+    the only 1.0-applicable +INF tests.
+  - M26's fixed-value whiteSpace "FORBIDDEN" was an artifact of the blunt
+    raw-collapse implementation; the suite itself encodes the discriminator
+    (stE063 vs stE065/stE066; attO007 vs attO008; errC001 anySimpleType
+    preserve). The value-space design landed with all 15 canaries green.
+  - M26's s4_2_4 "FORBIDDEN as-is": topologies are NOT identical to schU1 —
+    the ibm pair redefines the SAME component on both arcs (self-referential,
+    non-well-founded), schU1's arcs are disjoint. Discriminator landed.
+  - M24's addB065 revert note ("the suite puts that error at instance level")
+    was correct and is now implemented as such (cvc-elt.3.2.2).
+
+KEPT (17 rules; 1.0 delta then 1.1):
+  + 3/+ 3  nilled elements still get attribute assessment (cvc-type 3.1.1/2)
+           + nilled-with-fixed is invalid (cvc-elt.3.2.2; addB065 de-forbidden,
+           typeDef01201m/01202m).
+  + 2/  0  "+INF" excluded from float/double under 1.0 (yearZeroOK-style hook).
+  + 1/+ 1  derivationMethodsTo completes user chains onto the BUILTIN ladder
+           (facet-less restriction of xs:string IS a restriction step;
+           disallowedSubst00501m2) + typeIdentityEqual treats two bare refs to
+           the same builtin as one type.
+  + 2/+ 2  complex types compiled in dependency order (simpleContent restriction
+           before its base saw a half-built type; baseTD00101m).
+  + 1/+ 2  isNCName strict for ASCII, Nl (U+3007 etc.) legal as first char
+           (attC006; 1.1 bonus open039).
+  + 1/  0  derivation-ok-restriction 2.2: a NEW attribute use must be admitted
+           by the base attr wildcard (ctO004; 1.0-gated pending 1.1 local-
+           targetNamespace interplay).
+  + 0/+ 6  @targetNamespace on LOCAL element/attribute declarations (1.1;
+           only-inside-restriction rule; the whole TargetNS set. The open M27
+           W3.4 leftover, landed here).
+  + 2/+ 3  a complexContent RESTRICTION does not inherit the base attribute
+           wildcard (sun combined/008 test.10/11; 1.1 bonus open044.n2).
+  + 1/  0  1.0 Attribute Wildcard Union expressibility (errata E1-10):
+           not(X) ∪ list-with-absent-sans-X has no 1.0 form (wildZ013;
+           wildZ013a twin protected).
+  + 1/+ 1  EDC re-checked on the POST-EXTENSION effective particle (complex017).
+  + 1/+ 1  MapAndSum occurrence: the summed range (min*n, max*n) is THE rule
+           for seq->choice, n = len(particles) (particlesV005; V001-V020
+           reproduced by the formula).
+  + 1/+ 1  a plain complexType is an implicit RESTRICTION of xs:anyType in
+           derivationMethodsTo (particlesIg003 block-chain).
+  + 4/  0  xs:anyURI RFC-2396 grammar under 1.0 (new validAnyURI10 in
+           internal/xsd only; collapse-first; notation/@public excluded —
+           xs:token per errata; <>"/non-ASCII pre-escapable per XLink 5.4;
+           anyURI_a001/a003/b004/b006; NIST anyURI corpus unharmed).
+  + 4/+ 4  fixed-value comparison in the VALUE SPACE at instance time only
+           (cvc-attribute.4 / cvc-elt.5.2.2.2): both lexicals normalized with
+           the governing type's whiteSpace — union: the ACCEPTING member's;
+           lists item-wise — schema-level comparisons untouched (attO008.i,
+           addB105.i, stE063.i, test93160.i; canaries attO006/007/009/011,
+           attP010-019, stE065/066, errC001, addB104, attLb004, schT3 green).
+  + 8/  0  ABSENT-TYPE TOLERANCE (the Missing family): a dangling element/
+           attribute @type or list @itemType in a reachable non-xs namespace
+           binds an absentType sentinel; the error fires at VALIDATION time
+           when the declaration is used (SimpleType.check). restriction/
+           extension @base and every @ref stay compile-fatal. 1.0-gated (1.1
+           carries counter-tests s3_12si02s/simple006). +9 −1 (idB005).
+  + 2/+ 2  E2: inline anonymous simpleTypes marked `declared` — a facet-less
+           inline restriction of a builtin no longer aliases the bare builtin
+           reference in typeRestrictsFromDepth's final fallback
+           (particlesIk025/Ik027; Ik026 held).
+  + 2/+ 2  mutual-redefine discriminator: a redefine cycle that redefines the
+           SAME {kind,name} on both arcs is src-redefine.2-invalid
+           (s4_2_4si01s/bs); disjoint arcs (schU1) stay tolerated. Implemented
+           at the content-dedup point in collect() via redefTargets.
+  + 2/+ 2  chained redefines applied INNERMOST-FIRST with application-time
+           snapshots (outermost wins for the shared component; stZ033.i enum
+           chain, schN10 duplicate-member UPA). Full redefine canary list held.
+  + 5/+ 5  XML 1.1 instance documents (saxon XmlVersions): xmltree.
+           ParseLenient11 pre-passes — C0 character references to PUA
+           sentinels restored post-parse, and error-driven substitution of
+           5th-edition-only name chars (U+0133) via ASCII name-safe tokens,
+           applied ONLY to runes the 1.1 Name production allows (the .n twins
+           stay invalid). Used by the XSD schema/instance path exclusively;
+           xmltree.Parse (and thus a future fn:parse-xml) keeps strict 1.0
+           behavior — an ungated first cut cost QT3 5 expected-error cases.
+
+MEASURED AND ADJUSTED IN PLACE: W3.1b-style prim comparisons must go through
+xsdPrimitiveOf (raw resolvePrim does not collapse builtin subtypes); the
+e-props route needed the direct-builtin guard (ipo*/subsgroup002/wild064/065
+canaries); dor-2.2 needed the 1.0 gate (1.1 target003 declares INTO the
+wildcard's namespace via local targetNamespace); the absent-type tolerance
+needed the 1.0 gate; PUA runes are not 4e NAME chars (ASCII tokens instead).
+
+Remaining 1.1 (247 fails): the M27 plan's W4-W6 remain the pots (IC @ref +18,
+explicitTimezone +24, defaultAttributes +16 then UTF-16 BOM ~+50 net,
+openContent full ~+38 + ~85 unsupported, xs:override ~+24, CTA/assert/EDC).
+
+================================================================================
+== M29 (2026-09-06) — XSD 1.1 to 99.7%: landed 99.82% ========================
+================================================================================
+Target: 1.1 >= 99.7% of ran (metric as M25-M28). Baseline 40359/40606 (247
+fails); the moving bar ended at ceil(0.997*40694) = 40572.
+
+RESULT — TARGET EXCEEDED, margin +49:
+  XSD 1.1:  99.82% of ran (40621/40694) — 73 fails, unsupported=809  [+262 net
+            incl. 88 unsupported->decided; fails 247 -> 73]
+  XSD 1.0:  UNCHANGED at its proven ceiling 38718/38723 (5 documented fails).
+  FP identities 1.1: 117 -> 34; 1.0 stays EMPTY. ZERO new FP identities kept.
+  NIST 22924/22924 both. EN16931 PASS. vet/internal tests clean. QT3 x3:
+  19108/19112/19110 — inside the documented ±3 noise band (the new
+  xpath Context.RootlessTree flag defaults off and is QT3-neutral).
+
+KEPT (chronological; 1.1 delta):
+  +18  W1.1 identity-constraint @ref (1.1): ref XOR name/refer, annotation-only
+       body, same-kind, forward refs resolved in checkKeyrefs by copying the
+       referenced definition into the placeholder (id040/043/044, ibm s2_2_4;
+       + the @refer-with-@ref exclusion s2_2_4si07 found by measurement).
+  +24  W1.2 explicitTimezone family: instance facet check (9 date/time prims,
+       list items via the check chain), value vocabulary + applicability,
+       restriction narrowing (required/prohibited pin), generic facet @fixed
+       parsing + fixed-facet preservation, and xs:dateTimeStamp as a synthetic
+       {explicitTimezone required, fixed} builtin (zone*, d4_3_16*, d3_4_26/28,
+       cta0040/41).
+  + 2  W1.3 identity keys on the TIMELINE for timezoned date/times (UTC-
+       normalized key form, no-tz partition, xs:time 24:00->00:00 SAME-day
+       mapping — zone206.v01/v02 vs .n02's ±14:00 day-shift stays unequal).
+  + 5  W1.4 xs:ENTITY values must name DTD unparsed (NDATA) entities —
+       xmltree.UnparsedEntities harvest + noteIDValues enforcement, value
+       constraints included (id017/019/020).
+  +11  W2.1 defaultAttributes/defaultAttributesApply: per-document scope,
+       merge in parseComplexTypeInto with the ct-props-correct.4 duplicate
+       rule (s3_4_2_4si02/si03), doc-level src-resolve for the group ref
+       (open203/204).
+  +56  W2.2 UTF-16 BOM pre-decode (xmltree DecodeBOM before xml.NewDecoder;
+       utf-16 labels become pass-through; entity harvest post-decode) wired
+       into ParseLenient11 — fn:parse-xml/Parse stays strict. Exposed vacuous
+       passes got their REAL rules: defaultAttributes duplicates, local
+       @targetNamespace barred over an xs:anyType restriction (s3_2_3si05/08),
+       @targetNamespace-with-@ref (si10), and @targetNamespace on locals is
+       1.0-ILLEGAL outright (restoring the 1.0 floor).
+ +127  W3 xs:openContent COMPLETE (~35 fail-flips + 92 unsupported decided):
+       defaultOpenContent parse unblock (the single missing pass-1 case);
+       openContent component + per-document default (appliesToEmpty; empty =
+       empty particle NOT mixed — open012 vs open013); interleave = position
+       closure in the matcher (memo-safe), suffix = end-set + wildcard tail;
+       open wildcard joins the per-kid assessment buckets; GREEDY left-to-right
+       element-beats-open-wildcard attribution (open025 takes the repeat,
+       open047 leaves the maxed-out name to the wildcard); extension UNIONS
+       wildcards and mode "none" on an extension step does NOT cancel the
+       base's (open031.v4) while restriction does not inherit at all
+       (open014); derivation validity (restriction narrows unless the derived
+       particle is EMPTY — open020/021/022; extension may not narrow
+       interleave->suffix); S4S: openContent child grammar, occurrence attrs
+       banned on the open xs:any (bug 15618, open048), defaultOpenContent
+       must precede component declarations (s3_4_1si02s); 1.1 empty content
+       admits NO character data, whitespace included (open012.n3).
+  + 6  W4.1 identity constraints skip unassessed content: declarative
+       ancestor-step filter mirroring validateChildren's attribution order
+       (skip beats the global-declaration fallback) — wild101/102/103.
+  +10  W4.2 CTA: @inheritable boolean S4S + USE-level override (cta0012
+       pinned the use-wins rule), restriction {inheritable} agreement,
+       alternative-type derivation post-pass (e-props-correct.5, cta9008err +
+       s3_12si03s), and INHERITED ATTRIBUTES for xs:alternative tests only
+       (nearest-ancestor values of inheritable uses; cta0009, cta0014).
+  + 3  W4.3 assert tree semantics: DETACHED comment/PI-free copy per
+       §3.13.4.2 + Context.RootlessTree in xpath ('/' raises XPDY0050 on a
+       rootless tree; a dynamic error means assertion NOT satisfied) —
+       assert023, d4_3_15ii14/15 fixed AND ii31/ii32 preserved (their '/'
+       tests only pass through the error path; the old attached-tree pass was
+       accidental).
+  + 7  W4.4 EDC 1.1 over the effective particle: substitution members
+       (ABSTRACT included, bug 4337) + {type table} arity in the signature
+       (wild078/081) + abstract members in 1.1 UPA match-name sets — the wg
+       upa/upa2/edc trio and subsgroup901.
+
+MEASURED AND REVERTED: the blunt wildcard-vs-local-declaration EDC clause
+(-38: valid schemas routinely pair ##any with local declarations); the
+suffix->interleave downgrade for extension-inherited open content (open027.n1
+must stay invalid in its own group); a first non-greedy element-beats-wildcard
+probe (open047.v3).
+
+Remaining 1.1 (73): xs:override (24, the XL reserve, unbuilt), open044/045
+n-side (defaultAttributes x redefine/override scoping), wild063/068/069/078?/
+079 CDT-EDC fine rule, assert016 (undiagnosed)/assert022 (typed XDM),
+cta9001err/cta0043, all-subsumption FPs (all231/232/234/237), the 1.1
+particle-subsumption cluster (particlesHa161/Hb008/addB118/wild050,
+simple014/015 — HIGH risk, automaton-inclusion design), design-locked
+strict-wildcard family, all308 (disputed), ste110.i (accepted price),
+s3_4_1si06s (extension-wildcard union question), sun psContents.
+
+================================================================================
+M30 — "100% XSD 1.1" round (2026-09-06). Target: user asked for 100%; per the
+M28 precedent the deliverable is the HONEST MAXIMUM (no metric change,
+residual contradictions stay failed). LANDED: 1.1 40694/40698 = 99.990%
+(4 fails), 1.0 improved to 38719/38724 = 99.987% (one formerly-unsupported
+regex pattern now decided AND passing; the SAME 5 fails as M28 — floor held).
+NIST 22924/22924 both. Zero new exp=valid FP identities in either version at
+every step. 24 rules kept, 0 reverted (a first: every planned rule landed).
+
+Census correction: the M29 fail list's "assert016" was really assert018 — four
+Assert groups (016/017/018/019) share the instance href
+../saxonData/Assert/assert016.v1.xml and the harness prints the href for
+exp=valid instance fails. assert016 itself passed all along; assert018 and
+assert022 both needed typed XDM (below). Lesson: dedupe fail labels by TEST
+name, not instance href, when several groups reuse one instance.
+
+W1 — scan-verified singles (+19):
+  + 3  xml:* with NO attribute wildcard rejected (1.1; attributes.go) —
+       open044.n1, open045.n1/n2. The census had assigned these to override;
+       they were the lenient wc==nil skip all along.
+  + 3  cos-valid-default.2.1 un-gated to both versions (element-only content
+       admits no value constraint; the "1.1 relaxed this" comment was wrong —
+       1.1 only dropped the ID rule) — elemD004, elemG003/004.
+  + 2  XSD regex: an unescaped '-' may be NEITHER charRange endpoint under
+       the greedy grammar (validateCharClass, both versions) — simple041
+       [--z], simple042 [!--]. Side effect: one previously-unsupported
+       pattern became decided+passing in BOTH versions (1.0 floor moved to
+       38719/38724, same 5 fails).
+  + 2  Root-content IDs bind NOTHING (idBindingParent returns nil for a
+       non-element parent; the ID establishes no binding an IDREF could
+       resolve) — s3_3_4ii26i/ii27i.
+  + 1  xsi:nil forbids ALL character children incl. whitespace (1.1,
+       elementHasAnyText) — all004.n02.
+  + 1  S4S: openContent in a complexContent RESTRICTION requires a particle
+       sibling (bug 16786; extensions exempt) — complex018.
+  + 1  Only the LAST xs:alternative may omit @test — cta9001err.
+  + 1  {type table} equivalence in elementRestrictsElement (bug 12185;
+       rawTest stored on typeAlternative) — cta0043.
+  + 1  derivation-ok-restriction.2.2 un-gated (the 1.0 gate protected
+       target003, resolved via local @targetNamespace since M28) — ctO004.
+  + 1  coveredByWildcardUnion → real FINITE-WITNESS union subset (witness
+       alphabet: every mentioned namespace + absent + fresh, × every
+       mentioned local + fresh; wildcard admission depends on nothing else)
+       — wild048. Plus wcNameSubsetOK in leavesMatchWildcard.
+  + 3  The strict-wildcard no-declaration excuse never applies to the ABSENT
+       namespace — wildO006.i, addB087.i, sun psContents00102m1_n.
+
+W2 — CDT-EDC, the two-rule split (+7):
+  + 3  STATIC: wildcard clause in checkElementConsistency11 comparing ONLY
+       {type table} (arity + pairwise @test text + type signature; skip
+       wildcards exempt; declared TYPES may differ freely — wild061/062 and
+       all006 pin that) — wild078/079/081. This is the corrected form of the
+       M29 blunt clause that broke 38 valid cases.
+  + 4  DYNAMIC: positional attribution + governing-vs-context-determined
+       type, landed as ONE rule. Attribution: when the like-named element
+       particles are EXHAUSTED (elementCapacityFor) and a wildcard parse
+       exists (probe rename, wildcardParseExists, left-to-right pinning), the
+       child is wildcard-attributed: EDC requires the governing type
+       (xsi:type, else the global declaration's) validly derived from the
+       like-named particle's type, and assessment runs against the GLOBAL
+       declaration (assessWildcardChild). Base-chain fallback
+       (baseChainContextType) covers a particle REMOVED by restriction —
+       wild063.n1, wild068.n1, s3_8_6v01i/ii01i, while wild062.n1-n3 +
+       wild063.n2 (previously passing for the wrong-attribution reason)
+       held.
+
+W3 — subsumption relaxations, all accept-only + strictly 1.1-gated
+(particlesHa161/Hb008/addB118 are invalid@1.0 on the SAME schema) (+8):
+  + 2  A1 min-0 lifting: emptiable base ⇒ L(R{min:0}) = {ε} ∪ L(R{min:1}) —
+       retry the min:1 twin (particlesHa161, addB118).
+  + 2  A3 wildcard fan-in in recurseUnordered: EVERY derived wildcard a base
+       wildcard subsumes accumulates onto it (exact 1:1 fits included — the
+       first cut left 1:1 matches out of the sum and broke all235.n),
+       element-count bounds summed against its range (all237, wild050).
+  + 2  A2 choice-over-all: a 1..1 choice fits iff EVERY branch restricts the
+       whole base all on its own (all231/232; all233.n's a{1,8} branch still
+       fails).
+  + 2  A4: (i) choiceRunFits in recurseSeq — a 1..1 choice covers a
+       contiguous base run when every branch restricts the run-as-sequence
+       (particlesHb008); (ii) choice-branch RESERVE in recurseUnordered —
+       every branch maps to a distinct free base member, targets reserved
+       but NOT used so the final emptiability check still governs (all234).
+
+W4 — xs:override, the XL build (+24, +1 newly-decided, ZERO breaks):
+  §4.2.5 implemented as the spec transform (override.go applyOverride):
+  matching top-level children replaced ({kind, collapsed @name}; tns halves
+  already forced equal-or-chameleon by directiveTnsOK), unmatched override
+  children DISCARDED at schema level (over026's dangling reference), include
+  → override carrying ALL children (over020 chameleon chain), nested
+  override MERGED (replace/keep/APPEND-unmatched; over009temp.xsd is the
+  expected output), redefine children replaced in place, import verbatim.
+  Transplanted clones materialize the OVERRIDING document's in-scope
+  namespace bindings (plus an explicit ""->"" pin) so QName attribute values
+  keep their prefixes. Collection (imports.go collectOverride): keyed by
+  (path, ORDER-INSENSITIVE override signature) — same override collects
+  once, a different override of the same path is a fresh collection
+  (over022's duplicate globals), and override cycles terminate at the merge
+  FIXPOINT (over023 valid — childless back-edge; over024's mutating cycle
+  surfaces its duplicates). src-override {kind,name} uniqueness (over021).
+  Self-references denote the NEW component — no redefine-style snapshot —
+  so over011/over014 fall to the existing type-cycle checks. Bug 17574: the
+  overriding document's imports are merged into the transformed schemaDoc
+  (over029's spc:points). A supplementary Compile document whose content was
+  consumed as an override target (suite role="overridden") is superseded —
+  only its transformed self contributes (s3_4_2_4ii08/ii10 stayed valid;
+  these were the round's ONLY transient FP identities, fixed before keep).
+  1.0 never sees override semantics (include-like, as before).
+
+W5 — the M26 strict-wildcard design split is GONE (+6):
+  s.knowsNamespace REMOVED; in 1.1 a strict wildcard match without a
+  declaration is now an error outright, exactly as 1.0 — wildH008.i,
+  wildZ001.i, addB013.i, attgD024.i, ctL020.i, xsd021.n02. RECORD
+  CORRECTION: the M26 justifications were all stale — tns5/ns5_1 resolve via
+  M28's local @targetNamespace, attgD034/ctL021 via M26's own hint loading.
+  Zero breaks anywhere; also dropped in assessWildcardChild (neutral).
+
+W6 — beyond the predicted floor (+5):
+  + 2  TYPED XDM for assertion trees (assert018 + assert022, +2 more
+       newly-decided): xmltree.Node gained TypeAnno (an xpath.AtomType;
+       only ever set on the detached assert-tree CLONES), xpath toAtomic
+       atomizes an annotated node via CastTo instead of untypedAtomic, and
+       the per-Validate map assertTypes records each simple-typed element's
+       resolved primitive on successful content validation (vAtomic only).
+       The assertion ROOT stays unannotated — its own type is exactly what
+       is being validated (assert022's base assert demands untypedAtomic
+       there). QT3 untouched (annotation exists nowhere else).
+  + 2  Union member substitutability only for PRISTINE unions (bs.base ==
+       nil): a union derived by RESTRICTION narrows with facets, and
+       substituting via an ancestor union's member would bypass them —
+       simple014/015 (the census's "HIGH risk" pair; landed clean, canaries
+       particlesIk026/stE110/NIST all held).
+  + 1  wild069 — NOT floor after all: removed-element wildcard-competition
+       in recurseUnordered (1.1): an UNUSED emptiable base ELEMENT whose
+       name an accumulated derived wildcard admits flips attribution in an
+       all group (order shields the sequence twin wild068, which stays
+       valid), so the wildcard route must be at most as permissive — global
+       declaration's type derived from the removed particle's type; lax/skip
+       with no declaration cannot restrict it; strict with no declaration
+       rejects the name and is fine.
+
+THE FLOOR (4 fails, all documented suite contradictions):
+  all308         disputed (bug 6202)
+  particlesZ026  TSTF implementation-determined (bug 4071)
+  particlesZ033_g no locatable 1.1 violation (1.1 forgives its elt-wc
+                 competition)
+  ste110.i       the documented M27 price of the Missing-family tolerance
+1.0 floor unchanged: particlesZ001.i, particlesZ023, particlesZ024,
+groupH021v (accepted-status self-contradictions) + idB005.
+
+Endgame: full runs green (CSVs rewritten), NIST 22924/22924 both, EN16931
+gate green, go vet clean, internal tests green, QT3 3x runs 19108/19111/
+19111 — inside the established 19108-19113 band. unsupported: 1.0 627,
+1.1 805.
+
+================================================================================
+M31 — the unsupported round (2026-09-07). Target: "fix the most possible
+number of non-supported". LANDED: unsupported 1.0 627 → 25, 1.1 805 → 25 —
+the residue is EXACTLY the >600-child content-model cap family (14 particles
+stress instances, 5 introspection giant .testSet instances, 6 reZ00Xv/i
+giant instances), nothing else. Pass-of-ran ceilings HELD with the same
+floor fails (1.0: the M28 five; 1.1: the M30 four): 1.0 39321/39326, 1.1
+41474/41478. NIST grew to 23170/23170 BOTH (22924 + the 246 NMTOKENS list
+family). Zero new exp=valid FP identities at every kept step.
+
+Census corrections recorded (three-agent root-cause pass): ~65% of the whole
+bucket was the three built-in LIST types; back-references contributed ZERO
+(classAtomEnd already rejected \digit); the "identity XPath" bucket was list
+types; xv was \I/\C-in-class + NMTOKENS, not XML 1.1; the datetime "huge
+year" tail was msData/datatypes.xsd's IDREFS/NMTOKENS declarations.
+
+W1 — built-in list types xs:NMTOKENS/IDREFS/ENTITIES (~+400 per version):
+  builtinList (loader.go) synthesizes {variety vList, item NMTOKEN/IDREF/
+  ENTITY, minLength 1, name SET (name-based derivation membership)} at
+  resolveType, resolveInstanceType and vcTypeAvailable. noteIDValues' vList
+  recursion already handled item semantics (IDREF refs, 1.1 ENTITY/unparsed).
+  Repair rules the conversion exposed, all kept:
+  - source-aware ID conflicts: idTable.bound stores {el, src}; the SAME
+    source may repeat a value; 1.1 additionally tolerates same-ELEMENT
+    rebinding; 1.0 keeps document-wide uniqueness (elemZ016,
+    idConstrDefs00301m2_n — two same-valued ID children of one parent).
+  - xmlFields list tokenizer (space/tab/CR/LF only): strings.Fields also
+    splits U+000C/NEL/U+2028 and silently turned one invalid NMTOKEN into
+    two valid ones (xv009.n01-n03); replaced in simpletype/instance/identity.
+  - vList check walks the BASE CHAIN's facets (the built-ins' minLength 1
+    survives derivation) — plus pattern/enum per step.
+  - length may co-occur with minLength/maxLength IFF that facet is inherited
+    from an ancestor's {facets} (WG bug 6446: NMTOKENS/IDREFS_length006
+    valid, string_length006 and *_length007 stay invalid); the blanket
+    same-step rejection moved from validateFacetValues to
+    checkFacetConsistency where the base chain is visible.
+  - derived maxLength < inherited minLength is invalid (NMTOKENS_maxLength001).
+  - LIST enumeration literals must be valid against the base
+    (NMTOKENS/IDREFS_enumeration001: value="").
+  - bare xs:NOTATION as a union MEMBER is legal (particlesZ007) but a union
+    USED as a declaration's type may not carry one as a DIRECT member
+    (simple093) — checkNotationUsable recurses one union level at decl
+    sites only.
+
+W2 — regex decisions (~+190 per version, most exp=invalid):
+  validateXSDRegex (xsd-local): closed escape repertoire (SingleCharEsc ∪
+  MultiCharEsc ∪ catEsc — \b \B \A \Z \z \x \u \o rejected; \p/\P demand
+  {…}); quantifier needs a preceding atom; no double quantifier; balanced
+  parens both directions; quantRange n<=m (bignum-safe compare); seRange
+  endpoints must be single chars (MultiCharEsc/catEsc endpoints rejected)
+  and lo<=hi; \p{…} body grammar (category vocabulary incl. Cn, Is-block
+  name charset). CANARY reE10 \| stays valid (empty branches legal). Fixed
+  the latent [a- panic in M30's hyphen rule. SHARED xpath side: \I/\C
+  inside a POSITIVE class emit complement-of-Name(Start)Char ranges
+  (complementBody in regex_class.go — sorted/merged/inverted, surrogates
+  clipped) → reG18-21, xv100notc/noti, addB058; \p{Cn} outside classes
+  emits the complement of all assigned categories (reJ80). reK88 is
+  version-split per its own catalog entry (bug 13670): 1.0 unknown block =
+  invalid (XSDBlockKnown exported from xpath), 1.1 = matches EVERY character
+  (rewriteUnknownBlocks substitutes an XSD-syntax [\s\S] atom pre-compile).
+
+W3 — assertions + xs:error (1.1, ~+140):
+  - xs:error: singleton empty-value-space SimpleType (always-fail check),
+    exempt from e-props-correct.5 (validly substitutable for everything) —
+    cta0010/0011/0013, vc014, s3_12ii05, vc_007.
+  - xs:assertion FACET: assertions []*assertion on SimpleType (linkBase
+    collapse guarded), parsed via parseAssert (xpathDefaultNamespace ##
+    tokens free), evaluated at the end of check() per variety with $value
+    bound through a VarResolver: atomic = CastTo(v, prim); list = SEQUENCE
+    of typed items (assert-simple005), item-type assertions fire per token
+    (listunion1/5); union = the ACCEPTING member's typed reading
+    (assert-simple006), member-internal assertions steer member selection
+    (listunion2). NEW xpath Context.NoFocus: '.', position(), last() raise
+    XPDY0002 (assert-simple008/009/010) — set only here. ANY dynamic error
+    ⇒ value invalid (assert-simple007). Companion: an ur-type is not a
+    valid list ITEM type (simple052), matching the union-member rule.
+  - element xs:assert gaps: $value IS bound (§3.13.4.1) — typed simple
+    content for contentSimple (assert010/015, list sequence assert_035),
+    EMPTY sequence otherwise (assert019); attributes are VALUE-cloned into
+    the assertion tree with TypeAnno (assert_002/018, d4_3_15v02/v11), the
+    tree root materializes in-scope namespace bindings, and QName-annotated
+    nodes atomize with their own prefix resolution (toAtomic special case);
+    ANY dynamic error ⇒ assertion failed (assert011 — doc() disallowed with
+    BOTH instances exp=invalid — and assert012 div-by-zero). dispatchFunc
+    now recognizes constructors under ANY prefix bound to the XMLSchema
+    namespace (assert024's xsd:QName).
+  - static XPath parse errors in xs:assert/@test and xs:alternative/@test
+    are schema errors, not ErrUnsupported (s3_12si04/05/06, s3_12ii06s).
+
+W4 — unknown local in the XSD NAMESPACE ⇒ src-resolve invalid (loader +
+  xsi:type): stK002 (xsd:timeDuration), xsd003b/018/019.e, the
+  ctD/stC/notatG 1999-CR relics. User-namespace absent-component semantics
+  untouched.
+
+LEFT UNSUPPORTED BY DESIGN (25 per version): the >600-child content-model
+cap — particlesJb003/Jf003/R005/T007/Q005/Z034_a1-3/Z034_b/Z035_a/
+Z036_a-c (child counts 1,001-16,665, maxOccurs up to 1e11),
+introspection's 5 giant .testSet instances, reZ003v-006 (9,273-child
+instances). Winning them requires a counting-automaton matcher.
+
+Endgame: full runs green + CSVs, NIST 23170/23170 both, EN16931 green,
+vet clean, internal tests green (TestSimpleTypeAssertionUnsupported flipped
+to a positive test), QT3 3x 19110/19109/19111 — inside the 19108-19113 band
+despite the shared-xpath changes (constructor dispatch, NoFocus, QName
+atomization, \I/\C complements, \p{Cn}).
+
+================================================================================
+M32 — the last 25: a large-instance counting matcher (2026-09-07). Target:
+"fix the last 25" (the >600-child content-model cap, the only unsupported
+cause left after M31). LANDED ON THE FIRST MEASURE: **unsupported 0/0**,
+1.0 39346/39351, 1.1 41499/41503 — all 25 decided correctly (19 exp=valid
+incl. the catalog-sic-valid particlesZ036_b1/b2.i and reZ006i.i; 6
+exp=invalid: stray <blah/> children with satisfied minima, Z036_a's
+maxOccurs=1 choice that cannot repeat, and per-child facet failures in the
+reZ pair), zero breaks, zero new FP identities, floors unchanged (1.0 the
+M28 five, 1.1 the M30 four).
+
+DESIGN — internal/xsd/bigmatch.go, additive and linear:
+- countMatch: a greedy counting interpreter over the SAME *particle tree
+  (int counters — maxOccurs up to 1e11 is just a number), reusing
+  matchesElementName (substitution groups/abstract/blocking),
+  wildcardMatches, and upaNullable verbatim. Used ONLY above the 600-child
+  cap (content.go's contentMatches routes there); the position-set NFA
+  below the cap is byte-identical, so the ~81k small verdicts could not
+  move. Open content keeps declining via the untouched cap #1; the
+  wildcardParseExists/skipWildcardParseExcuses probes keep declining >600
+  (unreachable for the 25 — census-verified — and avoids O(n²) probing).
+- Static pre-scan declines what greedy cannot prove: xs:all, cyclic group
+  refs, choices with overlapping first sets (substitution-expanded names,
+  wildcard-vs-name, wildcard-vs-wildcard), and any wildcard competing with
+  any element name in the model (upa.go's conservative 1.1 gap).
+- The SOUNDNESS SUBTLETY the A/B campaign exposed: UPA cannot forbid a
+  position competing with ITSELF across loop iterations, so COUNTER-
+  SPLITTING shapes are UPA-valid yet greedy-hostile — seq(e{1,2}){2,10} on
+  "ee", seq(e{1,inf}){2,inf} on "ee", seq(a{1,2},b?){2,2} on "aab",
+  cho(foo{3,5},sg{3,5}){0,inf} on 6xfoo (greedy takes 5, remainder 1 < min
+  3), and a {3,inf}-branch variant — exactly 5 divergence shapes in the
+  whole suite, all "NFA valid / greedy invalid". Resolution: a runtime
+  `unsure` flag instead of static rejection — MATCHED is always
+  trustworthy (a witness parse exists), but an INVALID verdict after (a) an
+  iteration cut at maxOccurs>1 with the next child still acceptable or (b)
+  an under-minOccurs failure after consuming >=1 iteration is returned as
+  NO-VERDICT. maxOccurs==1 cutoffs stay decisive (nothing to reallocate;
+  UPA guarantees no OTHER position wants the name — that keeps
+  particlesZ036_a a decided INVALID).
+- A/B GATE: XSD_ABMATCH=1 runs BOTH matchers on every <=600-child instance
+  and reports decided-but-different verdicts. Final state: **ZERO
+  divergences across the ENTIRE suite in both versions** (~81k verdicts as
+  oracle). The knob stays in the tree as permanent tooling.
+- New unit test TestLargeInstanceCountingMatcher (1,500-child valid /
+  missing-tail / stray-tail).
+- Perf: linear; the 16,665-child giant and the first-ever xsd:unique run
+  over 3,953 testGroup nodes (xsts.xsd) are unremarkable — the FULL
+  two-version suite run takes 4.8s wall. QT3 3x: 19110/19112/19115 (the
+  observed noise band extends to 19,115; no shared code was touched this
+  round, so the documented band is now 19,108-19,115).
+
+With unsupported at zero, "of ran" and "of applicable" are now the same
+metric: **1.0 = 39,346/39,351 = 99.987%, 1.1 = 41,499/41,503 = 99.990%**,
+NIST 23,170/23,170 both. The remaining 9 fails (5+4) are the documented
+suite contradictions/disputes. Per user decision (2026-09-07), result
+presentations from here on show only the two PASS numbers.

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=go-xslt
+Comment=Local XSLT 3.0 tester
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/go-xslt %u
+Terminal=false
+Type=Application
+Icon=go-xslt
+Categories=Utility;
+StartupWMClass=go-xslt
+
+ 

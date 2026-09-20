@@ -1,0 +1,309 @@
+W3C XSLT 3.0 conformance (xslt30-test) — go-xslt engine
+Current: 14601 catalog cases | ran 7824 | pass 5081 (64.9%) | fail 2743 | skipped 6777
+(chain: 54.4% -> 59.2% -> 61.8% -> 64.2% -> 64.9%)
+
+ERROR ROUND 2 (2026-07, +56; the error set 314 -> 354 pass, fails 201 -> 161):
+- FODF1310 picture-shape validation (fn_numeric.go validateSubPictureShape): passive char
+  between active chars (0$0), grouping sep adjacent to decimal sep / at part edges (00,.0),
+  optional-after-mandatory digits in the integer part (0#.00), mandatory-after-optional in
+  the fraction part (00.##0), duplicate percent/per-mille; 'e'/'E' treated active so
+  scientific pictures still pass.
+- LAZY GLOBAL VARIABLES with circularity detection (transform.go evalGlobal/globalBusy):
+  forward references now evaluate on demand; cycles (incl. through key() match patterns
+  referencing $globals) raise XTDE0640 via eng.pendingErr (consumed by eng.eval/keyIndexOn
+  since lookupVar has no error channel).
+- validate.go: param & friends rejected inside literal result elements; top-level-only
+  declarations (function/key/attribute-set/character-map/decimal-format/mode/output/...)
+  restricted via vAllowedParents; xsl:type / xsl:validation=strict|lax on literal elements
+  -> XTSE1660; tunnel params on stylesheet/function level -> XTSE0020;
+  exclude-result-prefixes unbound tokens -> XTSE0808; include/import validated in
+  gatherModules (they are consumed before the main validation pass) -> XTSE0260.
+- select+content mutually exclusive on variable (XTSE0620) and param/with-param (XTSE0760);
+  simplified stylesheet requires xsl:version (XTSE0150); conflicting namespace-alias
+  (XTSE0810); conflicting decimal-formats (XTSE1290) + zero-digit must denote 0 (XTSE1295)
+  + distinct symbols (XTSE1300); conflicting xsl:mode at the SAME import precedence only
+  (XTSE0545 — higher precedence legitimately overrides, ModeDef.importPrec).
+- Runtime: xsl:namespace name "xmlns"/xml-mismatch/empty URI/conflicting binding ->
+  XTDE0920/0925/0930/0905; attribute after children -> XTDE0420; unbound prefix in
+  runtime xsl:element name -> XTDE0830; current-group()/current-grouping-key() outside
+  for-each-group -> XTDE1061/1071; group-adjacent key must be a single item -> XTTE1100;
+  key() without a context document -> XTDE1270; json-to-xml 'liberal' option must be
+  boolean -> XPTY0004; numeric name tests in patterns (name/1223) -> XTSE0340
+  (xpath/pattern.go checkPatternSteps).
+Remaining error fails (161): sequence-type (@as) enforcement (XPTY0004/XTTE05xx —
+needs a coercion subsystem), forwards-compat fallback (XTDE1450), streaming-adjacent
+codes, singletons.
+
+ERROR-DETECTION ROUND (2026-07, +189 net; the `error` set 186->314 pass, fails 329->201):
+The harness accepts ANY error for an <error> assertion, so this round made the compiler/
+engine DETECT error conditions. New: internal/xslt/validate.go — table-driven static
+validation of every XSLT-namespace element run per module before compilation:
+- xsltElemSpecs: allowed no-ns attributes per element (+vStdAttrs standard set) -> XTSE0090
+  for unknown/XSLT-ns attributes; required attributes -> XTSE0010; content models
+  ("empty" or child whitelists: choose/apply-templates/call-template/attribute-set/
+  analyze-string/merge/...) + noText -> XTSE0010.
+- vAllowedParents: sort/with-param/param/when/otherwise/matching-substring/... only under
+  their legal parents -> XTSE0010 (e.g. xsl:sort in xsl:template, xsl:param in call-template).
+- Value checks: QName-valued names (template/variable/key/... names, apply-templates mode)
+  -> XTSE0020 lexical + XTSE0280 unbound prefix; XSLT booleans (tunnel/required/static/
+  copy-namespaces/...) -> XTSE0020; decimal-format single-char attrs -> XTSE0020;
+  tunnel on stylesheet/function params -> XTSE0020; exclude-result-prefixes/extension-
+  element-prefixes unbound tokens -> XTSE0808.
+- Structure rules: choose needs >=1 when, otherwise last+unique; params first in
+  template/function; sorts first in for-each(-group)/perform-sort; xsl:number @value
+  excludes count/from/level (XTSE0975); for-each-group exactly one grouping attr
+  (XTSE1300); template mode list valid/no-dups/#all-alone (XTSE0550), mode/priority
+  need match (XTSE0500); text at stylesheet top level (XTSE0120).
+Engine/dynamic errors added: key() undeclared name -> XTDE1260; circular key (incl. via
+its own match pattern; keyBuilding set + error propagation from pattern eval) -> XTDE0640;
+accumulator-before/after undeclared -> XTDE3340; required template param not supplied ->
+XTDE0700 (VarDef.requiredParam); duplicate named template same precedence -> XTSE0660;
+duplicate global variable same precedence -> XTSE0630; use-attribute-sets: undeclared ->
+XTSE0710, circular -> XTSE0720 (applyAttrSetsRec with active-set; nested
+use-attribute-sets on xsl:attribute-set now actually APPLIED via ss.attrSetUses);
+xsl:element/xsl:attribute/xsl:processing-instruction invalid runtime names -> XTDE0820/
+0850/0890; format-number with undeclared named format -> FODF1280; system-property/
+function-available/element-available/type-available invalid or unbound QName arg ->
+XTDE1390/1400/1440/1450; document() unresolvable -> XTDE1460; duplicate result-document
+href -> XTDE1490; include/import target not a stylesheet module -> XTSE0165; XPath name
+tests with unbound prefix -> XPST0081 (axes.go resolvePrefix errors when an NS resolver
+exists but lookup fails).
+Remaining error-set fails (201) are 1-3-case singletons (XPTY0004 type checks, FODF1310
+picture edge cases, XTSE0340, sequence-type enforcement XTTE*) — genuinely diffuse.
+NB: harness fail-log cap raised 40 -> 4000 lines per set (triage needs full lists).
+(chain: 4322/54.4% -> 4703/59.2% -> 4836/61.8%; denominator shrank 7944->7824 because
+regex-classes(120) is now honestly skipped as unicode-version-pinned via its
+<unicode-version> dependency — same rationale as unicode-90.)
+Top failing sets now: error=329 number=197 output=168 result-document=96 match=78
+copy=76 namespace=70 date=66 as=60 accumulator=51 mode=50 document=49
+
+TOP-FAILS ROUND (2026-07, +133 net):
+- arrays 1->47/62: THE systematic blocker was static xsl:VARIABLE (static="yes") not
+  entering the use-when static context (usewhen.go now collects param+variable). Then:
+  @as on content-form xsl:variable yields the constructed SEQUENCE (attrs+children as
+  NodeSet), not a doc-fragment wrapper (transform.go evalVarDef; VarDef.as field);
+  xpath.Flatten (types.go) — XDM array flattening used by emitSequenceValue / joinSeq /
+  execCopyOf / apply-templates select; array/map INVOCATION $arr(i) / $map(k) in DynCall
+  (eval.go); apply-templates over atomics -> synthetic text nodes (built-in rules),
+  functions -> XTDE0555.
+- match 68->~140 group: (1) POSITIONAL PREDICATES in patterns fixed — foo[@a='c'][2]
+  filters sequentially (pattern.go stepMatches: fast path evaluates preds on n only,
+  falls back to full candidate filtering when a predicate yields a number);
+  (2) XSLT 3.0 EXPRESSION PATTERNS — (a|b)[p], doc('x')/..., id(), key(), $var,
+  union/except/intersect — parse as full expressions (Pattern.exprAlts) and match by
+  "evaluating with each ancestor-or-self as context selects the node" (matchExprPattern);
+  default priority 0.5.
+- element()/attribute()/document-node()/namespace-node() KIND TESTS were entirely
+  unhandled in matchTest (always false!) — fixed in axes.go (kindTestNameOK); this made
+  ". instance of element()" etc. work everywhere (as/match/mode sets).
+- base-uri 11->33/55: xml:base support — xpath.NodeBaseURI (fn_uri.go) walks the
+  xml:base ancestor chain; fn:base-uri uses it; fn:resolve-uri 1-arg resolves against
+  Context.BaseURI (absolute $rel returned as-is); eng.eval sets BaseURI from the
+  stylesheet element's xml:base chain (staticBaseFor).
+- mode 65->85: template @mode LISTS (mode="a b #all"; Template.matchesMode with
+  compile-time tokenization) and built-in shallow-copy/shallow-skip now apply templates
+  to ATTRIBUTE nodes (modes.go); attribute fallback copy for shallow-copy.
+- key 52->57: generate-id() 0-arity uses the CONTEXT node not current() (Muenchian
+  grouping worked never!) — callFunc now receives the eval *Context; key() 3rd argument
+  (subtree scoping) + per-root key indexes (keyCacheKey{name,root}) so keys work on
+  temporary trees.
+- PERF: the pattern-predicate rewrite + per-eval walks doubled the EN16931 gate (8s->16s).
+  Fixed: mode tokens precomputed (strings.Fields was 24%% of runtime!), fast-path
+  predicate evaluation, and hasXPathDefaultNS/hasXMLBase compile flags skip the ancestor
+  walks when unused. Gate back to ~8s.
+
+FEATURE ROUND (2026-07): on-empty + xml-to-json + strip-space + namespace-alias +
+xpath-default-namespace + character-map (+ the round's biggest single fix: content-form
+xsl:variable was dropping its TEXT nodes — compileVarDef used elementChildren instead of
+childNodesForBody, so <xsl:variable name="x">text</xsl:variable> was empty; broad impact).
+- xsl:on-empty / xsl:on-non-empty (set 34->81 of 86): real two-phase semantics.
+  compileSequence wraps any constructor containing a marker in a condContent instruction
+  (instr_misc.go): all other parts run first into per-part scratch fragments (markers run
+  eagerly at their position for correct variable bindings, but never count toward
+  emptiness), then markers emit iff the combined result is empty/non-empty. Empty =
+  no attrs/ns and only zero-length text. XTSE0010 when xsl:on-empty is followed by
+  content-generating instructions (compile-time check).
+- Atomic-value spacing (XSLT content construction): adjacent atomic values are separated
+  by ONE SPACE ("21 23", for $i... -> "1 0 1 0..."); node text resets adjacency. xmltree
+  text nodes carry an Atomic flag; appendAtomicText/emitSequenceValue (transform.go) used
+  by xsl:sequence + on-empty/on-non-empty; transferContent preserves adjacency across
+  fragment boundaries.
+- xsl:strip-space/preserve-space now APPLIED to source docs (applyStripSpace/stripWalk in
+  transform.go; exact-name > pre:* > * specificity, preserve wins ties, xml:space
+  override). Both Transform and TransformEntry paths.
+- xml-to-json set 45 -> 117/117 (100%): full input validation in fn_json.go
+  (jsXMLNodeToValueIn): doc must have exactly one element child; text-only/elements-only
+  content rules; unknown/invalid attributes (FOJS0006); escaped/escaped-key must be
+  xs:boolean lexical; escaped="true" content pass-through verbatim after validating
+  escapes (jsValidateEscaped: keeps \uXXXX escapes, escapes raw "/controls with SHORT
+  forms \n\r\t\b\f, uppercase \u%04X, also escapes raw / as \/ and C1 0x7F-0x9F);
+  escaped-key dedup on the DECODED key but output verbatim (jsObj.putRaw + jsPreEscaped);
+  numbers = xs:double canonical form via formatDouble (NOT lexical: " -0e0 " -> "-0",
+  1E6 -> "1.0E6"); NaN/INF -> FOJS0006; options map validated ('indent' single boolean,
+  note true() is a plain Go bool not *Atomic). xml:space="preserve" also keeps
+  whitespace-only stylesheet text (compileSequence + xmlSpacePreserved).
+- xsl:namespace-alias (set ~6 -> 24/26): compiler pre-scans all modules
+  (addNamespaceAlias), literal result elements/attributes in an aliased namespace are
+  renamed to the result URI + result prefix at compile (compileLiteralElement); aliased
+  ns nodes dropped.
+- SERIALIZER namespace overhaul (xmltree/serialize.go): attributes in namespaces now get
+  their namespaces DECLARED (was: attr prefixes never declared); prefix conflicts get
+  renamed (ns -> ns_0) via declared/prefixes twin maps + nsSave undo stack; default-ns
+  undeclaration (xmlns="") for no-ns elements under a default namespace.
+- xpath-default-namespace (set ~7 -> 14/22): xpath.Context.DefaultElemNS; unprefixed
+  element-axis name tests resolve to it (axes.go matchNameTest); xpathDefaultNS(el) walks
+  the stylesheet ancestors (xsl: attr / xsl:xpath-default-namespace on literals); wired in
+  eng.eval + template/accumulator/for-each-group/key pattern matching.
+- xsl:character-map (set 1 -> 18/29): decls collected by clark name (ss.charMaps),
+  xsl:output/@use-character-maps + named xsl:output (ss.namedOutputs) +
+  xsl:result-document @format/@use-character-maps (merge, later wins) resolved via
+  ss.resolveCharMap; SerializeOptions.CharacterMap applies in text nodes, attributes and
+  the text output method — mapped chars emit their replacement RAW (mapChars).
+  Remaining: HTML URI-escaping interactions, XTSE158x error detection.
+- TVT inside xsl:text (expand-text now honoured there too, compile.go case "text").
+(prev: 54.3% -> 54.4% output/serialization round)
+  output/serialization (+11; cluster is diffuse): disable-output-escaping — text nodes carry a
+  Raw flag (xmltree NewRawText) set from disable-output-escaping="yes" on xsl:value-of/xsl:text,
+  serialized unescaped. HTML/XHTML serialization (xmltree/serialize.go): method="xhtml" emits the
+  XML declaration, empty non-void elements use <p></p> (not <p/>), void elements <br/> (XHTML) /
+  <br> (HTML), and U+00A0 -> &nbsp;. apply-templates @select now accepts a general node sequence
+  (not just the NodeSet type); a non-node item is XTTE0520. (Harness XSLT30_DIFF now also dumps
+  WANT/GOT on assert-serialization + serialization-matches fails.) Remaining output fails are a
+  long tail of distinct serialization rules (indent, cdata-section-elements, doctype, standalone,
+  BOM, html-specific escaping) — low yield per fix.
+  result-document (set 14->40): (1) the harness now matches xsl:result-document SECONDARY
+  outputs — runXSLTCase passes rr.Secondary through checkXSLTAssert, and assert-result-document
+  finds the secondary by @uri (findSecondary: exact href / suffix / basename) and checks its
+  nested assertion against that content (was skipped). (2) engine: xsl:result-document with an
+  absent/empty href now writes to the PRINCIPAL output (instr_resultdocument.go) instead of
+  creating an empty secondary — many tests wrap the whole result in <xsl:result-document>.
+  Remaining result-document fails need exact serialization fidelity (XML declaration / encoding
+  on secondaries) — overlaps the `output` cluster.
+  conditional inclusion — static params + use-when (internal/xslt/usewhen.go): xsl:param
+  static="yes" values are collected at compile time into a static context (staticEnv: static
+  params + in-scope namespaces + system-property/function-available/element-available), and
+  use-when="false()" / xsl:use-when subtrees are PRUNED from the tree before compilation
+  (applyStatic, hooked into CompileFrom + loader so excluded xsl:include/import aren't loaded).
+  use-when 37->67. Static params still compile as normal globals too (bound at runtime).
+  per-element expand-text (compile.go expandTextFor): expand-text / xsl:expand-text on any
+  element (not just the root) now controls TVT {expr} expansion, inherited down the tree.
+  static 4->18; helps any set using a local expand-text. (Remaining static fails: caller-
+  supplied static-param overrides — needs compile-time injection, conflicts with the shared
+  compile cache — and static-error detection; shadow attributes _name.)
+  format-number + xsl:decimal-format (the round's big win, number 91->118): the XPath core
+  format-number (internal/xpath/fn_numeric.go) is now decimal-format-aware — named formats are
+  carried on xpath.Context.DecimalFormats (populated by the XSLT engine from collected
+  xsl:decimal-format decls), parseSubPicture/formatNumberPic use the format's symbols (decimal,
+  grouping, percent/per-mille, zero-digit, minus, infinity/NaN, pattern-sep), and validatePicture
+  raises FODF1310 for malformed pictures. Remaining number fails: Indian variable-grouping and
+  float64 precision on >15-digit decimals (would need big-decimal arithmetic).
+  date: format-time GMT timezone hours now zero-padded + GMT+00:00 for UTC (date 100->102).
+  Full picture-modifier timezone formatting ([z0]/[z,N-N]/week-of-month) left as a rabbit hole.
+  error (XTSE0010): top-level XSLT *instructions* (apply-templates/value-of/... as a direct child
+  of xsl:stylesheet) now raise XTSE0010 (internal/xslt/decls.go topLevelInstructions). The error
+  cluster is otherwise diffuse — dozens of distinct static rules, ~1-3 cases each, high
+  false-positive risk; low ROI. (Harness: XSLT30_DIFF=1 dumps WANT/GOT on assert-xml fails.)
+  xsl:source-document (non-streaming): internal/xslt/instr_sourcedoc.go — reads @href via the
+  resolver and runs the body with that doc as context; @streamable ignored (a non-streaming
+  processor may build the full tree). Unblocked ~37 array cases (were "unsupported instruction").
+  fn:copy-of() / fn:snapshot(): deep copy with fresh node identity (transform.go cloneNode;
+  functions.go), atomics/maps/arrays pass through. copy 52->59, arrays 4->6.
+  (35.8%=3340/9321 baseline -> 42.5% [unicode-90 skip] -> 46.2% [regex/tokenize]
+   -> 52.6% [charset reader] -> 52.7% ['.' pattern+fns] -> 52.8% [doc resolver +
+   xsl:sequence body + initial-template fallback + assert-string-value].)
+  NB pass COUNT rose 3340 -> 4193 (+853 real) over the session; the headline % moved
+  less on the last step because implementing assert-string-value un-skipped ~139
+  previously-hidden testable cases (+17 pass, the rest now honestly counted as fail).
+
+doc/document resolver: internal/xslt/resolver.go (fileResolver) wires fn:doc / fn:unparsed-text
+  / document() to the run baseDir (parsed-doc cache for stable identity); set on the engine +
+  passed in the eval Context.Resolver. document set 28->40; helps any set using doc().
+xsl:sequence 3.0 content form: <xsl:sequence> with a body (no @select) now runs the contained
+  sequence constructor (compile.go + transform.go; xsl:function fast-path guards nil sel).
+initial-template fallback: when there is no context item AND no explicit entry, fall back to
+  the default-named template xsl:initial-template if present (transform.go) instead of erroring
+  XTDE0044. on-empty 6->34, seqtor 3->12, output +5; broad across source-less stylesheets.
+assert-string-value: harness now checks it (was skipped) — string value of the result via
+  xmltree StringValue, optional normalize-space. +17 real passes; honest denominator.
+
+charset reader (the big one, +507 cases across position/math/string/number/copy):
+- internal/xmltree/charset.go + parse.go set dec.CharsetReader so the ENGINE itself can
+  parse non-UTF-8 source documents (ISO-8859-1/Latin-1 transcoded inline; others via
+  golang.org/x/text/encoding/ianaindex; us-ascii/utf-8 pass through). Go's encoding/xml
+  errors on any non-UTF-8 declaration without a CharsetReader, which was failing ~120
+  source docs outright. position 37%->88%, math 24%->93%, string 34%->87%.
+  (NB: exposed 4 number error-cases that had been passing for the WRONG reason — a source
+  parse failure masquerading as the expected <error>; now honestly fail.)
+
+'.' match/count pattern + missing functions (small):
+- internal/xpath/pattern.go: "." and ".[pred]" are valid patterns (match the context node);
+  contextItemPattern() maps them to a self::node() step. Fixes "unsupported pattern \".\"".
+- fn:static-base-uri() (xpath/fn_accessor.go) and current-output-uri() (xslt/functions.go).
+
+regex-syntax fixes (2026-06, +287 cases overall; regex-syntax set 66.2% -> 95.0%):
+- fn:tokenize("", sep) now returns the EMPTY SEQUENCE, not [""] (Go's re.Split("") yields
+  one empty token). This was the dominant blocker: the suite's re.xsl checks
+  `every $s in tokenize($match,$delim) satisfies matches(...)` with empty match/nonmatch
+  params. (internal/xpath/functions.go tokenize)
+- XSD char-class subtraction with a NEGATED subtrahend `[a-c-[^a-c]]` = base ∩ X (was
+  mis-parsed, base - {literal ^, a-c}). Added intersectRanges + subNeg handling.
+  (internal/xpath/regex_class.go tryClassSubtraction)
+- `\P{IsBlock}` INSIDE a class `[^\P{IsBasicLatin}]` now emits the block's complement as
+  explicit ranges (RE2 can't negate \P in a class). (regex_blocks.go xsdBlockComplementBody)
+- expandClassSubtraction no longer emits \x{…} hex (xsdRegexToGo re-parses its output and
+  rejected \x as an invalid XSD escape); classEscape emits literal runes instead.
+  Harness: test/conformance/xslt30_test.go (TestXSLT30), reuses the QT3 catalog/
+  charset/resolver infra. Clone: git clone --depth 1 https://github.com/w3c/xslt30-test.git
+  test/conformance/xslt30-test. Live progress: compile a binary
+  (go test -c -o /tmp/xslt30.bin ./test/conformance/) then from test/conformance/
+  run with -test.v + XSLT30_PROGRESS=1; XSLT30_ONLY=<set> for single-set triage;
+  XSLT30_ERRMSG=1 surfaces engine error messages on [errored] fails.
+
+unicode-90 resolution (the 1460-case cluster):
+- ROOT CAUSE: this set asserts EXACT Unicode character counts pinned to an old Unicode
+  version. E.g. count of \d (\p{Nd}) over the representative codepoint range expects 370;
+  \p{L} expects 48739; \p{N} expects 735. Go's unicode package ships Unicode 15.0.0, which
+  has \p{Nd}=680, \p{L}=136103, \p{N}=1831 over that same range. Our counts are CORRECT for
+  current Unicode — the suite's expectations are version-pinned and unmatchable without
+  bundling obsolete Unicode-9-era tables (which would mean shipping a deliberately outdated
+  Unicode version for 1460 count-assertions — wrong by design, not worth it).
+- ACTION: skipped by design as "unicode-version-pinned" (set-name match in runXSLTCase),
+  joining streaming/schema-aware/packages as denominator-excluded. This removes 1460 FALSE
+  failures (was counted as 0/1460), lifting the honest rate from 35.8% -> 42.5%.
+- REAL FIX SHIPPED while investigating: XSD regex multi-char escapes now use correct Unicode
+  semantics instead of Go RE2's ASCII defaults (internal/xpath/functions.go xsdRegexToGo):
+  \d -> \p{Nd}, \D -> \P{Nd}, \w -> [^\p{P}\p{Z}\p{C}], \W -> [\p{P}\p{Z}\p{C}],
+  \s -> [\x{20}\t\n\r], \S -> [^...]. Per XPath/XSD F&O spec. Benefits matches/replace/
+  tokenize/analyze-string across BOTH suites (+4 real XSLT passes; QT3 spec-correct).
+  EN16931 gate stays 0-mismatch (invoice data is ASCII; \p{Nd} still matches 0-9).
+
+Engine work to stand this up:
+- Entry points wired (internal/xslt/transform.go TransformEntry/Entry): initial-template,
+  initial-mode, initial-function, context-item (were ignored — engine only did default
+  apply-templates). Default Transform/TransformFull unchanged; EN16931 gate stays 0-mismatch.
+- Recursion + runtime guards (non-terminating stylesheets in the suite cause UNRECOVERABLE
+  stack overflow): per-engine depth guard (maxTemplateDepth=500) at execInstr/eng.eval/
+  invokeTemplate/callUserFunc/keyIndexFor/acc2valueFor; step budget (maxSteps=20M) at
+  execInstr; per-engine eval-depth guard (maxEvalDepth) in xpath/eval.go; plus a per-case
+  8s wall-clock timeout in the harness (debug.SetMaxStack headroom).
+
+Skips (excluded from denominator): feat:streaming=2900, unicode-version-pinned=1460,
+spec:XSLT20(exact)=1097, feat:schema_aware=686, package=341, backwards_compatibility=121,
+assert:assert-string-value=83, assert-type=8, XSD_1.1=5.
+
+Top failing test-sets (set=fail), real engine clusters to close next:
+error=332 number=201 output=180 result-document=128 match=119 namespace=114 copy=81
+xml-to-json=80 as=75 mode=70 date=66 use-when=62 arrays=61 sequence=56
+(number jumped because assert-string-value un-skipped many number cases — real fails now counted.)
+Notes:
+- `error` (331): the harness accepts ANY error for an <error> assertion (no code match), so
+  these need the COMPILER to detect more static/dynamic error conditions (XTSE0010=61,
+  XTSE0090=20, XPST0003=18, …) — diffuse, per-condition, risks false positives. Biggest but
+  hardest cluster.
+- `copy` (81): includes 9 cases needing fn:copy-of() (deep copy) — needs an xmltree clone
+  helper (none exists yet).
+- `on-empty` (71): the xsl:on-empty/on-non-empty FEATURE is unimplemented (roadmap ⬜); also
+  inline-content source from a ref'd env isn't loaded for ~29 of them.
+- `xml-to-json` (80): ~38 use xsl:use-package (packages, rejected-by-design) but don't declare
+  the dep, so they error instead of being skipped.
+- Static-param support (static="true"/shadow attrs) would unblock the `static`/`use-when` sets.

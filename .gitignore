@@ -1,0 +1,34 @@
+# --- build artifacts (library) -----------------------------------------------
+# The desktop GUI is a separate nested module; its Wails build artifacts are
+# ignored by desktop/.gitignore.
+bin
+
+# --- local tooling / editor ----------------------------------------------------
+.claude/
+.DS_Store
+
+# --- third-party test material (LOCAL ONLY — not redistributed) ----------------
+# W3C conformance suites: clone them locally, the harnesses skip when absent.
+#   git clone --depth 1 https://github.com/w3c/qt3tests.git    test/conformance/qt3tests
+#   git clone --depth 1 https://github.com/w3c/xslt30-test.git test/conformance/xslt30-test
+#   git clone --depth 1 https://github.com/w3c/xsdtests.git    test/conformance/xsdtests
+/test/conformance/qt3tests/
+/test/conformance/xslt30-test/
+/test/conformance/xsdtests/
+
+# Whatever local-only, non-redistributable test material lives on disk (a
+# third-party differential-testing corpus, a reference processor, etc.) —
+# never third-party licensed material in the tracked tree. See any README
+# under local/ for what's actually there, if present.
+/local/
+# A differential-gate test file that depends on material under local/ (if
+# any) stays local-only too, though it must stay in this package's
+# directory to compile.
+/test/conformance/diff_test.go
+
+# General conformance-campaign scratch (per-testset breakdowns, run logs,
+# results snapshots) — local working files.
+/tools/*.log
+/tools/qt3_byset*.csv
+/tools/xslt30_byset*.csv
+/tools/xsd_byset*.csv

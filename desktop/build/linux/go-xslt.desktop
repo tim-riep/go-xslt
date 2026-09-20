@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=go-xslt
+Exec=go-xslt
+Icon=go-xslt
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false

@@ -1,0 +1,359 @@
+QT3/FOTS XPath conformance — go-xslt engine
+Latest: 31821 catalog cases | ran 21670 | pass 18760 (86.6%) | fail 2910 | skipped 10151
+  See internal/xpath/UNSUPPORTED.md for the deliberately-unsupported clusters
+  (regex back-references/look-around ~150, format-number decimal-format ~80,
+  format-date locale names ~110, per-type cast lexical validation ~130,
+  collection/transform resolvers). Excluding the documented-impossible, the
+  effective pass-rate on supportable cases is ~89-90%.
+  NOTE: go.mod now depends on golang.org/x/text (BSD-3-Clause) for UCA collation
+  and normalize-unicode.
+Trajectory: 69.2% -> 71.3% (numeric/double/regex) -> 74.4% (function reflection)
+            -> 74.9% (format-integer + format-number) -> 75.6% (format-date/time/dateTime)
+            -> 80.6% (F: Q{uri}local named-fn refs; G: cast source-guards/bounds/
+               durations; H: gregorian parse+tz compare; I: adjust-*-to-tz +
+               parse-ietf-date; J: lookup ? operator; + range/round-precision
+               stability caps that unblocked full-suite measurement)
+            -> 80.9% (K: serialize params + json method, parse-json options,
+               xml-to-json ordering/escaping/validation; + fixed *:local
+               wildcard name test which matched nothing — rippled across
+               resolve-QName/string/path/current-time/name/local-name. 0 regressions)
+            -> 81.4% (L: function-lookup arity catalog (fn_arity.go) so standard
+               funcs exist + invalid arities return (); implemented fn:error,
+               fn:trace, math:exp10, fn:random-number-generator (map number/next/
+               permute). function-lookup 116->81, random-number-gen 39->4. 0 regressions.
+               Deferred: unparsed-text-available (needs resource-URI resolver infra),
+               regex class-subtraction (RE2).)
+            -> 83.6% (M: sequence-type param matching for function/map/array tests
+               + full atomic-type derivation (seqtype.go); N: cast self-casts +
+               constructor arity + temporal/binary->numeric rejection + NOTATION
+               abstract (cast.go), EN16931 0-mismatch validated; O: round neg-zero +
+               unary-minus numeric-subtype preservation (arith.go); P: format-number
+               scientific notation '0.00e0' (fn_numeric.go); Q: math: empty->()/NaN;
+               R: duration*number & duration-div-duration arithmetic (arith.go) — the
+               root cause behind format-date errored cases; S: parse-ietf-date strict
+               validation; + fn:contains-token. +612 cases, 0 real regressions.)
+            -> 86.6% (U: resource resolver (unparsed-text/doc) wired through a
+               Context.Resolver + the FOTS <resource> map; V: XSD-regex translator
+               — ~110 Unicode block names \p{IsX}, char-class subtraction, reject
+               \b/inline-flags (+234, biggest); W: xs:ID/IDREF/ENTITY/NMTOKEN types;
+               X: date/time/duration/binary range+leap validation; Y: UCA collation
+               (x/text/collate) + normalize-unicode (x/text/unicode/norm); deep-equal
+               for maps (order-insensitive) & arrays (+197, hidden gem — used in
+               countless assert-deep-eq self-checks); array-lookup bounds (FOAY0001).
+               +654, 0 real regressions, EN16931 0-mismatch throughout.)
+Harness: parallel across test-sets (~35 s full run); QT3_ONLY=<set> for fast triage.
+  Note: run `go test -c -o /tmp/qt3.bin ./test/conformance/` then
+  `cd test/conformance && /tmp/qt3.bin -test.run=TestQT3 -test.v` to see live
+  per-set progress (plain `go test` buffers all output until the package finishes).
+
+Top remaining failing test-sets (set=fail):
+fn-matches.re=336 prod-CastExpr=175 fn-format-number=93 app-spec-examples=72 fn-format-date=67 fn-function-lookup=58 fn-serialize=45 prod-AxisStep=42 fn-format-time=41 fn-parse-ietf-date=36 fn-format-integer=36 prod-Predicate=34 op-duration-equal=33 fn-xml-to-json=32 fn-json-doc=32 prod-Lookup=30 
+Note: fn-matches.re, misc-UCACollation, fn-unparsed-text-available and much of
+fn-format-date are documented-unsupported (see internal/xpath/UNSUPPORTED.md).
+
+================================================================================
+M33 — XPath 88.2% → 92% (QT3/FOTS), 2026-09-08. LANDED 92.1%: three runs
+19,954 / 19,954 / 19,955 of 21,672-3 applicable (~1,717-1,718 fails, down from
+2,561). All shared-engine work; every batch gated on XSD 1.0 39,346/39,351 +
+1.1 41,499/41,503 (unsupported 0/0, NIST 23,170 both — UNCHANGED), XSLT30
+(5,092 → 5,117 as a side effect, zero lost passes), EN16931 green, vet,
+internal tests. QT3 measured by fail-IDENTITY diff (counts are ±3-8 noise;
+time-flappers current-*/adjust-*-001 excluded from the diff).
+
+The census insight that shaped the round: 42% of all fails (1,079) were
+assert-error cases the engine SILENTLY ACCEPTED — the XPath-1.0-era
+leniencies (first-item arithmetic, permissive operators, untyped-everywhere)
+were the main gap, not missing features. Kept batches:
+
+B1 comparison strictness (+107): cmpTypeError type-compatibility matrix for
+   value AND general comparison (cross-family string/numeric/boolean pairs;
+   date/time DIFFERENT-primitive pairs; ORDER on plain/mixed durations and on
+   gregorians/QName; binaries stay ordered) + node-comparison operand rules.
+B2 arity + EBV (+330): full F&O arity catalog enforced on DIRECT calls
+   (XPST0017: abs(), abs(1,2)); EffectiveBoolErr (FORG0006) wired into
+   fn:boolean/not, if, and/or, quantified, and predicates; FOCH0001
+   codepoints-to-string (XML-1.1 char rules); idiv NaN/INF (FOAR0002).
+B3 grammar/predicate (+52): predicate context items keep their identity
+   (maps/arrays/atomics no longer wrapped in synthetic text nodes — fixes
+   lookups AND stops atomics answering node questions); function(*) matches
+   maps/arrays (item()*-return rule); array lookup integer-key rule; lookup
+   key-literal must be integer.
+B4 implement-missing (+263 net): json-doc (via Context.Resolver),
+   collation-key (x/text keys), parse-xml + parse-xml-fragment (unbound-prefix
+   → FODC0006), generate-id, NamedFuncRef invalid-arity → XPST0017, map-key
+   cardinality, STRICT context functions (root/name/... on a non-node → XPTY0004,
+   absent focus → XPDY0002), use-character-maps in serialize, JSON option-map
+   validation, and a per-evaluation nowCache pinning fn:current-*/implicit-
+   timezone to ONE UTC instant (fn-for-each-pair-031, cbcl-adjust-001).
+C1 value casts (+29): canonical duration strings (float-drift pinned),
+   canonical base64 padding, abstract cast targets (XPST0080), constructor
+   argument cardinality, implicit-timezone.
+C2 integer typing (+29): count/position/last/string-length/map:size/
+   array:size/index-of return xs:integer (assert-type xs:integer families).
+C3 lexer := + inline param types (+41): the name scanner stopped swallowing
+   the '=' of ':=' ($f:= …); inline-function parameter types are captured and
+   enforced under the function conversion rules (numeric promotion + untyped
+   coercion — inline-function-5).
+C4 Unicode digit families (+10): a picture in a non-ASCII decimal-digit
+   family (Thai ๐, Arabic-Indic ١, Osmanya 𐒠) renders in that family, shared
+   by format-integer and format-date/time.
+C5 integer-lexical strictness (+24): a STRING source to an integer type must
+   be a valid integer lexical (xs:long("3.0") → FORG0001, not 3); a dynamic
+   error in an xs:alternative test means the alternative is not selected
+   (restored the XSD floor this exposed).
+C6 derived-string lexical validation (+38): casts to xs:language/Name/NCName/
+   NMTOKEN/ID validate the lexical; fn:default-language implemented.
+C7 untyped coercion correctness (net +3, plus a latent B1 EN16931 fix):
+   general-comparison untyped operand casts to xs:double vs a numeric operand
+   and xs:string vs a string-family operand, propagating FORG0001 on failure —
+   reconciles `untyped("three")=3` (error) with EN16931 (numeric untyped works)
+   and `untyped("1")=NCName("string")` (false).
+
+Reverted / not pursued this round: serialize-xml *b SEPM-code validation
+(fiddly, ~27, code-insensitive harness), fn-idref-dtd (needs DTD ATTLIST ID
+awareness), the remaining K2-SeqExprCast anyURI-percent-escape edges. Honest
+ceiling notes stand in internal/xpath/UNSUPPORTED.md (back-refs, UCA fine
+points, locale names). One accepted collateral: XSLT param-0501 (net-zero,
+a double-path leniency) and QT3 ArrayTest-084 (exp=invalid, array-of-function
+member type-check gap).
+
+================================================================================
+M34 — XPath 92% → 95% target (QT3/FOTS), 2026-09-08. LANDED 93.2% — the
+HONEST MAXIMUM this session (M28 precedent): ~20,200/21,672, fails 1,718 →
+1,471 (+247 this round on top of M33's 92.1%). 95% (needs fails ≤1,084) sits
+above the winnable ceiling reachable this session — the remaining ~1,471 are
+dominated by documented-unsupported / host-gap clusters (below). All gates
+held throughout: XSD 1.0 39,346/39,351 + 1.1 41,499/41,503 (unsupported 0/0,
+NIST 23,170 both — UNCHANGED), XSLT30 5,117 → 5,131 (zero lost passes),
+EN16931 green, vet, internal tests. QT3 by fail-IDENTITY diff (±3-8 noise;
+time-flappers excluded).
+
+The census driver again: the [error] bucket (silent-accepts) fell 628 → ~500
+and [errored] 352 → ~280 by continuing to remove 1.0-era leniencies. Kept
+batches:
+- Grammar strictness (W1): static XPST0081 unbound name-test prefix + xmlns
+  reserved; unknown-axis XPST0003; EQName braced-URI whitespace collapse
+  (Q{ uri }local); schema-element/schema-attribute → XPST0008 (not
+  schema-aware); document-node() element-only argument.
+- xs:numeric union type (constructor→double, instance-of matches any
+  numeric); xs:error type (empty value space; xs:error?/* parse).
+- map:merge arity + duplicates option; MapConstructor duplicate-key
+  XQDY0137; map:get/contains & array:get on a non-map/array → XPTY0004;
+  array:get index bounds → FOAY0001.
+- Exact fractional-second PARSE (decimal, no float drift — ".110" stays 110ms)
+  and integer-nanosecond duration rendering (huge-duration float fallback);
+  dateTime→gregorian cast component normalization at the CAST site (matching
+  the lexical reference-fill, leaving the shared comparison — and thus the
+  XSD floor — untouched).
+- parse-ietf-date fractional seconds + glued-zone split + offset-range
+  validation; format-number passive-vs-exponent 'E' disambiguation;
+  format-integer digit-pattern rewrite (validation + arbitrary/regular
+  grouping separators + digit families); integer & double("Inf") lexical
+  strictness; derived-string cast lexical validation.
+- duration +/- require the SAME family (XPTY0004); duration div zero/NaN/Inf
+  (FODT0002); fn:string FOTY0014 (map/array/function) + XPDY0002 no-focus;
+  fn:replace validation (empty pattern/replacement XPTY0004, FORX0004
+  replacement, q-flag literal replace); fn:has-children strict node arg;
+  instance-of unknown-xs-type XPST0051; fn:document-uri () for non-document
+  nodes; default-language; CTA-test dynamic-error-is-false.
+
+DEFERRED / blocked (documented ceiling):
+- string-in-arithmetic strictness ("3" + "3" → XPTY0004) would add ~27 QT3
+  but costs 4 XSLT tests whose static params (`as="xs:integer"`) are NOT
+  converted to their declared type by the XSLT engine before arithmetic —
+  an internal/xslt as-type-conversion gap, not a wrong XPath rule. Land the
+  XSLT conversion first, then this rule is free.
+- format-date/-time/-integer LOCALE NAMES (month/day names, ordinal words in
+  other languages), regex back-references (RE2), true UCA collation
+  tailoring, serialize SEPM param-validation minutiae, and DTD-ATTLIST-typed
+  fn:id/idref — these dominate the residual ~1,471 and are the standing
+  documented-unsupported clusters (internal/xpath/UNSUPPORTED.md).
+- array:sort sequence-key comparison was attempted and REVERTED (net −2).
+Collaterals accepted (exp=invalid or exp=value, never exp=valid FPs):
+parse-ietf-date-errs30/31, format-integer-026 (#a per bug 19004).
+
+================================================================================
+M35 (the 93.2% → 96% round): QT3 fails 1,471 → 1,048 (−423), **95.2% pass
+(20,626/21,674, three stable runs)** — the HONEST MAXIMUM; 96% (fails ≤867)
+sits above this RE2/x-text engine's winnable ceiling. XSD floors held every
+rule (1.0 39,346/39,351, 1.1 41,499/41,503, unsupported 0/0, NIST 23,170).
+XSLT30 rose 5,131 → 5,198 as a side effect; EN16931 all-pass. Method
+unchanged: per-rule fail-IDENTITY diff + full gate; kept only net-improving
+rules with no exp=valid FP and no floor movement.
+
+Residual ~1,048 breakdown: genuinely unwinnable ~130 (regex back-references
+[re, cbcl-matches, fn-matches] + the malformed-character-class family that
+shares the XSD pattern floor; true UCA collation tailoring [UCA-maxVariable];
+format-date/-time/-integer LOCALE month/day names + ordinal WORDS
+[format-date-en/-de, format-integer ordinals, format-dateTime]; xs:double/
+decimal shortest-vs-exact bignum digits; xs:anyURI stricter-than-XSD lexical
+tests; a handful of same-expression version/erratum contradictions
+[FunctionCall-044 vs 045, K-SeqExprCast-71a vs 71b, fn-matches-30]). The rest
+is specialized-but-winnable and left for a later round: format-time [f]
+left-aligned fractional digit-pattern (~13), K2-Axes/-NameTest whitespace-in-
+name grammar strictness (~26, blocked on comment-stripping in the lexer),
+fn:parse-json escape=true/fallback raw-escape preservation (~15, needs a
+custom JSON string scanner), timezone-picture format-date/-dateTime (~25),
+MapTest map(K,V) unprefixed-type-name + function-type subtyping (~11),
+serialize element-form standalone/cdata params (~10).
+
+The batches below cover the whole round (the earlier "1,471 → 1,142" figure was
+a mid-round checkpoint; additional batches after it: parse-xml-fragment wrapper,
+DTD id/idref, fn:doc source-uri, filter map/array, array:put, sum/avg durations,
+env-variables, empty-inline-body + return-type, ?() lookup, parse-json U+FFFD,
+json-to-xml duplicates, unparsed-text UTF-16 + encoding, fn:lang node-arg,
+format-integer empty/Unicode-sequences, format-number positional grouping,
+array:sort item-by-item key compare, map-key op:same-key canonicalization,
+parse-ietf-date hyphens, default-collation, unparsed-text-available,
+boolean/numeric→derived-string cast, untypedAtomic→QName rejection).
+
+Landed batches (each measured in isolation):
+- Regex grammar strictness in xsdRegexToGo: reject \+digit (octal/back-ref,
+  +20), reject a '{' that is not a well-formed quantifier (+5). Collateral:
+  fn-matches-30 (\11 as back-ref per erratum FO.E24) now errors — RE2 has no
+  back-refs; it was passing only by RE2's octal accident. The malformed
+  character-class family (stray ']', nested '[', POSIX [[: ) was attempted and
+  REVERTED: the naive inClass tracker miscounts class-subtraction output and
+  broke the XSD pattern-facet floor.
+- fn:serialize element-form serialization-parameter validation (SEPM0016/17/
+  18/19 + XPTY0004): wrong root, unknown/no-namespace/duplicate params, extra
+  attributes, use-character-maps shape, single-char @character, map-form
+  use-character-maps key/value string typing (+19).
+- fn:QName lexical-QName + arg-type validation, xs:QName("") FOCA0002 (+9).
+- function-lookup required-singleton cardinality on both args (+6).
+- xs:double/float "+INF" kept (XSD 1.1/XPath 3.1 valid; the 1.0-flavored
+  K2-SeqExprCast-231/232 rejection was net-negative + XSD-floor-breaking —
+  REVERTED). xs:anyURI lexical validation REVERTED (XSD 1.1 accepts ":a"/"%",
+  a documented unwinnable QT3 anyURI cluster). String→QName cast restriction
+  REVERTED (XSD instance QName validation shares the cast).
+- **decimal-format environment support** (harness parses <decimal-format>,
+  keyed by expanded {uri}local; engine expandDFName resolves the 3rd-arg name;
+  XSLT compileDecimalFormat keys the same): +28+5. numberformat64 collateral
+  (bignum-precision, any-of optional FOAR0002).
+- format-number exponent picture: validator now splits mantissa/exponent so
+  "#.#e0" no longer reads the exponent digit as a fractional digit (+13).
+- fn:parse-xml-fragment: the wrapper root was a NUL-named element the parser
+  rejects (every fragment failed) → renamed; plus text-decl-needs-encoding,
+  no-DOCTYPE, and unbound-prefix checks (+15).
+- Arrow operator: map/array/parenthesized targets via callItemAsFunction; a
+  braced-EQName arrow target (=>Q{uri}f()) (+7+3).
+- xs:error registered in AtomTypeByName: constructor of () → (), cast/castable
+  semantics fall out (empty value space) (+9).
+- fn:environment-variable / available-environment-variables return () (no
+  vars exposed, conforming) + string-arg type check (+14).
+- **DTD ATTLIST id/idref** (xmltree scans the internal subset, marks
+  attribute nodes with IDKind; fn:id rewritten over ID-typed attrs, fn:idref
+  implemented, element-with-id = fn:id): +46+4+11 XSLT. Node-not-node target
+  → XPTY0004/XPDY0002.
+- fn:doc source-<uri> resolution (harness registers a <source> uri in the
+  resolver): +21.
+- fn:filter accepts map/array predicate + requires xs:boolean result (+16 with
+  outermost/innermost node-type checks); fn:tokenize FORX0003 zero-length;
+  array:put implemented.
+- sum()/avg() over a uniform duration family (dayTime/yearMonth only; base
+  xs:duration excluded) + month-overflow FODT0002 (+17).
+- Inline function: empty body {} → () (EnclosedExpr optional Expr); declared
+  "as" return type now enforced via convertForParam (+9). Collateral:
+  FunctionCall-044, inline-fn-006 (XP30-exact empty-body-error tests) — a 3.1
+  engine correctly allows the empty body.
+- Lookup: "?()" empty key specifier → (); "?NCName" rejects a prefixed/braced
+  name (XPST0003) (+8).
+- fn:parse-json default-mode U+FFFD replacement of non-XML codepoints (+8).
+- json-to-xml duplicates=reject FOJS0003, duplicates-value + fallback-arity
+  validation (+3+4 XSLT).
+
+Deliberately left (documented ceiling): regex back-references (RE2), the
+malformed-character-class family (shared with the XSD pattern floor), xs:anyURI
+stricter-than-XSD lexical tests, format-date/-time/-integer LOCALE names,
+format-time [f] left-aligned fractional digit-pattern (intricate width
+interaction), parse-ietf-date hyphen-separator forms, and the XP30-exact
+version-contradiction tests.
+
+================================================================================
+M36 (the 95.2% → 99% orchestrated agent-loop round): QT3 fails 1,048 → **124**
+(−924), **99.4% pass (21,551/21,675, three stable runs)** — the 99% target
+(≤217) EXCEEDED. XSLT30 rose 5,198 → 5,454 (+256). The residual 124 is
+essentially the documented unwinnable core: regex back-references + malformed
+character classes (~56, RE2 / shared XSD pattern floor), format locale
+month/day names (~12), UCA-reorder-codes + residue (~8), plus ~30 that are
+spec-version mismatches the harness still runs (XP20/XP30-exact, xsd-version
+1.0, xml-version 1.0 — a 3.1 engine correctly does not exhibit their behaviour;
+a harness dependency-filter would exclude them) and ~15 genuinely-hard
+singletons (host-plumbed decimal-format exponent-separator, default-collation
+env, network resource, static-AST optimizer). Method:
+an Opus orchestrator drives an iterative loop — each iteration spawns ONE
+Fable-5 fixer agent on a fail cluster, then the orchestrator INDEPENDENTLY
+gates the result (per-rule QT3 fail-IDENTITY diff + XSD 1.0/1.1 floors + NIST +
+XSLT30 no-lost-pass + EN16931 + vet + internal tests) and keeps only clean
+net-improving changes, reverting the rest via a per-iteration file snapshot.
+All XSD floors held every iteration (1.0 39,346/39,351, 1.1 41,499/41,503,
+unsupported 0/0, NIST 23,170); XSLT30 rose 5,198 → 5,399 (+201) as a side
+effect; EN16931 all-pass throughout.
+
+Kept iterations (each independently gate-verified by the orchestrator):
+- iter1 (arithmetic/sequence, −138): float type-promotion (float+decimal/integer
+  → xs:float not double), xs:float as binary32, exact decimal mod, unary ±
+  strictness, lexer terminal-delimitation (10div/10idiv → XPST0003), deep-equal
+  NaN=NaN + collation, index-of eq/NaN/collation, subsequence NaN/INF bounds,
+  min/max over durations + type, range-operand typing.
+- iter2 (casts/maps/serialize/json/reflect, −105; the agent stalled but the
+  orchestrator recovered its work and fixed the 5 XSLT regressions it caused —
+  use-when default-ns threading + braced-EQName variable binding
+  resolveQName/ResolveVar): function-type subtyping (subtypeSeq/subtypeItem for
+  map/array/function instance-of), bare-type-name XPST0051 (checkBareTypes gated
+  on the default type namespace), gYear/gYearMonth negative-year+tz casts,
+  xs:dateTimeStamp, exact-value map keys, json-doc raw-escape scanner, resolve-uri
+  RFC 3986, unparsed-text UTF-16/encoding, XSD list-type constructors.
+- iter3 (number formatting, −82): format-number rebuilt on exact big.Rat (cracks
+  the "unwinnable" bignum magnitude set — 1E25 etc. via shortest-round-trip),
+  §4.7.4 sub-picture adjustments, exponent/grouping/validation, format-integer
+  modifier grammar + Greek/Kanji sequences; evalPath XPDY0002 (+27 axes/quant).
+- iter4 (resolver/reflection/nodes, −126, +135 XSLT): NODE-MODEL fixes (doc-level
+  whitespace outside the root dropped; following:: excludes descendants;
+  namespace:: returns in-scope bindings) rippled widely; fn:doc identity+cache,
+  fn:idref/nilled, function-lookup list-constructors, partial application.
+  Out-of-xpath edits (xmltree/parse.go,node.go; xslt/transform.go; harness)
+  independently verified against XSD + EN16931.
+- iter5 (date/time formatting, −90): [Z]/[z] timezone pictures (numeric/GMT/
+  military/digit-family), [f] fractional (left-aligned digit pattern), picture
+  validation (FOFD1340/1350), width modifiers, week-in-month, arity gaps.
+- iter6a (regex/fn:replace, −13; Fable rate-limited mid-cluster, partial work
+  kept): empty/zero-length pattern FORX0003, multi-digit group refs.
+- iter6b (Opus, −7): namespace-uri strict+anyURI, contains-token XML-whitespace
+  + collation, xsl:function argument coercion to the declared @as type.
+- iter7 (string-collation/ietf/json, −95): collation-aware contains/starts-with/
+  ends-with/substring-before/after; UCA alternate=blanked/shifted + maxVariable
+  (cracked UCA-maxVariable/params — a cluster pre-classified unwinnable!);
+  parse-ietf-date all 14 (2-digit year, 24:00, tz-offset grammar, comma/comment
+  rules); json-to-xml trailing/escape; SpecialCasing upper/lower; anyURI
+  constructor validation (scoped to the constructor, NOT the shared cast → XSD
+  floor safe); default-ns QName; a seqtype kind-test prefix bug (+9 XSLT).
+- iter8 (numeric/cast/node tail, −96; Opus stopped it on a mid-round wrap-up,
+  partial work clean): arith date/duration, cbcl gregorian casts, node-name
+  accessors, fn:sort, distinct-values, union/intersect typing, string-length.
+- iter9 (serialize/cast/K-family, −73): the serialize element form finally fell
+  to a by-value bug (serReadParamElement mutated a COPY of serParams) → all 21
+  serialize cases + standalone/cdata/suppress-indentation/adaptive/json-node-
+  output-method; cbcl casts (>11-digit years rejected); adjust-date/seconds-
+  from-duration; fn:analyze-string added as an XPath function; checkRegexBraces
+  rejects bare {/} on the strict path; Opus added CompileRegexStrict so
+  xsl:analyze-string is strict too (fixed the one XSLT break it caused).
+- iter10 (winnable tail, −98, +37 XSLT): a REVERSE-AXIS positional-predicate bug
+  (preceding-sibling::*[1] double-flipped the position) fixed 1 QT3 + 37 XSLT;
+  fn:sort/distinct-values on the collation key-compare; HOF arity/plurality
+  checks; xs:string?-param type strictness across compare/codepoint-equal/
+  normalize-unicode/upper-lower/contains-family/QName-accessors; fn_sigs.go gives
+  27 built-ins declared signatures for function-type instance-of; parser edges
+  (/42, star-after-occurrence, arrow ? placeholders); XPST0081 unknown-prefix
+  cast target; duration÷number FMA-proof rounding. Opus updated one internal
+  unit test (upper-case#1 over integers) to the now-spec-correct XPTY0004.
+
+Remaining ~487: unwinnable floor ~135-140 (regex back-references + malformed
+character classes 58 [share the XSD pattern floor / RE2]; UCA collation
+tailoring 45; format LOCALE month/day names + ordinal WORDS ~25; plus bignum,
+anyURI-vs-XSD, same-expression erratum/version contradictions, remote-HTTP
+resource). Winnable long tail (~350, thinning): serialize element-form params,
+parse-ietf-date residue, non-UCA string edges, format-date non-locale residue,
+fn:parse-json escape, json-to-xml, and scattered singletons. 99% (≤217) has
+~77 tests of headroom above the unwinnable floor — aggressive but not
+structurally blocked; the loop continues (Fable resets at midnight Berlin).

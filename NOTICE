@@ -1,0 +1,52 @@
+go-xslt
+Copyright 2026 Tim Riep
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components
+
+The engine library (engine/, internal/…) is original work with a single
+dependency, golang.org/x/text (BSD-3-Clause). The optional desktop GUI
+application (desktop/) and its build incorporate the following additional
+third-party components, each under its own license (all permissive; retained
+here for attribution as required by those licenses):
+
+Go modules (see each module's repository for the full license text):
+  - github.com/wailsapp/wails/v3, .../webview2 ........ MIT
+  - github.com/adrg/xdg ............................... MIT
+  - github.com/go-ole/go-ole ......................... MIT
+  - github.com/jchv/go-winloader ..................... MIT
+  - github.com/mattn/go-colorable, go-isatty ......... MIT
+  - golang.org/x/text, golang.org/x/sys ............... BSD-3-Clause
+  - github.com/godbus/dbus/v5 ........................ BSD-2-Clause
+  - github.com/coder/websocket ....................... ISC
+  - github.com/ebitengine/purego ..................... Apache-2.0
+
+Frontend packages actually bundled into the app (see
+desktop/frontend/package.json's "dependencies" — build-only tooling like vite
+or typescript isn't shipped and isn't listed here):
+  - react, react-dom ................................. MIT
+  - @codemirror/*, @uiw/react-codemirror, @uiw/* ..... MIT
+  - @wailsio/runtime ................................. MIT
+  - react-resizable-panels ........................... MIT
+
+Bundled font (desktop GUI):
+  - Inter (desktop/frontend/public/Inter-Medium.ttf) . SIL Open Font License 1.1
+    Full license: desktop/frontend/Inter Font License.txt
+    "Inter" is a reserved font name under the OFL; modified versions must be
+    renamed.
+
+This list is also shown, with the full license text for each entry, from
+inside the desktop app itself via the "Licenses" button in the toolbar
+(desktop/licenses/) — that in-app view is the live, always-current source;
+this file is a static summary of it.
+
+--------------------------------------------------------------------------------
+Not distributed with this repository (local-only development material)
+
+Any local-only, non-redistributable third-party test/corpus material a
+differential-testing gate needs (if present) lives under local/ and is never
+committed — see the README there, if one exists, plus .gitignore. The W3C
+conformance test suite clones are likewise gitignored — see
+test/conformance/README.md.

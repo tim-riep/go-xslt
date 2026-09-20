@@ -1,0 +1,283 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---- toolbar ---- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px var(--sp-4);
+  height: var(--toolbar-h);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+  padding-left: 96px; /* room for macOS traffic lights, plus a gap before .brand */
+  flex-shrink: 0;
+}
+.toolbar button,
+.toolbar select,
+.toolbar label,
+.toolbar [role="button"],
+.params-bar * {
+  -webkit-app-region: no-drag;
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.spacer {
+  flex: 1;
+}
+
+/* ---- app body: sidebar + main ---- */
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.main {
+  /* react-resizable-panels' <Panel> (this element's parent here) is NOT a
+     flex container for its own child — it only sets flexBasis/flexGrow on
+     ITSELF as an item of the PanelGroup above it. `flex: 1` here would be a
+     no-op; height:100% is what actually fills the Panel's resolved box
+     (the same reason every .pane element uses height:100%, not flex:1). */
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- params bar ---- */
+.params-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 4px var(--sp-4);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  min-height: 30px;
+  flex-shrink: 0;
+}
+.params-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  letter-spacing: 0.5px;
+}
+.params-empty {
+  color: var(--fg-dim);
+  font-size: var(--text-sm);
+}
+.param {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 4px 2px 6px;
+}
+.param code {
+  font-size: var(--text-sm);
+  color: #9cdcfe;
+}
+.param input {
+  width: 90px;
+  padding: 1px 4px;
+}
+.param-del {
+  padding: 0 5px;
+  line-height: 1;
+}
+.param-add {
+  font-size: var(--text-sm);
+  color: var(--fg-dim);
+}
+.param-new {
+  padding-left: 6px;
+}
+.param-new-name {
+  width: 130px;
+  padding: 1px 4px;
+  font-size: var(--text-sm);
+}
+.param-new-name::placeholder {
+  color: var(--fg-dim);
+}
+
+/* ---- resizable split panels ---- */
+.panels {
+  flex: 1;
+  min-height: 0;
+}
+.resize-handle {
+  width: 1px;
+  background: var(--border);
+  position: relative;
+}
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+.resize-handle:hover {
+  background: var(--accent);
+}
+.resize-handle.vertical {
+  width: 100%;
+  height: 1px;
+}
+.resize-handle.vertical::after {
+  inset: -3px 0;
+}
+
+/* ---- generic pane (editor or result column) ---- */
+.pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--bg);
+}
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 5px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+.pane-title {
+  font-weight: 600;
+}
+.meta {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+}
+.editor-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- run configuration controls (file pickers, schema set editor) ---- */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--text-sm);
+}
+.field-label {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.file-picker-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  max-width: 220px;
+}
+.file-picker-field:hover {
+  border-color: var(--accent);
+}
+.file-picker-field-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-picker-field-empty {
+  color: var(--fg-dim);
+}
+.file-picker-field-path.missing {
+  color: var(--error);
+}
+
+/* small, low-chrome text action — e.g. "use inline text instead" toggles
+   next to a pane title, where a full bordered button would be too heavy */
+.link-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  padding: 2px 4px;
+}
+.link-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+.schema-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-2);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.schema-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  font-size: var(--text-sm);
+}
+.schema-list-row-index {
+  color: var(--fg-dim);
+  min-width: 16px;
+}
+.schema-list-row-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.schema-list-add {
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+/* small pill-style tab toggle used inside a pane header (e.g. Source/Rendered) */
+.tabs {
+  display: flex;
+  gap: 2px;
+}
+.tab {
+  padding: 2px 8px;
+  font-size: var(--text-sm);
+  background: transparent;
+  border: 1px solid transparent;
+}
+.tab.active {
+  background: var(--bg-3);
+  border-color: var(--border);
+}
