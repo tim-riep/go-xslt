@@ -2174,7 +2174,7 @@ func fnJSJSONToXML(ctx *Context, args []Object) (Object, error) {
 	if useFirst {
 		v = jsDedupFirst(v)
 	}
-	doc := &xmltree.Node{Kind: xmltree.KindDocument}
+	doc := &xmltree.Node{Kind: xmltree.KindDocument, Ephemeral: true}
 	root := jsBuildXMLNodeEsc(v, "", opts.escape)
 	// The elements are built with their expanded name only; the serializer
 	// synthesizes xmlns="…" from Name.Space at write time, so the output looks
@@ -2188,6 +2188,14 @@ func fnJSJSONToXML(ctx *Context, args []Object) (Object, error) {
 		})
 	}
 	doc.Append(root)
+	// The tree is finished from here on and independently reachable (a
+	// caller can union/sort/compare it), so it needs real document-order
+	// numbering now — see xmltree.AssignOrder's doc comment. Without this,
+	// every node ties at order 0 and any subsequent path/sort over the
+	// result falls back to siblingIndex's O(k) linear scan per comparison,
+	// turning an ordinary O(n log n) sort into an O(n^2) one for a wide,
+	// flat JSON array/object.
+	xmltree.AssignOrder(doc)
 	// validate:true() (F&O 3.1 §17.5.1): "the resulting XDM instance is
 	// validated against the schema for the namespace
 	// http://www.w3.org/2005/xpath-functions", which annotates every element
