@@ -56,12 +56,8 @@ func runTo(w io.Writer, req Request) Result {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(err, "compile")}}
 	}
 
-	source := req.Source
-	if source == "" {
-		source = "<_/>"
-	}
-
-	rr, terr := ss.TransformFullTo(w, source, req.Params, req.BaseDir, chunkableStylesheet(req.Stylesheet))
+	entry := xslt.Entry{Template: req.InitialTemplate, Params: req.Params}
+	rr, terr := ss.TransformEntryTo(w, req.Source, entry, req.BaseDir, chunkableStylesheet(req.Stylesheet))
 	if terr != nil {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(terr, "run")}}
 	}

@@ -71,6 +71,34 @@ func (ss *Stylesheet) TransformFullTo(w io.Writer, srcXML string, params map[str
 	return ss.finishRun(eng, root)
 }
 
+// TransformEntryTo is TransformFullTo's counterpart for a full Entry (a named
+// initial template, mode, function, or the xsl:initial-template default entry
+// point when srcXML is empty), writing the principal result to w instead of
+// returning it. See TransformFullTo for the allowChunked contract.
+func (ss *Stylesheet) TransformEntryTo(w io.Writer, srcXML string, e Entry, baseDir string, allowChunked bool) (*RunResult, error) {
+	tgt := &outTarget{w: w}
+	if allowChunked {
+		if so, ok := ss.chunkedOptions(); ok {
+			cw := xmltree.NewChunkWriter(w, so)
+			if so.Method == "xml" && strings.TrimSpace(so.XMLVersion) != "1.1" {
+				cw.Validate = func(n *xmltree.Node) error {
+					if c, bad := firstIllegalXML10Char(n); bad {
+						return fmt.Errorf("err:SERE0006: character #x%X cannot be serialized as XML 1.0", c)
+					}
+					return nil
+				}
+			}
+			tgt.sink = cw
+			strmChunkedRuns.Add(1)
+		}
+	}
+	eng, root, err := ss.transformEntryInto(srcXML, e, baseDir, tgt)
+	if err != nil {
+		return nil, err
+	}
+	return ss.finishRun(eng, root)
+}
+
 // chunkedOptions returns the serialization options for an incrementally
 // drained run, and whether this stylesheet's output definition qualifies at
 // all.

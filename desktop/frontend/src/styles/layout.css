@@ -21,7 +21,8 @@
 .toolbar select,
 .toolbar label,
 .toolbar [role="button"],
-.params-bar * {
+.params-bar *,
+.params-panel * {
   -webkit-app-region: no-drag;
 }
 .brand {
@@ -78,37 +79,73 @@
   color: var(--fg-dim);
   font-size: var(--text-sm);
 }
-.param {
-  display: inline-flex;
-  align-items: center;
+
+/* Params panel: one row per parameter (name | value | delete), stacked, so
+   the value field always gets real width regardless of how many params
+   there are — a single wrapping toolbar line squeezed every value field
+   down to a fixed, tiny width no matter the window size. */
+.params-panel {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 2px 4px 2px 6px;
+  padding: 6px var(--sp-4) 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  max-height: 240px;
 }
-.param code {
+.params-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+.param-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.param-row-name {
+  flex: 0 0 180px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-sm);
   color: #9cdcfe;
+  padding-top: 4px;
 }
-.param input {
-  width: 90px;
-  padding: 1px 4px;
+.param-row-value {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  line-height: 1.4;
+  resize: vertical;
+  min-height: 24px;
+  max-height: 180px;
 }
 .param-del {
   padding: 0 5px;
   line-height: 1;
+  flex-shrink: 0;
+  margin-top: 4px;
 }
 .param-add {
   font-size: var(--text-sm);
   color: var(--fg-dim);
+  flex-shrink: 0;
 }
-.param-new {
-  padding-left: 6px;
-}
-.param-new-name {
-  width: 130px;
-  padding: 1px 4px;
+.param-row-new .param-new-name {
+  flex: 0 0 180px;
+  max-width: 180px;
+  padding: 3px 8px;
   font-size: var(--text-sm);
 }
 .param-new-name::placeholder {

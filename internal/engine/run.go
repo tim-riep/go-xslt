@@ -30,13 +30,8 @@ func run(req Request) Result {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(err, "compile")}}
 	}
 
-	source := req.Source
-	if source == "" {
-		// A non-empty document is required for matching against the source tree.
-		source = "<_/>"
-	}
-
-	rr, terr := ss.TransformFull(source, req.Params, req.BaseDir)
+	entry := xslt.Entry{Template: req.InitialTemplate, Params: req.Params}
+	rr, terr := ss.TransformEntry(req.Source, entry, req.BaseDir)
 	if terr != nil {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(terr, "run")}}
 	}

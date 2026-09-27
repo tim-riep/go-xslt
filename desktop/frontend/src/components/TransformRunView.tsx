@@ -119,35 +119,48 @@ export function TransformRunView({ tab, run }: { tab: RunTab; run: SavedRun }) {
         </label>
       </div>
 
-      <div className="params-bar">
-        <span className="params-label">Params</span>
-        {Object.entries(params).length === 0 && <span className="params-empty">none</span>}
-        {Object.entries(params).map(([name, value]) => (
-          <span className="param" key={name}>
-            <code>{name}</code>
-            <input value={value} onChange={(e) => setParam(name, e.target.value)} placeholder="value" />
-            <button className="param-del" onClick={() => removeParam(name)}>
-              ×
+      <div className="params-panel">
+        <div className="params-panel-header">
+          <span className="params-label">Params</span>
+          {Object.entries(params).length === 0 && <span className="params-empty">none</span>}
+        </div>
+        <div className="params-list">
+          {Object.entries(params).map(([name, value]) => (
+            <div className="param-row" key={name}>
+              <code className="param-row-name" title={name}>
+                {name}
+              </code>
+              <textarea
+                className="param-row-value"
+                value={value}
+                onChange={(e) => setParam(name, e.target.value)}
+                placeholder="value"
+                rows={1}
+                spellCheck={false}
+              />
+              <button className="param-del" onClick={() => removeParam(name)}>
+                ×
+              </button>
+            </div>
+          ))}
+          <div className="param-row param-row-new">
+            <input
+              className="param-new-name"
+              value={newParam}
+              onChange={(e) => setNewParam(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitNewParam();
+                }
+              }}
+              placeholder="new param name"
+            />
+            <button className="param-add" onClick={commitNewParam} disabled={!newParam.trim()}>
+              + add
             </button>
-          </span>
-        ))}
-        <span className="param param-new">
-          <input
-            className="param-new-name"
-            value={newParam}
-            onChange={(e) => setNewParam(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitNewParam();
-              }
-            }}
-            placeholder="new param name"
-          />
-          <button className="param-add" onClick={commitNewParam} disabled={!newParam.trim()}>
-            + add
-          </button>
-        </span>
+          </div>
+        </div>
       </div>
 
       <PanelGroup direction="horizontal" className="panels">

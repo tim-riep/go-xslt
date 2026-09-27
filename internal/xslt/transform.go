@@ -754,7 +754,7 @@ func bracedName(s string) (uri, local string, ok bool) {
 	return s[1:i], s[i+1:], true
 }
 
-func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string) (*engine, *xmltree.Node, error) {
+func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string, tgt ...*outTarget) (*engine, *xmltree.Node, error) {
 	var doc *xmltree.Node
 	if strings.TrimSpace(srcXML) != "" {
 		d, err := xmltree.ParseLenient11WithBase(srcXML, baseDir)
@@ -900,6 +900,15 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string)
 	}
 	prepareRawRoot(resultRoot, ss.output)
 	eng.principalRoot = resultRoot
+	// An output target (TransformEntryTo) writes the principal result instead
+	// of returning it; see transformInto's identical wiring.
+	if len(tgt) > 0 && tgt[0] != nil {
+		eng.outWriter = tgt[0].w
+		if tgt[0].sink != nil {
+			eng.outSink = tgt[0].sink
+			eng.outSink.Attach(resultRoot)
+		}
+	}
 
 entryKind:
 	switch {
