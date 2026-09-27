@@ -2,6 +2,7 @@ package xpath
 
 import (
 	"math"
+	"strings"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -150,12 +151,15 @@ func effectiveBool(seq []Item) bool {
 
 // seqAsString joins item string-values with sep (used by value-of/string-join).
 func seqAsString(items []Item, sep string) string {
-	out := ""
+	if len(items) == 1 {
+		return itemString(items[0])
+	}
+	var b strings.Builder
 	for i, it := range items {
 		if i > 0 {
-			out += sep
+			b.WriteString(sep)
 		}
-		out += itemString(it)
+		b.WriteString(itemString(it))
 	}
-	return out
+	return b.String()
 }
