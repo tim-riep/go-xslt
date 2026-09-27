@@ -565,7 +565,7 @@ func schemaTypeMatches(want xmltree.SchemaTypeName, n *xmltree.Node, ctx *Contex
 	if n == nil {
 		return false
 	}
-	if n.SchemaType == nil {
+	if n.SchemaType() == nil {
 		// An UNVALIDATED node still has a type annotation in the XDM:
 		// xs:untyped for an element, xs:untypedAtomic for an attribute. Both
 		// derive from xs:anyType, so element(*, xs:anyType) matches every
@@ -575,11 +575,11 @@ func schemaTypeMatches(want xmltree.SchemaTypeName, n *xmltree.Node, ctx *Contex
 		// other named type is unsatisfiable without an annotation.
 		return want.Namespace == nsXS && (want.Local == "anyType" || want.Local == "anySimpleType")
 	}
-	if *n.SchemaType == want {
+	if *n.SchemaType() == want {
 		return true
 	}
 	if ctx == nil || ctx.SchemaTypes == nil {
 		return false
 	}
-	return ctx.SchemaTypes.DerivesFrom(*n.SchemaType, want)
+	return ctx.SchemaTypes.DerivesFrom(*n.SchemaType(), want)
 }

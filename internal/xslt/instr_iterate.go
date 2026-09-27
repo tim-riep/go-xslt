@@ -371,9 +371,10 @@ func itrItemsToNodes(v xpath.Object) []*xmltree.Node {
 			// xsl:sequence select=".") silently loses the "adjacent atomics
 			// join with a single space" treatment (simpleContentJoin's doc
 			// comment; seqtor-007 is xsl:for-each's version of this same bug).
-			nd := &xmltree.Node{Kind: xmltree.KindText, Atomic: true, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd.SetAtomic(true)
 			if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-				nd.TypeAnno = tag
+				nd.SetTypeAnno(tag)
 			}
 			attachRealItem(nd, it)
 			nodes[i] = nd

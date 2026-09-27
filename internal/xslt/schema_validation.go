@@ -348,10 +348,10 @@ func nsSensitiveType(a *schemaAdapter, name xmltree.SchemaTypeName) bool {
 // definition asks about, so this needs no schema lookup and is inert on any
 // node nothing has validated.
 func nsSensitiveNode(n *xmltree.Node) bool {
-	if n == nil || n.TypeAnno == 0 {
+	if n == nil || n.TypeAnno() == 0 {
 		return false
 	}
-	at := xpath.AtomType(n.TypeAnno)
+	at := xpath.AtomType(n.TypeAnno())
 	return at == xpath.XSqname || at == xpath.XSnotation
 }
 
@@ -496,19 +496,19 @@ func setAnyType(n *xmltree.Node) {
 		return
 	}
 	name := anyTypeName
-	n.SchemaType = &name
+	n.SetSchemaType(&name)
 	// The typed value's own identity goes with the annotation that produced
 	// it: xs:anyType has no simple content, so no union member accepted
 	// anything here.
-	n.ValueType = nil
+	n.SetValueType(nil)
 	// xs:anyType has no simple content, so there is no built-in primitive its
 	// typed value atomizes through — the same answer typeAnnoFor gives for
 	// complex element-only content.
-	n.TypeAnno = 0
+	n.SetTypeAnno(0)
 	// Re-typing to xs:anyType discards the validation outcome that [nilled]
 	// records, exactly as it discards the annotation: no validation produced
 	// this type, so nothing establishes the element as nilled.
-	n.Nilled = false
+	n.SetNilled(false)
 }
 
 // stripAnnotations implements §24.4.1.1's "strip": the node and every element
@@ -538,12 +538,19 @@ func stripAnnotations(n *xmltree.Node) {
 		// node's typed value is one xs:untypedAtomic holding its string value
 		// (§4.3), not a token sequence. Node.IDKind deliberately stays — §4.3
 		// says the is-id/is-idrefs properties "are not changed".
-		n.TypeAnno, n.SchemaType, n.Nilled = 0, nil, false
-		n.ListTyped, n.ListItemType, n.ValueType = false, nil, nil
+		n.SetTypeAnno(0)
+		n.SetSchemaType(nil)
+		n.SetNilled(false)
+		n.SetListTyped(false)
+		n.SetListItemType(nil)
+		n.SetValueType(nil)
 	}
 	for _, a := range n.Attrs {
-		a.TypeAnno, a.SchemaType = 0, nil
-		a.ListTyped, a.ListItemType, a.ValueType = false, nil, nil
+		a.SetTypeAnno(0)
+		a.SetSchemaType(nil)
+		a.SetListTyped(false)
+		a.SetListItemType(nil)
+		a.SetValueType(nil)
 	}
 	for _, c := range n.Children {
 		stripAnnotations(c)
@@ -674,7 +681,7 @@ func (eng *engine) validateAgainstType(req *valRequest, n *xmltree.Node, docScop
 			// a plain strip. validation-0108 asserts exactly that distinction
 			// with element(*, xs:untypedAtomic).
 			name := xmltree.SchemaTypeName{Namespace: xsdNS, Local: "untypedAtomic"}
-			n.SchemaType = &name
+			n.SetSchemaType(&name)
 			return nil
 		}
 	}
@@ -977,9 +984,9 @@ func markUnassessed(n *xmltree.Node) {
 	if n == nil {
 		return
 	}
-	if n.Kind == xmltree.KindElement && n.SchemaType == nil {
+	if n.Kind == xmltree.KindElement && n.SchemaType() == nil {
 		name := anyTypeName
-		n.SchemaType = &name
+		n.SetSchemaType(&name)
 	}
 	for _, c := range n.Children {
 		markUnassessed(c)

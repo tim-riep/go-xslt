@@ -23,7 +23,7 @@ import (
 // string value. Callers that only need the question — not the value — ask here
 // so the definition of "annotated" stays in one place.
 func IsTypeAnnotated(n *xmltree.Node) bool {
-	return n != nil && n.TypeAnno != 0
+	return n != nil && n.TypeAnno() != 0
 }
 
 // nodeAnnotationType returns the annotation ITSELF, for the callers that ask
@@ -35,7 +35,7 @@ func nodeAnnotationType(n *xmltree.Node) (AtomType, bool) {
 	if !IsTypeAnnotated(n) {
 		return 0, false
 	}
-	return AtomType(n.TypeAnno), true
+	return AtomType(n.TypeAnno()), true
 }
 
 // NodeAnnotation is nodeAnnotationType for hosts outside this package — the
@@ -157,10 +157,10 @@ func nodeValueTypeName(n *xmltree.Node) *xmltree.SchemaTypeName {
 	if n == nil {
 		return nil
 	}
-	if n.ValueType != nil {
-		return n.ValueType
+	if n.ValueType() != nil {
+		return n.ValueType()
 	}
-	return n.SchemaType
+	return n.SchemaType()
 }
 
 // nodeTypedValue returns the typed atomic value of an annotated node. The
@@ -172,7 +172,7 @@ func nodeTypedValue(n *xmltree.Node) (*Atomic, bool) {
 	if !IsTypeAnnotated(n) {
 		return nil, false
 	}
-	a, err := CastTo(n.StringValue(), AtomType(n.TypeAnno))
+	a, err := CastTo(n.StringValue(), AtomType(n.TypeAnno()))
 	if err != nil {
 		return nil, false
 	}
@@ -195,10 +195,10 @@ func nodeTypedValue(n *xmltree.Node) (*Atomic, bool) {
 // should-not-happen case of a token its own annotation no longer admits, which
 // callers read as "use the ordinary reading".
 func nodeTypedItems(n *xmltree.Node) ([]Item, bool) {
-	if n == nil || !n.ListTyped || !IsTypeAnnotated(n) {
+	if n == nil || !n.ListTyped() || !IsTypeAnnotated(n) {
 		return nil, false
 	}
-	at := AtomType(n.TypeAnno)
+	at := AtomType(n.TypeAnno())
 	// XSD list item separation is by XML whitespace, and the list type's own
 	// whiteSpace facet is fixed at "collapse", so splitting on fields IS the
 	// normalization. An empty list is a legal, empty typed value.
@@ -213,7 +213,7 @@ func nodeTypedItems(n *xmltree.Node) ([]Item, bool) {
 		// primitive — the same fact SchemaType carries for a non-list node,
 		// and the only thing that can answer `data($a) instance of
 		// my:itemType*` (import-schema-029/030).
-		out = append(out, a.withSchemaType(n.ListItemType))
+		out = append(out, a.withSchemaType(n.ListItemType()))
 	}
 	return out, true
 }

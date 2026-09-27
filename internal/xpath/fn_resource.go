@@ -220,7 +220,7 @@ func fnDoc(c *Context, a []Object) (Object, error) {
 		return Sequence{}, nil
 	}
 	uri := resolveAgainstBase(c.BaseURI, href)
-	if c.HomeDoc != nil && (uri == "" || uri == c.HomeDoc.Base) {
+	if c.HomeDoc != nil && (uri == "" || uri == c.HomeDoc.Base()) {
 		// doc(''): the tree of the stylesheet module containing this call
 		// (document-0302), matching the legacy document('') special case —
 		// but only when the effective (resolved) URI actually denotes that
@@ -274,7 +274,7 @@ func fnParseXML(c *Context, a []Object) (Object, error) {
 	// expression's static base URI" default (for a host resolver that never
 	// populates Node.Base itself) does not misattribute this constructed
 	// document to wherever the CALLER happens to live (parse-xml-011).
-	doc.Ephemeral = true
+	doc.SetEphemeral(true)
 	return NodeSet{doc}, nil
 }
 
@@ -411,7 +411,7 @@ func fnURICollection(c *Context, a []Object) (Object, error) {
 	var items []Item
 	for _, it := range Items(v) {
 		if nd, ok := it.(*xmltree.Node); ok {
-			items = append(items, NewAnyURI(nd.Base))
+			items = append(items, NewAnyURI(nd.Base()))
 		}
 	}
 	return FromItems(items), nil

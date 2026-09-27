@@ -1599,8 +1599,8 @@ func assertTreeNeedsPSVI(a fotsAssert) bool {
 
 // evalXSLTAssertOn evaluates an <assert> XPath against doc as the context node.
 func evalXSLTAssertOn(a fotsAssert, doc *xmltree.Node, output, baseURI string, ns map[string]string, entryValue xpath.Object, entryVar string, assertSchema assertSchemaHooks) (string, string) {
-	if baseURI != "" && doc.Base == "" {
-		doc.Base = baseURI
+	if baseURI != "" && doc.Base() == "" {
+		doc.SetBase(baseURI)
 	}
 	// An assertion may name schema components the STYLESHEET imported
 	// (schema-element(Q{...}name) — validation-1601..1607, -1705/1706): without

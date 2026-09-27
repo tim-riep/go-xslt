@@ -734,11 +734,11 @@ func mrgToNodes(v xpath.Object) []*xmltree.Node {
 		// alternative needs a host base output URI, which this engine does not
 		// have. Add the annotation together with base-output-uri support.
 		nd := &xmltree.Node{
-			Kind:     xmltree.KindText,
-			SynthCtx: true,
-			Atomic:   true,
-			Value:    xpath.ToString(xpath.FromItems([]xpath.Item{it})),
+			Kind:  xmltree.KindText,
+			Value: xpath.ToString(xpath.FromItems([]xpath.Item{it})),
 		}
+		nd.SetSynthCtx(true)
+		nd.SetAtomic(true)
 		attachRealItem(nd, it)
 		nodes = append(nodes, nd)
 	}

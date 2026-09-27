@@ -392,7 +392,7 @@ func modeTypedKind(md *ModeDef) string {
 // carries the xs:anyType sentinel there for the same reason. Reading only
 // TypeAnno would call every one of those untyped.
 func nodeIsTyped(n *xmltree.Node) bool {
-	return n != nil && (n.TypeAnno != 0 || n.SchemaType != nil)
+	return n != nil && (n.TypeAnno() != 0 || n.SchemaType() != nil)
 }
 
 // applyTypedModeRewrites carries out the §6.6.3 provision that
@@ -502,14 +502,14 @@ func (eng *engine) builtinTemplate(node *xmltree.Node, mode string, out *xmltree
 	// There is no built-in rule for a function item: reaching one here means
 	// no template rule matched it, which is XTDE0555 (higher-order-functions-
 	// 069 supplies function items that DO match a rule and must not error).
-	if node != nil && node.RealItem != nil {
-		if _, isFn := node.RealItem.(*xpath.Function); isFn {
+	if node != nil && node.RealItem() != nil {
+		if _, isFn := node.RealItem().(*xpath.Function); isFn {
 			return errAt(nil, "err:XTDE0555: no template rule matches a function item and there is no built-in rule for one")
 		}
 	}
 	policy := eng.sheet.modeDef(mode).onNoMatch
-	if node != nil && node.RealItem != nil {
-		if arr, isArr := node.RealItem.(*xpath.Array); isArr {
+	if node != nil && node.RealItem() != nil {
+		if arr, isArr := node.RealItem().(*xpath.Array); isArr {
 			// The built-in rule for an array applies templates to its members
 			// (xsl:apply-templates select="?*"), under every policy except the
 			// two that process nothing / refuse.
@@ -580,8 +580,8 @@ func (eng *engine) shallowCopyAndRecurse(node *xmltree.Node, mode string, out *x
 		// content it derives its base-uri from its new position instead
 		// (base-uri-053's shallow-copy-elem2, which otherwise reported the
 		// STYLESHEET's base URI).
-		if out.NoAtomicMerge {
-			el.Base = retainedBase(el, node)
+		if out.NoAtomicMerge() {
+			el.SetBase(retainedBase(el, node))
 		}
 		out.Append(el)
 		// The built-in shallow-copy rule applies templates to the attributes
@@ -595,13 +595,15 @@ func (eng *engine) shallowCopyAndRecurse(node *xmltree.Node, mode string, out *x
 		}
 		return eng.applyToNodes(childrenOf(node), mode, el, params, callerR)
 	case xmltree.KindDocument:
-		if out.KeepDocItems {
+		if out.KeepDocItems() {
 			// Same distinction xsl:copy draws for a document node: in a
 			// discrete-sequence collector the copy must stay a real document
 			// node (carrying the original's base-uri); as ordinary content it
 			// flattens into its children, which is all a document node can do
 			// there (base-uri-053's shallow-copy-doc2).
-			d := &xmltree.Node{Kind: xmltree.KindDocument, Base: xpath.NodeBaseURI(node, ""), Ephemeral: true}
+			d := &xmltree.Node{Kind: xmltree.KindDocument}
+			d.SetBase(xpath.NodeBaseURI(node, ""))
+			d.SetEphemeral(true)
 			mergeUnparsed(d, node)
 			if err := eng.applyToNodes(childrenOf(node), mode, d, params, callerR); err != nil {
 				return err

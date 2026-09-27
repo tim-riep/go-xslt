@@ -636,7 +636,7 @@ func xfMergeAdjacentText(n *xmltree.Node) {
 		return
 	}
 	plainText := func(c *xmltree.Node) bool {
-		return c.Kind == xmltree.KindText && !c.Atomic && !c.SynthCtx && c.RealItem == nil
+		return c.Kind == xmltree.KindText && !c.Atomic() && !c.SynthCtx() && c.RealItem() == nil
 	}
 	merged := make([]*xmltree.Node, 0, len(n.Children))
 	for _, c := range n.Children {

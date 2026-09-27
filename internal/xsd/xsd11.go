@@ -253,9 +253,9 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 				Value:  d.value,
 				Parent: &cp,
 			}
-			ac.TypeAnno = int32(typeAnnoForNode(d.typ, ac))
-			ac.ListTyped = listTypedFor(d.typ)
-			ac.ListItemType = s.listItemTypeName(d.typ)
+			ac.SetTypeAnno(int32(typeAnnoForNode(d.typ, ac)))
+			ac.SetListTyped(listTypedFor(d.typ))
+			ac.SetListItemType(s.listItemTypeName(d.typ))
 			cp.Attrs = append(cp.Attrs, ac)
 		}
 		cp.Children = nil
@@ -300,13 +300,13 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 // item-primitive + list marks for a list, whose typed value is a sequence.
 func (s *Schema) annotateAssertNode(dst, src *xmltree.Node) {
 	if t, ok := s.assertTypes[src]; ok {
-		dst.TypeAnno = int32(t)
+		dst.SetTypeAnno(int32(t))
 		return
 	}
 	if l, ok := s.assertLists[src]; ok {
-		dst.TypeAnno = int32(l.prim)
-		dst.ListTyped = true
-		dst.ListItemType = l.item
+		dst.SetTypeAnno(int32(l.prim))
+		dst.SetListTyped(true)
+		dst.SetListItemType(l.item)
 	}
 }
 

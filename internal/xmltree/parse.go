@@ -265,7 +265,10 @@ func parseRaw(src, baseDir string) (*Node, error) {
 	attrDefaults := attlistDefaults(src)
 	elemOnly := elementOnlyDecls(src, baseDir)
 
-	doc := &Node{Kind: KindDocument, Unparsed: unparsedEntityDecls(src, baseDir)}
+	doc := &Node{Kind: KindDocument}
+	if u := unparsedEntityDecls(src, baseDir); len(u) > 0 {
+		doc.SetUnparsed(u)
+	}
 	stack := []*Node{doc}
 	// namespace scope stack: each frame maps prefix -> uri (default prefix "").
 	nsStack := []map[string]string{{
@@ -331,7 +334,9 @@ func parseRaw(src, baseDir string) (*Node, error) {
 					Line:  line, Col: col,
 				}
 				if m := idKinds[t.Name.Local]; m != nil {
-					an.IDKind = m[a.Name.Local]
+					if k := m[a.Name.Local]; k != 0 {
+						an.SetIDKind(k)
+					}
 				}
 				an.Parent = el
 				el.Attrs = append(el.Attrs, an)
@@ -396,7 +401,7 @@ func parseRaw(src, baseDir string) (*Node, error) {
 			// it forms one text node with the surrounding chardata (so e.g.
 			// "<a> <![CDATA[x]]> </a>" is the single non-whitespace node " x ",
 			// not two strippable whitespace nodes around "x").
-			if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic {
+			if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic() {
 				top.Children[k-1].Value += string(t)
 			} else {
 				top.Append(&Node{Kind: KindText, Value: string(t), Line: line, Col: col})
@@ -611,7 +616,7 @@ const ephemeralTreeBit = uint64(1) << 63
 func assignOrder(root *Node) {
 	counter := 0
 	tree := atomic.AddUint64(&treeSeq, 1)
-	if root != nil && root.Ephemeral {
+	if root != nil && root.Ephemeral() {
 		tree |= ephemeralTreeBit
 	}
 	var walk func(n *Node)
@@ -678,8 +683,8 @@ func applyEntityBases(doc *Node, spans []entitySpan, lines []int) {
 			off := offsetOf(lines, n.Line, n.Col)
 			for _, sp := range spans {
 				if off >= sp.start && off < sp.end {
-					if n.EntityBase == "" {
-						n.EntityBase = "file://" + sp.path
+					if n.EntityBase() == "" {
+						n.SetEntityBase("file://" + sp.path)
 					}
 					break
 				}

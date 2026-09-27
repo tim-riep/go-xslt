@@ -1210,11 +1210,11 @@ func runCase(tc fotsCase, env fotsEnv, loadDoc func(string, string) (*xmltree.No
 			// far more heavily exercised "." context document is untouched,
 			// so this cannot affect base-uri(.)/document-uri(.) anywhere else
 			// in the suite.
-			if d.Base == "" {
+			if d.Base() == "" {
 				if s.URI != "" {
-					d.Base = s.URI
+					d.SetBase(s.URI)
 				} else if abs, aerr := filepath.Abs(filepath.Join(env.base, s.File)); aerr == nil {
-					d.Base = "file://" + abs
+					d.SetBase("file://" + abs)
 				}
 			}
 			vars[s.Role[1:]] = xpath.NodeSet{d}

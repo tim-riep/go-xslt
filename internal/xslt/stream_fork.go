@@ -149,7 +149,8 @@ func strbNewForkState(eng *engine, inner []instruction) (*strbForkState, error) 
 		done:  make([]bool, len(inner)),
 	}
 	for i, in := range inner {
-		s.bufs[i] = &xmltree.Node{Kind: xmltree.KindDocument, Ephemeral: true}
+		s.bufs[i] = &xmltree.Node{Kind: xmltree.KindDocument}
+		s.bufs[i].SetEphemeral(true)
 		switch c := in.(type) {
 		case *itrIterate:
 			st, err := strbNewIterState(eng, c)
@@ -174,9 +175,9 @@ func strbAppendFrag(out, frag *xmltree.Node) {
 	}
 	out.NS = append(out.NS, frag.NS...)
 	for _, ch := range frag.Children {
-		if ch.Kind == xmltree.KindText && !ch.Atomic && !out.NoAtomicMerge {
+		if ch.Kind == xmltree.KindText && !ch.Atomic() && !out.NoAtomicMerge() {
 			if n := len(out.Children); n > 0 {
-				if last := out.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic && last.Raw == ch.Raw {
+				if last := out.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic() && last.Raw() == ch.Raw() {
 					last.Value += ch.Value
 					continue
 				}

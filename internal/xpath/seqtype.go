@@ -1242,10 +1242,10 @@ func ContextItemValue(n *xmltree.Node) Item {
 	if n == nil {
 		return nil
 	}
-	if n.RealItem != nil {
-		return n.RealItem
+	if n.RealItem() != nil {
+		return n.RealItem()
 	}
-	if n.SynthCtx {
+	if n.SynthCtx() {
 		if a, ok := nodeTypedValue(n); ok {
 			return a
 		}

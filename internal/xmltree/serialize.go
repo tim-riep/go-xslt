@@ -416,7 +416,7 @@ type serializer struct {
 }
 
 func (s *serializer) node(n *Node, depth int) {
-	if nd, ok := n.RealItem.(*Node); ok {
+	if nd, ok := n.RealItem().(*Node); ok {
 		n = nd // a node carried by reference (see RealItem)
 	}
 	switch n.Kind {
@@ -426,7 +426,7 @@ func (s *serializer) node(n *Node, depth int) {
 		// disable-output-escaping skips markup escaping, but the HTML/XHTML
 		// no-break-space mapping is a character encoding choice that still applies.
 		var v string
-		if !n.Raw && n.Parent != nil && nameIn(s.opts.CDATAElements, n.Parent.Name) {
+		if !n.Raw() && n.Parent != nil && nameIn(s.opts.CDATAElements, n.Parent.Name) {
 			// cdata-section-elements: the text goes out unescaped inside a
 			// CDATA section (never through the character map — output-0115c),
 			// split around any "]]>" it contains and, per @normalization-form
@@ -441,7 +441,7 @@ func (s *serializer) node(n *Node, depth int) {
 		// responsibility (output-0154/0159).
 		rawScriptStyle := s.opts.Method == "html" && n.Parent != nil && n.Parent.Name.Space == "" &&
 			(strings.EqualFold(n.Parent.Name.Local, "script") || strings.EqualFold(n.Parent.Name.Local, "style"))
-		if n.Raw || rawScriptStyle {
+		if n.Raw() || rawScriptStyle {
 			v = s.mapChars(n.Value, nil)
 		} else if s.opts.Method == "html" {
 			v = s.mapChars(n.Value, escapeText)
@@ -674,7 +674,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	// written without a prefix binds it to that element's namespace — emitting
 	// xmlns="" first would then produce two xmlns attributes on one element
 	// (element-0306).
-	if n.NSBarrier && n.Name.Space != "" && n.Name.Prefix != "" {
+	if n.NSBarrier() && n.Name.Space != "" && n.Name.Prefix != "" {
 		ownDefault := ""
 		for _, ns := range n.NS {
 			if ns.Name.Local == "" {

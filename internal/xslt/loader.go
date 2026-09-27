@@ -89,9 +89,9 @@ func (c *compiler) gatherModules(root *xmltree.Node, baseDir string, seen map[st
 			// applyEntityBases records an entity-spliced node's origin on
 			// EntityBase (Node.Base is reserved for an already-computed base
 			// URI); either answers "where did this element come from?".
-			ownBase := child.Base
+			ownBase := child.Base()
 			if ownBase == "" {
-				ownBase = child.EntityBase
+				ownBase = child.EntityBase()
 			}
 			if ownBase != "" {
 				// This xsl:import/xsl:include element itself came from an
@@ -249,7 +249,7 @@ func (c *compiler) loadPackageRoot(abs string) (*xmltree.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc.Base = fileURI(abs)
+	doc.SetBase(fileURI(abs))
 	root := xmltree.RootElement(doc)
 	if root == nil {
 		return nil, errAt(nil, "package module %q has no root element", abs)
@@ -280,7 +280,8 @@ func simplifiedModuleRoot(lit *xmltree.Node) *xmltree.Node {
 	if v, ok := lit.Attr(NS, "version"); ok {
 		root.SetAttr(xmltree.Name{Local: "version"}, v)
 	}
-	root.Parent, root.Base = lit.Parent, lit.Base
+	root.Parent = lit.Parent
+	root.SetBase(lit.Base())
 	root.Children = []*xmltree.Node{tmpl}
 	tmpl.Parent = root
 	return root
@@ -298,7 +299,7 @@ func findEmbeddedModule(n *xmltree.Node, id string) *xmltree.Node {
 			if a.Value != id {
 				continue
 			}
-			if a.IDKind == xmltree.IDKindID ||
+			if a.IDKind() == xmltree.IDKindID ||
 				(a.Name.Space == "" && a.Name.Local == "id") ||
 				(a.Name.Space == xmlURI && a.Name.Local == "id") {
 				return n
@@ -387,7 +388,7 @@ func (c *compiler) loadFile(href, baseDir string, seen map[string]bool) (*xmltre
 	// inside it returns ITS OWN tree (document-1001/1002 — see fnDoc's
 	// HomeDoc special case, which doesn't even need this, but static-base-uri
 	// and any other relative resolution here does).
-	doc.Base = fileURI(abs)
+	doc.SetBase(fileURI(abs))
 	if fragment != "" {
 		el := findEmbeddedModule(doc, fragment)
 		if el == nil {

@@ -301,7 +301,7 @@ type Stylesheet struct {
 	// only under backwardsCompatRun() (transform.go's implicit-xhtml-result
 	// default-method override); false changes nothing.
 	principalVersionIsOne bool
-	charMapPrec         map[string]int    // xsl:character-map: name -> import precedence it was declared at (XTSE1580)
+	charMapPrec           map[string]int // xsl:character-map: name -> import precedence it was declared at (XTSE1580)
 	// hasOutputDecl records whether the stylesheet has at least one unnamed
 	// xsl:output declaration, even one that sets no @method. It distinguishes
 	// "an xsl:output element is present" (character-map-017: include-
@@ -695,19 +695,19 @@ func compileModule(src, baseDir, selfPath string, hostStatic map[string]string, 
 		// filepath.Abs below would mangle it into a bogus local path):
 		// F&O 3.1 §16.3.2 states that stylesheet-location "also acts as the
 		// default for stylesheet-base-uri" (fn-transform-20/21).
-		doc.Base = selfPath
+		doc.SetBase(selfPath)
 	} else if selfPath != "" {
 		abs := selfPath
 		if a, err := filepath.Abs(selfPath); err == nil {
 			abs = a
 		}
-		doc.Base = fileURI(abs)
+		doc.SetBase(fileURI(abs))
 	} else if baseDir != "" {
 		abs := baseDir
 		if a, err := filepath.Abs(baseDir); err == nil {
 			abs = a
 		}
-		doc.Base = fileURI(ensureTrailingSlash(abs))
+		doc.SetBase(fileURI(ensureTrailingSlash(abs)))
 	}
 	root := xmltree.RootElement(doc)
 	if root == nil {
@@ -3645,7 +3645,7 @@ func addFixup(n *xmltree.Node, name xmltree.Name, need map[string]bool) {
 func markNSBarrier(el *xmltree.Node, mark int) {
 	for _, c := range el.Children[mark:] {
 		if c.Kind == xmltree.KindElement {
-			c.NSBarrier = true
+			c.SetNSBarrier(true)
 		}
 	}
 }

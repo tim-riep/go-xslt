@@ -1785,7 +1785,7 @@ func strbTryStream(eng *engine, sd *sdSourceDocument, href string, out *xmltree.
 	}
 	doc := rd.Doc()
 	if fr, okr := eng.resolver.(*fileResolver); okr {
-		doc.Base = fileURI(fr.path(href))
+		doc.SetBase(fileURI(fr.path(href)))
 	}
 	strbStreamedRuns.Add(1)
 	run := &strbRun{rd: rd, plan: plan}

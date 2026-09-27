@@ -66,7 +66,7 @@ func (n *performSort) exec(eng *engine, r rt, out *xmltree.Node) error {
 		// adjacent sorted strings get the usual single-space separator
 		// (collations-0601: perform-sort over tokenize() results) instead of
 		// running together as one word.
-		if node.Kind == xmltree.KindText && node.Atomic {
+		if node.Kind == xmltree.KindText && node.Atomic() {
 			appendAtomicText(out, node.Value)
 			continue
 		}
@@ -91,7 +91,8 @@ func psInput(n *performSort, eng *engine, r rt) ([]*xmltree.Node, error) {
 				nodes[i] = nd
 				continue
 			}
-			nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it})), Atomic: true}
+			nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd.SetAtomic(true)
 			// Preserve the item's real atomic type (mirrors execForEach's
 			// identical synthetic-node construction) so a sort key of "."
 			// evaluated against this node — as xsl:sort's own @data-type
@@ -101,7 +102,7 @@ func psInput(n *performSort, eng *engine, r rt) ([]*xmltree.Node, error) {
 			// sequence, no @data-type, must still sort numerically, not
 			// lexicographically).
 			if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-				nd.TypeAnno = tag
+				nd.SetTypeAnno(tag)
 			}
 			attachRealItem(nd, it)
 			nodes[i] = nd

@@ -27,20 +27,20 @@ import (
 // rewrites one is individually observable.
 func annotatedTree() (root, child, attr *xmltree.Node) {
 	root = xmltree.NewElement(xmltree.Name{Local: "e"})
-	root.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "RootType", Complex: true}
+	root.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "RootType", Complex: true})
 	attr = root.SetAttr(xmltree.Name{Local: "a"}, "x")
-	attr.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"}
+	attr.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"})
 	child = xmltree.NewElement(xmltree.Name{Local: "c"})
-	child.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "ChildType", Complex: true}
+	child.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "ChildType", Complex: true})
 	root.Append(child)
 	return root, child, attr
 }
 
 func typeName(n *xmltree.Node) string {
-	if n == nil || n.SchemaType == nil {
+	if n == nil || n.SchemaType() == nil {
 		return "<none>"
 	}
-	return n.SchemaType.Namespace + "#" + n.SchemaType.Local
+	return n.SchemaType().Namespace + "#" + n.SchemaType().Local
 }
 
 func TestPreserveIsPerInstruction(t *testing.T) {
@@ -99,7 +99,7 @@ func TestPreserveIsPerInstruction(t *testing.T) {
 	// element at all.
 	t.Run("xsl:attribute is strip", func(t *testing.T) {
 		a := xmltree.NewAttribute(xmltree.Name{Local: "a"}, "x")
-		a.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"}
+		a.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"})
 		applyPreserve(vkAttribute, a)
 		if got := typeName(a); got != none {
 			t.Errorf("xsl:attribute under preserve: got %s, want %s\n  §24.4.1.1: "+
@@ -108,7 +108,7 @@ func TestPreserveIsPerInstruction(t *testing.T) {
 	})
 	t.Run("xsl:copy of an attribute retains", func(t *testing.T) {
 		a := xmltree.NewAttribute(xmltree.Name{Local: "a"}, "x")
-		a.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"}
+		a.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "AttrType"})
 		applyPreserve(vkCopy, a)
 		if got := typeName(a); got != attrT {
 			t.Errorf("xsl:copy of an attribute under preserve: got %s, want %s\n  §24.4.1.1: "+
@@ -141,13 +141,15 @@ func TestCopyAndCopyOfDisagreeOnPreserve(t *testing.T) {
 
 func TestStripClearsWholeSubtree(t *testing.T) {
 	root, child, attr := annotatedTree()
-	child.TypeAnno, root.TypeAnno, attr.TypeAnno = 7, 8, 9
+	child.SetTypeAnno(7)
+	root.SetTypeAnno(8)
+	attr.SetTypeAnno(9)
 	stripAnnotations(root)
 	for _, n := range []*xmltree.Node{root, child, attr} {
-		if n.SchemaType != nil || n.TypeAnno != 0 {
+		if n.SchemaType() != nil || n.TypeAnno() != 0 {
 			t.Errorf("strip left %s annotated (SchemaType=%v TypeAnno=%d); §24.4.1.1 requires "+
 				"xs:untyped / xs:untypedAtomic throughout, which this engine spells as no annotation",
-				n.Name.Local, n.SchemaType, n.TypeAnno)
+				n.Name.Local, n.SchemaType(), n.TypeAnno())
 		}
 	}
 }
@@ -160,7 +162,7 @@ func TestMarkUnassessedGivesAnyTypeToElementsOnly(t *testing.T) {
 	root := xmltree.NewElement(xmltree.Name{Local: "e"})
 	attr := root.SetAttr(xmltree.Name{Local: "a"}, "x")
 	kept := xmltree.NewElement(xmltree.Name{Local: "typed"})
-	kept.SchemaType = &xmltree.SchemaTypeName{Namespace: "urn:t", Local: "Kept"}
+	kept.SetSchemaType(&xmltree.SchemaTypeName{Namespace: "urn:t", Local: "Kept"})
 	bare := xmltree.NewElement(xmltree.Name{Local: "bare"})
 	root.Append(kept)
 	root.Append(bare)
@@ -175,13 +177,13 @@ func TestMarkUnassessedGivesAnyTypeToElementsOnly(t *testing.T) {
 	if typeName(kept) != "urn:t#Kept" {
 		t.Errorf("an element that WAS assessed must keep its own type, got %s", typeName(kept))
 	}
-	if attr.SchemaType != nil {
+	if attr.SchemaType() != nil {
 		t.Errorf("an unassessed attribute is xs:untypedAtomic (no annotation), got %s", typeName(attr))
 	}
 	// The sentinel must be the literal name internal/xpath's schemaTypeMatches
 	// compares against, or element(*, xs:anyType) silently stops matching.
-	if *root.SchemaType != anyTypeName {
-		t.Errorf("the anyType sentinel must equal anyTypeName exactly, got %+v", *root.SchemaType)
+	if *root.SchemaType() != anyTypeName {
+		t.Errorf("the anyType sentinel must equal anyTypeName exactly, got %+v", *root.SchemaType())
 	}
 	if !anyTypeName.Complex {
 		t.Error("xs:anyType is a COMPLEX type; a false Complex flag makes it compare unequal to a resolved xs:anyType")

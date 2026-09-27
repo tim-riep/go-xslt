@@ -17,18 +17,18 @@ import (
 // regardless of who set them.
 func typedFixture() (root, kid, attr, text *xmltree.Node) {
 	root = xmltree.NewElement(xmltree.Name{Local: "root"})
-	root.TypeAnno = int32(xpath.XSstring)
+	root.SetTypeAnno(int32(xpath.XSstring))
 
 	kid = xmltree.NewElement(xmltree.Name{Local: "kid"})
-	kid.TypeAnno = int32(xpath.XSinteger)
+	kid.SetTypeAnno(int32(xpath.XSinteger))
 	root.Append(kid)
 
 	attr = kid.SetAttr(xmltree.Name{Local: "id"}, "a1")
-	attr.IDKind = xmltree.IDKindID
-	attr.TypeAnno = int32(xpath.XSstring)
+	attr.SetIDKind(xmltree.IDKindID)
+	attr.SetTypeAnno(int32(xpath.XSstring))
 
 	text = xmltree.NewText("42")
-	text.TypeAnno = int32(xpath.XSinteger)
+	text.SetTypeAnno(int32(xpath.XSinteger))
 	kid.Append(text)
 	return
 }
@@ -38,11 +38,11 @@ func checkTypeInfo(t *testing.T, what string, got, want *xmltree.Node) {
 	if got == nil {
 		t.Fatalf("%s: no node", what)
 	}
-	if got.TypeAnno != want.TypeAnno {
-		t.Errorf("%s: TypeAnno = %d, want %d", what, got.TypeAnno, want.TypeAnno)
+	if got.TypeAnno() != want.TypeAnno() {
+		t.Errorf("%s: TypeAnno = %d, want %d", what, got.TypeAnno(), want.TypeAnno())
 	}
-	if got.IDKind != want.IDKind {
-		t.Errorf("%s: IDKind = %d, want %d", what, got.IDKind, want.IDKind)
+	if got.IDKind() != want.IDKind() {
+		t.Errorf("%s: IDKind = %d, want %d", what, got.IDKind(), want.IDKind())
 	}
 }
 
@@ -74,7 +74,8 @@ func TestDeepCopyIntoKeepsTypeInfo(t *testing.T) {
 
 	// An attribute copied as its own sequence item goes through appendAttrItem,
 	// a different rebuild than the element's own attribute loop above.
-	seq := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true}
+	seq := &xmltree.Node{Kind: xmltree.KindDocument}
+	seq.SetNoAtomicMerge(true)
 	deepCopyInto(attr, seq)
 	checkTypeInfo(t, "copied attribute item", seq.Attrs[0], attr)
 }

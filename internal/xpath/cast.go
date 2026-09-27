@@ -99,7 +99,7 @@ func toAtomic(it Item) (*Atomic, error) {
 				// what notation-0101/0102 ask — can only be answered from the
 				// annotation's own name, never from the primitive.
 				qa := &Atomic{T: at, qn: xmltree.Name{Space: uri, Local: local, Prefix: pre}}
-				return qa.withSchemaType(v.SchemaType), nil
+				return qa.withSchemaType(v.SchemaType()), nil
 			}
 		}
 		// A type-annotated node (XSD assertion trees, schema validation)
@@ -140,7 +140,7 @@ func Atomize(o Object) ([]Item, error) {
 				// content type otherwise (fn-nilled-38/39/47/51: nilled
 				// elements of a mixed, simple-content-complex, and
 				// user-defined simple type all atomize to empty).
-				if nd.Kind == xmltree.KindElement && nd.Nilled {
+				if nd.Kind == xmltree.KindElement && nd.Nilled() {
 					continue
 				}
 				// A LIST-typed node atomizes to a SEQUENCE, so it is handled
@@ -187,8 +187,8 @@ func Atomize(o Object) ([]Item, error) {
 // looks like (character data other than whitespace is not permitted there at
 // all); a mixed-content element, by contrast, ordinarily carries real text.
 func isElementOnlyCandidate(nd *xmltree.Node) bool {
-	if nd.Kind != xmltree.KindElement || nd.SchemaType == nil || !nd.SchemaType.Complex ||
-		nd.TypeAnno != 0 || nd.ListTyped {
+	if nd.Kind != xmltree.KindElement || nd.SchemaType() == nil || !nd.SchemaType().Complex ||
+		nd.TypeAnno() != 0 || nd.ListTyped() {
 		return false
 	}
 	hasElem := false

@@ -325,7 +325,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// file, not this stylesheet), in which case it must fall through
 			// to a real resolver lookup like any other href.
 			if env.el != nil {
-				if home := rootOfNode(env.el); home != nil && (resolved == "" || resolved == home.Base) {
+				if home := rootOfNode(env.el); home != nil && (resolved == "" || resolved == home.Base()) {
 					// Read as a SOURCE document: stripped per xsl:strip-space
 					// (eng.homeDoc — where-populated-100).
 					out = appendDocResult(out, eng.homeDoc(home), frag)
@@ -442,7 +442,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 				// node would renumber its subtree alone and split one tree in
 				// two, which snapshot-0112 catches by checking that every node
 				// in a snapshot has a distinct generate-id().
-				cp.Ephemeral = true
+				cp.SetEphemeral(true)
 				xmltree.AssignOrder(cp)
 			}
 			// fn:copy-of and fn:snapshot both PRESERVE accumulator values
@@ -530,7 +530,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 		if root == nil || root.Kind != xmltree.KindDocument {
 			return nil, true, errAt(nil, "err:XTDE1370: %s() requires the context node's tree to be rooted in a document node", local)
 		}
-		ent, ok := root.Unparsed[xpath.ToString(arg0(args))]
+		ent, ok := root.Unparsed()[xpath.ToString(arg0(args))]
 		if !ok {
 			// No such unparsed entity: the zero-length string (never an error).
 			if local == "unparsed-entity-uri" {
@@ -866,7 +866,7 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 			}
 			items := make([]xpath.Item, 0, len(nodes))
 			for _, nd := range nodes {
-				if nd.Kind == xmltree.KindText && nd.Atomic {
+				if nd.Kind == xmltree.KindText && nd.Atomic() {
 					// A synthetic wrapper stands in for an atomic item; hand
 					// back the atomic value it represents.
 					if at, aerr := xpath.Atomize(xpath.NodeSet{nd}); aerr == nil && len(at) == 1 {
@@ -889,7 +889,10 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 			// (where-populated-coco-102: XTTE0780 when the wrapped element
 			// this drops as unpopulated was the function's only possible
 			// result).
-			frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true, Ephemeral: true}
+			frag := &xmltree.Node{Kind: xmltree.KindDocument}
+			frag.SetNoAtomicMerge(true)
+			frag.SetKeepDocItems(true)
+			frag.SetEphemeral(true)
 			if err := b.exec(eng, r, frag); err != nil {
 				return nil, true, err
 			}
@@ -951,7 +954,10 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 	// a leading non-content xsl:variable with a multi-item xsl:sequence tail
 	// must not silently collapse to one joined string).
 	wantsNodes := fd.as != "" && xpath.SeqTypeWantsNodes(fd.as)
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, KeepDocItems: true, NoAtomicMerge: !wantsNodes, Ephemeral: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetKeepDocItems(true)
+	frag.SetNoAtomicMerge(!wantsNodes)
+	frag.SetEphemeral(true)
 	eng.tempOutputDepth++
 	err = eng.execSequence(fd.body, r, frag)
 	eng.tempOutputDepth--
@@ -976,7 +982,7 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 		return xpath.Sequence{}, false, nil
 	}
 	if fd.as == "" && len(frag.Children) == 1 &&
-		frag.Children[0].Kind == xmltree.KindText && !frag.Children[0].Atomic {
+		frag.Children[0].Kind == xmltree.KindText && !frag.Children[0].Atomic() {
 		// A body that is exactly one literal text node or text value template
 		// CONSTRUCTS a text node, and with no declared @as the function's
 		// result is the sequence the body constructed — so it must stay a node
@@ -1006,7 +1012,7 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 		// independently typed/atomizable, not a single joined string.
 		return fragAsSequence(frag), false, nil
 	}
-	if ch := frag.Children[0]; xpath.IsTypeAnnotated(ch) || ch.RealItem != nil {
+	if ch := frag.Children[0]; xpath.IsTypeAnnotated(ch) || ch.RealItem() != nil {
 		if it, ok := xpath.TypedTextItem(ch); ok {
 			// An atomic item the construction stamped with its original type:
 			// hand back the VALUE, not the text node standing in for it. An
@@ -1050,7 +1056,7 @@ func fragHasMarkup(frag *xmltree.Node) bool {
 		if c.Kind != xmltree.KindText {
 			return true
 		}
-		if _, ok := c.RealItem.(*xmltree.Node); ok {
+		if _, ok := c.RealItem().(*xmltree.Node); ok {
 			// A node xsl:sequence contributed by reference (see
 			// emitSequenceValueOpts) is markup, whatever its kind: the
 			// result must go through fragAsSequence, which hands back the
@@ -1381,7 +1387,7 @@ func elementWithID(n *xmltree.Node, id string) *xmltree.Node {
 			if a.Value != id {
 				continue
 			}
-			if a.IDKind == xmltree.IDKindID ||
+			if a.IDKind() == xmltree.IDKindID ||
 				(a.Name.Space == xmlURI && a.Name.Local == "id") ||
 				(a.Name.Space == "" && a.Name.Local == "id") {
 				return n
@@ -1510,7 +1516,7 @@ func xsltSystemProperty(local string) string {
 // (error-1370b/1380b) rather than a lookup in a non-existent document.
 func xdmRoot(n *xmltree.Node) *xmltree.Node {
 	for n != nil && n.Parent != nil {
-		if n.Parent.Kind == xmltree.KindDocument && n.Parent.NoAtomicMerge {
+		if n.Parent.Kind == xmltree.KindDocument && n.Parent.NoAtomicMerge() {
 			return n
 		}
 		n = n.Parent
@@ -1571,7 +1577,7 @@ func materializeInScopeNS(cp, src *xmltree.Node) {
 func snapshotNode(n *xmltree.Node) *xmltree.Node {
 	var anc []*xmltree.Node
 	for p := n.Parent; p != nil; p = p.Parent {
-		if p.Kind == xmltree.KindDocument && p.NoAtomicMerge {
+		if p.Kind == xmltree.KindDocument && p.NoAtomicMerge() {
 			break
 		}
 		anc = append(anc, p)
@@ -1591,7 +1597,9 @@ func snapshotNode(n *xmltree.Node) *xmltree.Node {
 		var c *xmltree.Node
 		switch a.Kind {
 		case xmltree.KindDocument:
-			c = &xmltree.Node{Kind: xmltree.KindDocument, Base: xpath.NodeBaseURI(a, ""), Ephemeral: true}
+			c = &xmltree.Node{Kind: xmltree.KindDocument}
+			c.SetBase(xpath.NodeBaseURI(a, ""))
+			c.SetEphemeral(true)
 			mergeUnparsed(c, a)
 		case xmltree.KindElement:
 			c = xmltree.NewElement(a.Name)
@@ -1602,7 +1610,7 @@ func snapshotNode(n *xmltree.Node) *xmltree.Node {
 			for _, at := range a.Attrs {
 				xmltree.CopyTypeInfo(c.SetAttr(at.Name, at.Value), at)
 			}
-			c.Base = a.Base
+			c.SetBase(a.Base())
 		default:
 			continue
 		}

@@ -135,7 +135,7 @@ func (n *docInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
 	if err := eng.applyValidation(n.val, d); err != nil {
 		return err
 	}
-	if out.KeepDocItems {
+	if out.KeepDocItems() {
 		// out is a discrete-sequence collector (an @as-typed body/xsl:sequence
 		// result), not element/RTF content being built: xsl:document's whole
 		// job is to construct a genuine NEW document node, so it must survive
@@ -175,7 +175,9 @@ func (n *wherePopulated) exec(eng *engine, r rt, out *xmltree.Node) error {
 	// re-appended to `out` (appendIfPopulated) — coco-003/coco-018 need
 	// exactly one space between two SURVIVING atomics even when an empty one
 	// used to sit between them in the original sequence.
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
 	if err := eng.execSequence(n.body, r, frag); err != nil {
 		return err
 	}
@@ -227,8 +229,8 @@ func (n *wherePopulated) exec(eng *engine, r rt, out *xmltree.Node) error {
 //     here (a namespace node; the top-level Attrs/NS loops in exec never
 //     call this), is always kept.
 func itemPopulated(n *xmltree.Node) bool {
-	if n.RealItem != nil {
-		switch v := n.RealItem.(type) {
+	if n.RealItem() != nil {
+		switch v := n.RealItem().(type) {
 		case *xpath.Map:
 			return v.Size() > 0
 		case *xpath.Array:
@@ -329,7 +331,7 @@ func appendIfPopulated(out *xmltree.Node, ch *xmltree.Node) {
 	if !itemPopulated(ch) {
 		return
 	}
-	if ch.Kind == xmltree.KindDocument && !out.KeepDocItems {
+	if ch.Kind == xmltree.KindDocument && !out.KeepDocItems() {
 		// xsl:where-populated collects its body with KeepDocItems so an
 		// xsl:document in it survives as one document-node ITEM to be tested
 		// as a whole. Once it has survived, it is written on to the REAL
@@ -348,11 +350,11 @@ func appendIfPopulated(out *xmltree.Node, ch *xmltree.Node) {
 		}
 		return
 	}
-	if ch.Kind == xmltree.KindText && ch.Atomic && ch.RealItem == nil {
+	if ch.Kind == xmltree.KindText && ch.Atomic() && ch.RealItem() == nil {
 		if n := len(out.Children); n > 0 {
-			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic {
+			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic() {
 				last.Value += " " + ch.Value
-				last.TypeAnno = 0
+				last.SetTypeAnno(0)
 				return
 			}
 		}
@@ -560,7 +562,8 @@ func (n *condContent) exec(eng *engine, r rt, out *xmltree.Node) error {
 		// spaces behind and make six empty strings look like content
 		// (si-on-non-empty-044). transferContent re-joins them on the way out,
 		// so the emitted text is unchanged.
-		frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true}
+		frag := &xmltree.Node{Kind: xmltree.KindDocument}
+		frag.SetNoAtomicMerge(true)
 		if m, ok := p.(*onEmptyInstr); ok {
 			// Evaluate eagerly so the marker sees the variable bindings at its
 			// position; its content never counts toward the emptiness test.
@@ -602,7 +605,7 @@ func transferContent(frag, out *xmltree.Node) {
 	}
 	out.NS = append(out.NS, frag.NS...)
 	for _, ch := range frag.Children {
-		if ch.Kind == xmltree.KindText && ch.Atomic {
+		if ch.Kind == xmltree.KindText && ch.Atomic() {
 			appendAtomicText(out, ch.Value)
 			continue
 		}

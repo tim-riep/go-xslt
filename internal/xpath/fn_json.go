@@ -2174,7 +2174,8 @@ func fnJSJSONToXML(ctx *Context, args []Object) (Object, error) {
 	if useFirst {
 		v = jsDedupFirst(v)
 	}
-	doc := &xmltree.Node{Kind: xmltree.KindDocument, Ephemeral: true}
+	doc := &xmltree.Node{Kind: xmltree.KindDocument}
+	doc.SetEphemeral(true)
 	root := jsBuildXMLNodeEsc(v, "", opts.escape)
 	// The elements are built with their expanded name only; the serializer
 	// synthesizes xmlns="…" from Name.Space at write time, so the output looks

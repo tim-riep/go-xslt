@@ -121,10 +121,10 @@ func RawResultItem(it Item) Item {
 	if !ok || n == nil {
 		return it
 	}
-	if n.RealItem != nil {
-		return n.RealItem
+	if n.RealItem() != nil {
+		return n.RealItem()
 	}
-	if n.Kind == xmltree.KindText && n.Atomic {
+	if n.Kind == xmltree.KindText && n.Atomic() {
 		if a, ok := nodeTypedValue(n); ok {
 			return a
 		}

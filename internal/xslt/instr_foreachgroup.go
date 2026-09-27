@@ -204,7 +204,9 @@ func (n *fegInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
 			// comment documents as the intended behavior for this kind of
 			// wrapper (the same fix xsl:for-each's identical wrapper needed
 			// in execForEach).
-			nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true, Atomic: true, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd.SetSynthCtx(true)
+			nd.SetAtomic(true)
 			// Preserve the item's exact original atomic type through
 			// atomization, same as xsl:for-each (for-each-group-068: a
 			// group-by="." key over an atomic population must see the real
@@ -212,7 +214,7 @@ func (n *fegInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
 			// xs:untypedAtomic string that erases the type distinctions the
 			// non-transitive-comparison test depends on).
 			if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-				nd.TypeAnno = tag
+				nd.SetTypeAnno(tag)
 			}
 			attachRealItem(nd, it)
 			pop[i] = nd

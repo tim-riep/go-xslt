@@ -433,7 +433,7 @@ func matchExprPattern(ex Expr, n *xmltree.Node, ctx *Context) (bool, error) {
 	// child::a selects nothing, is allowed to be the anchor).
 	top := effectiveRoot(n)
 	for a := n; a != nil; a = a.Parent {
-		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: a, CtxItem: a.RealItem, Pos: 1, Size: 1, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs,
+		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: a, CtxItem: a.RealItem(), Pos: 1, Size: 1, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs,
 			Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals,
 			PatternTop: top}
 		v, err := evalExpr(ex, sub)
@@ -499,7 +499,7 @@ func matchStepRec(pe *PathExpr, i int, n *xmltree.Node, ctx *Context) (bool, err
 			// discrete-sequence collector (a document node with NoAtomicMerge,
 			// the same tree boundary effectiveRoot draws) is parentless as
 			// far as the data model is concerned (sequence-0124).
-			return n.Parent != nil && n.Parent.Kind == xmltree.KindDocument && !n.Parent.NoAtomicMerge, nil
+			return n.Parent != nil && n.Parent.Kind == xmltree.KindDocument && !n.Parent.NoAtomicMerge(), nil
 		}
 		if pe.Start != nil {
 			// A single '/' separates the leading primary expression from the
@@ -642,7 +642,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 	fastOK := len(step.Preds) <= 1
 	for i := 0; fastOK && i < len(step.Preds); i++ {
 		pred := step.Preds[i]
-		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: n, CtxItem: n.RealItem, Pos: pos, Size: len(cands), Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
+		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: n, CtxItem: n.RealItem(), Pos: pos, Size: len(cands), Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
 		v, err := evalExpr(pred, sub)
 		if err != nil {
 			return false, err
@@ -663,7 +663,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 		kept := cands[:0:0]
 		size := len(cands)
 		for i, s := range cands {
-			sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: s, CtxItem: s.RealItem, Pos: i + 1, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
+			sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: s, CtxItem: s.RealItem(), Pos: i + 1, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
 			v, err := evalExpr(pred, sub)
 			if err != nil {
 				return false, err

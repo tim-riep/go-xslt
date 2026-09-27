@@ -989,7 +989,7 @@ func idTokenSet(a []Object) map[string]bool {
 // fallback for schema-less documents) an unprefixed attribute literally named
 // "id".
 func isIDAttr(at *xmltree.Node) bool {
-	return at.IDKind == xmltree.IDKindID || isIDTyped(at) ||
+	return at.IDKind() == xmltree.IDKindID || isIDTyped(at) ||
 		(at.Name.Space == "http://www.w3.org/XML/1998/namespace" && at.Name.Local == "id") ||
 		(at.Name.Space == "" && at.Name.Local == "id")
 }
@@ -1020,7 +1020,7 @@ func isIDTyped(n *xmltree.Node) bool {
 // already written back by schema validation (xsd/bridge.go's idKindFor), so
 // an element whose simple content is xs:ID-derived keeps it.
 func isIDElem(n *xmltree.Node) bool {
-	return n.IDKind == xmltree.IDKindID || isIDTyped(n)
+	return n.IDKind() == xmltree.IDKindID || isIDTyped(n)
 }
 
 // fnID implements fn:id. fnElementWithID implements fn:element-with-id. They
@@ -1092,7 +1092,7 @@ func fnIdref(c *Context, a []Object) (Object, error) {
 	var walk func(n *xmltree.Node)
 	walk = func(n *xmltree.Node) {
 		for _, at := range n.Attrs {
-			if at.IDKind != xmltree.IDKindIDREF && at.IDKind != xmltree.IDKindIDREFS {
+			if at.IDKind() != xmltree.IDKindIDREF && at.IDKind() != xmltree.IDKindIDREFS {
 				continue
 			}
 			for _, tok := range strings.Fields(at.Value) {

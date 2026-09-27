@@ -104,7 +104,7 @@ func schemaTestCtx(n *xmltree.Node, f *fakeSchema) *Context {
 func annotatedElement(local string, t *xmltree.SchemaTypeName) *xmltree.Node {
 	doc := &xmltree.Node{Kind: xmltree.KindDocument}
 	el := xmltree.NewElement(xmltree.Name{Space: fakeNS, Local: local, Prefix: "my"})
-	el.SchemaType = t
+	el.SetSchemaType(t)
 	doc.Append(el)
 	return el
 }
@@ -232,7 +232,7 @@ func TestSchemaNamesInPathAndPattern(t *testing.T) {
 	root := xmltree.NewElement(xmltree.Name{Local: "root"})
 	doc.Append(root)
 	typed := xmltree.NewElement(xmltree.Name{Space: fakeNS, Local: "item", Prefix: "my"})
-	typed.SchemaType = &base
+	typed.SetSchemaType(&base)
 	root.Append(typed)
 	plain := xmltree.NewElement(xmltree.Name{Space: fakeNS, Local: "item", Prefix: "my"})
 	root.Append(plain)

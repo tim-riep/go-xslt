@@ -184,7 +184,9 @@ func (n *mpMap) exec(eng *engine, r rt, out *xmltree.Node) error {
 	// So the body runs into a discrete-sequence collector, exactly as
 	// mpEntry.value does, and every map among the items it produced is merged
 	// in here.
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
 	err := eng.execSequence(n.body, r, frag)
 	mpPop(eng)
 	if err != nil {
@@ -309,7 +311,9 @@ func (n *mpEntry) value(eng *engine, r rt) (xpath.Object, error) {
 	// body runs into a discrete-sequence collector, exactly like an @as-typed
 	// variable's, and fragAsSequence recovers the items (unwrapping any
 	// map/array/function carrier among them).
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
 	if err := eng.execSequence(n.body, r, frag); err != nil {
 		return nil, err
 	}

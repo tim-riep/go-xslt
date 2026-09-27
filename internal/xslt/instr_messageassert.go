@@ -156,7 +156,9 @@ func msgContent(eng *engine, el *xmltree.Node, sel *xpath.Parsed, body []instruc
 // $err:value an xsl:message terminate="yes" makes available to xsl:catch
 // (message-0501).
 func msgContentNodes(eng *engine, el *xmltree.Node, sel *xpath.Parsed, body []instruction, r rt) xpath.Object {
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
 	if sel != nil {
 		if v, err := eng.eval(sel, el, r); err == nil {
 			_ = emitSequenceValue(v, frag)

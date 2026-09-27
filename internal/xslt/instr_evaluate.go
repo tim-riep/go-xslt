@@ -280,9 +280,10 @@ func evContextNode(v xpath.Object, def *xmltree.Node) *xmltree.Node {
 	// simpleContentJoin's doc comment documents (seqtor-007 was xsl:for-
 	// each's version of the bug omitting this causes: a re-emitted "."
 	// silently losing its single-space join with an adjacent atomic value).
-	nd := &xmltree.Node{Kind: xmltree.KindText, Atomic: true, Value: xpath.ToString(xpath.FromItems([]xpath.Item{items[0]}))}
+	nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{items[0]}))}
+	nd.SetAtomic(true)
 	if tag, ok := xpath.ItemAtomTypeTag(items[0]); ok {
-		nd.TypeAnno = tag
+		nd.SetTypeAnno(tag)
 	}
 	attachRealItem(nd, items[0])
 	return nd

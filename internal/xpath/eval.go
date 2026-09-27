@@ -175,10 +175,10 @@ type Context struct {
 	// every other caller leaves this empty and keeps the old hardcoded
 	// "en" behavior.
 	DefaultLanguage string
-	Now        time.Time   // host-supplied fixed "current instant" for a whole transformation/query (zero = fall back to time.Now() lazily) — see nowCache
-	nowCache    *nowBox     // ONE current instant per evaluation (fn:current-*)
-	locals      *localScope // for/let/quantified/inline-function bindings
-	evalDepth   int         // recursion guard for evalExpr (prevents stack overflow)
+	Now             time.Time   // host-supplied fixed "current instant" for a whole transformation/query (zero = fall back to time.Now() lazily) — see nowCache
+	nowCache        *nowBox     // ONE current instant per evaluation (fn:current-*)
+	locals          *localScope // for/let/quantified/inline-function bindings
+	evalDepth       int         // recursion guard for evalExpr (prevents stack overflow)
 }
 
 // maxEvalDepth bounds the static recursion of one expression evaluation. Real
@@ -461,7 +461,7 @@ func evalExpr(e Expr, ctx *Context) (Object, error) {
 			// node — otherwise "." instance of xs:integer, ". gt 0" and
 			// friends see a node and silently answer the wrong thing
 			// (match-127..135, match-240*).
-			if ctx.Node.SynthCtx {
+			if ctx.Node.SynthCtx() {
 				if a, ok := nodeTypedValue(ctx.Node); ok {
 					return FromItems([]Item{a}), nil
 				}
@@ -1152,7 +1152,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 				return nil, fmt.Errorf("err:XPDY0002: the context item is absent for '/'")
 			}
 		}
-		if cn != nil && cn.SynthCtx {
+		if cn != nil && cn.SynthCtx() {
 			// The context item is an ATOMIC value modelled as a text node
 			// (xsl:for-each / xsl:analyze-string over a non-node sequence):
 			// a path expression rooted at it has no tree to navigate
@@ -1178,7 +1178,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 		}
 	} else {
 		if ctx.Node != nil {
-			if ctx.Node.SynthCtx {
+			if ctx.Node.SynthCtx() {
 				return nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
 			}
 			current = NodeSet{ctx.Node}

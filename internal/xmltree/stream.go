@@ -287,7 +287,9 @@ func (s *StreamReader) directive(t xml.Directive) error {
 	s.idKinds = idAttrKinds(src)
 	s.attrDefaults = attlistDefaults(src)
 	s.elemOnly = elementOnlyDecls(src, "")
-	s.doc.Unparsed = unparsedEntityDecls(src, "")
+	if u := unparsedEntityDecls(src, ""); len(u) > 0 {
+		s.doc.SetUnparsed(u)
+	}
 	return nil
 }
 
@@ -347,7 +349,9 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 			Value: streamNormalizeAttrValue(a.Value),
 		}
 		if m := s.idKinds[t.Name.Local]; m != nil {
-			an.IDKind = m[a.Name.Local]
+			if k := m[a.Name.Local]; k != 0 {
+				an.SetIDKind(k)
+			}
 		}
 		an.Parent = el
 		s.stamp(an)
@@ -407,7 +411,7 @@ func (s *StreamReader) charData(t xml.CharData) *Node {
 	if top.Kind == KindElement && s.elemOnly[top.Name.Local] && strings.Trim(string(t), " \t\r\n") == "" {
 		return nil
 	}
-	if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic {
+	if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic() {
 		top.Children[k-1].Value += string(t)
 		return nil
 	}

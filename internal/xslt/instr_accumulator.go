@@ -281,7 +281,7 @@ func (eng *engine) acc2lookup(args []xpath.Object, env *evalEnv, after bool) (xp
 	if node == nil {
 		return nil, true, errAt(nil, "err:XPDY0002: accumulator-before/after has no context item")
 	}
-	if node.Kind == xmltree.KindAttribute || node.Kind == xmltree.KindNamespace || node.SynthCtx {
+	if node.Kind == xmltree.KindAttribute || node.Kind == xmltree.KindNamespace || node.SynthCtx() {
 		// SynthCtx marks the parentless text node that stands in for a
 		// NON-NODE context item (xsl:for-each over "1 to 10") — for which
 		// accumulator-before/after is a type error just as for an attribute

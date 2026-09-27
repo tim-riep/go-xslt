@@ -376,7 +376,7 @@ func ResolveURIRef(rel, base string) (string, error) {
 // node attached only to one counts as parentless.
 func baseURIParent(n *xmltree.Node) *xmltree.Node {
 	p := n.Parent
-	if p != nil && p.Kind == xmltree.KindDocument && p.NoAtomicMerge {
+	if p != nil && p.Kind == xmltree.KindDocument && p.NoAtomicMerge() {
 		return nil
 	}
 	return p
@@ -396,7 +396,7 @@ func effectiveRoot(n *xmltree.Node) *xmltree.Node {
 	cur := n
 	for {
 		p := cur.Parent
-		if p == nil || (p.Kind == xmltree.KindDocument && p.NoAtomicMerge) {
+		if p == nil || (p.Kind == xmltree.KindDocument && p.NoAtomicMerge()) {
 			return cur
 		}
 		cur = p
@@ -425,8 +425,8 @@ func NodeBaseURI(n *xmltree.Node, fallback string) string {
 	}
 	var chain []string
 	for cur := n; cur != nil; cur = baseURIParent(cur) {
-		if cur.Base != "" {
-			fallback = cur.Base
+		if cur.Base() != "" {
+			fallback = cur.Base()
 			break
 		}
 		if cur.Kind == xmltree.KindElement {
@@ -443,8 +443,8 @@ func NodeBaseURI(n *xmltree.Node, fallback string) string {
 		// branch. Node.Base is checked before the xml:base instead (at the top
 		// of the loop): that one is an already-computed base URI, not a base to
 		// resolve against.
-		if cur.EntityBase != "" {
-			fallback = cur.EntityBase
+		if cur.EntityBase() != "" {
+			fallback = cur.EntityBase()
 			break
 		}
 	}

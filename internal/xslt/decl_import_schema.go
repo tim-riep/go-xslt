@@ -286,8 +286,8 @@ func (c *compiler) importSchemaSource(el *xmltree.Node, baseDir string) (src, ba
 	// which differs from the module's when the element arrived through an
 	// external entity (the rule xsl:import/@href follows — see gatherModules).
 	dir := baseDir
-	if own := el.Base; own == "" {
-		own = el.EntityBase
+	if own := el.Base(); own == "" {
+		own = el.EntityBase()
 		if own != "" {
 			dir = filepath.Dir(strings.TrimPrefix(own, "file://"))
 		}

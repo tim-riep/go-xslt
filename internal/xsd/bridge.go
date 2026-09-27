@@ -584,11 +584,15 @@ func isWholeDocument(el *xmltree.Node) bool {
 // constructed (DTD-less) tree.
 func unparsedOf(n *xmltree.Node) map[string]bool {
 	root := n.Root()
-	if root == nil || len(root.Unparsed) == 0 {
+	if root == nil {
 		return nil
 	}
-	out := make(map[string]bool, len(root.Unparsed))
-	for name := range root.Unparsed {
+	unparsed := root.Unparsed()
+	if len(unparsed) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(unparsed))
+	for name := range unparsed {
 		out[name] = true
 	}
 	return out
@@ -746,15 +750,15 @@ func (s *Schema) supplyDefaults(back map[*xmltree.Node]*xmltree.Node) {
 			if a == nil {
 				continue
 			}
-			a.TypeAnno = int32(typeAnnoForNode(d.typ, a))
-			a.ListTyped = listTypedFor(d.typ)
-			a.ListItemType = s.listItemTypeName(d.typ)
+			a.SetTypeAnno(int32(typeAnnoForNode(d.typ, a)))
+			a.SetListTyped(listTypedFor(d.typ))
+			a.SetListItemType(s.listItemTypeName(d.typ))
 			if k := idKindFor(d.typ); k != xmltree.IDKindNone {
-				a.IDKind = k
+				a.SetIDKind(k)
 			}
 			if name := s.typeNameOf(d.typ); name.Namespace != "" || name.Local != "" {
 				n := name
-				a.SchemaType = &n
+				a.SetSchemaType(&n)
 			}
 		}
 	}
@@ -826,18 +830,22 @@ func (s *Schema) annotate(back map[*xmltree.Node]*xmltree.Node) {
 		}
 		t := s.nodeTypes[cl]
 		if isNilType(t) {
-			orig.TypeAnno, orig.SchemaType, orig.Nilled, orig.ListTyped, orig.ListItemType = 0, nil, false, false, nil
-			orig.ValueType = nil
+			orig.SetTypeAnno(0)
+			orig.SetSchemaType(nil)
+			orig.SetNilled(false)
+			orig.SetListTyped(false)
+			orig.SetListItemType(nil)
+			orig.SetValueType(nil)
 			continue
 		}
-		orig.ValueType = s.valueTypeNameOf(t, orig)
-		orig.TypeAnno = int32(typeAnnoForNode(t, orig))
+		orig.SetValueType(s.valueTypeNameOf(t, orig))
+		orig.SetTypeAnno(int32(typeAnnoForNode(t, orig)))
 		// [nilled] is assigned unconditionally, not only when true: this
 		// episode's verdict REPLACES whatever a previous validation left on
 		// the node, exactly as the annotation above does.
-		orig.Nilled = s.nodeNilled[cl]
-		orig.ListTyped = listTypedFor(t)
-		orig.ListItemType = s.listItemTypeName(t)
+		orig.SetNilled(s.nodeNilled[cl])
+		orig.SetListTyped(listTypedFor(t))
+		orig.SetListItemType(s.listItemTypeName(t))
 		// IDKind is the DTD-derived half of the same fact TypeAnno carries
 		// here, and fn:id/fn:idref read IT, not the annotation (xmltree's own
 		// CopyTypeInfo deliberately carries the two together for exactly this
@@ -846,13 +854,13 @@ func (s *Schema) annotate(back map[*xmltree.Node]*xmltree.Node) {
 		// (import-schema-077/078/079): without it, id() finds nothing in a
 		// document whose IDs were declared in a schema rather than a DTD.
 		if k := idKindFor(t); k != xmltree.IDKindNone {
-			orig.IDKind = k
+			orig.SetIDKind(k)
 		}
 		if name := s.typeNameOf(t); name.Namespace != "" || name.Local != "" {
 			n := name
-			orig.SchemaType = &n
+			orig.SetSchemaType(&n)
 		} else {
-			orig.SchemaType = nil // anonymous: no nameable identity (typeNameOf)
+			orig.SetSchemaType(nil) // anonymous: no nameable identity (typeNameOf)
 		}
 	}
 }

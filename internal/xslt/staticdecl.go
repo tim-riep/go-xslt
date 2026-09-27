@@ -250,8 +250,8 @@ func (c *compiler) loadStaticModule(el *xmltree.Node, baseDir string, seen map[s
 		return nil, "", "", false
 	}
 	hrefBase := baseDir
-	if el.Base != "" {
-		hrefBase = filepath.Dir(strings.TrimPrefix(el.Base, "file://"))
+	if el.Base() != "" {
+		hrefBase = filepath.Dir(strings.TrimPrefix(el.Base(), "file://"))
 	}
 	path := href
 	if strings.IndexByte(path, '#') >= 0 {
@@ -279,7 +279,7 @@ func (c *compiler) loadStaticModule(el *xmltree.Node, baseDir string, seen map[s
 	if err != nil {
 		return nil, "", "", false
 	}
-	doc.Base = fileURI(abs)
+	doc.SetBase(fileURI(abs))
 	sub := xmltree.RootElement(doc)
 	if sub == nil || sub.Name.Space != NS {
 		return nil, "", "", false

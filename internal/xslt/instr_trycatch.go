@@ -159,8 +159,9 @@ func (t *tryCatch) exec(eng *engine, r rt, out *xmltree.Node) error {
 	// effective boolean value is TRUE — instead of the xs:boolean false() the
 	// body produced (higher-order-functions-067). With an ordinary element/RTF
 	// destination both flags are false and behaviour is unchanged.
-	frag := &xmltree.Node{Kind: xmltree.KindDocument,
-		NoAtomicMerge: out.NoAtomicMerge, KeepDocItems: out.KeepDocItems}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(out.NoAtomicMerge())
+	frag.SetKeepDocItems(out.KeepDocItems())
 	var tryErr error
 	savedErrEl := eng.errEl
 	eng.errEl = nil

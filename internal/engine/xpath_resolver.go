@@ -81,7 +81,7 @@ func (r *standaloneResolver) ResolveDoc(uri string) (*xmltree.Node, bool) {
 	if err != nil {
 		return nil, false
 	}
-	doc.Base = "file://" + filepath.ToSlash(p)
+	doc.SetBase("file://" + filepath.ToSlash(p))
 	return doc, true
 }
 

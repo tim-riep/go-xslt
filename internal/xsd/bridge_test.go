@@ -471,18 +471,18 @@ func TestValidateNodeAnnotates(t *testing.T) {
 	}
 	// The root is complex: exact identity reaches SchemaType, and TypeAnno
 	// stays 0 because complex content has no typed VALUE to atomize.
-	if el.SchemaType == nil || el.SchemaType.Local != "Addr" || !el.SchemaType.Complex {
-		t.Errorf("root SchemaType = %+v, want t:Addr complex", el.SchemaType)
+	if el.SchemaType() == nil || el.SchemaType().Local != "Addr" || !el.SchemaType().Complex {
+		t.Errorf("root SchemaType = %+v, want t:Addr complex", el.SchemaType())
 	}
-	if el.TypeAnno != 0 {
-		t.Errorf("root TypeAnno = %d, want 0 (complex content)", el.TypeAnno)
+	if el.TypeAnno() != 0 {
+		t.Errorf("root TypeAnno = %d, want 0 (complex content)", el.TypeAnno())
 	}
 	zip := el.Children[0]
-	if zip.SchemaType == nil || zip.SchemaType.Local != "Zip" || zip.SchemaType.Complex {
-		t.Errorf("zip SchemaType = %+v, want t:Zip simple", zip.SchemaType)
+	if zip.SchemaType() == nil || zip.SchemaType().Local != "Zip" || zip.SchemaType().Complex {
+		t.Errorf("zip SchemaType = %+v, want t:Zip simple", zip.SchemaType())
 	}
-	if xpath.AtomType(zip.TypeAnno) != xpath.XSstring {
-		t.Errorf("zip TypeAnno = %d, want xs:string (t:Zip's nearest primitive)", zip.TypeAnno)
+	if xpath.AtomType(zip.TypeAnno()) != xpath.XSstring {
+		t.Errorf("zip TypeAnno = %d, want xs:string (t:Zip's nearest primitive)", zip.TypeAnno())
 	}
 	// A BUILT-IN type is named too. TypeAnno alone cannot serve: element(*,
 	// xs:int) and schema-element(N) ask "is this node's type T, or derived
@@ -490,19 +490,19 @@ func TestValidateNodeAnnotates(t *testing.T) {
 	// identity at all", which would make every built-in-typed node
 	// unmatchable (see builtinRefName).
 	n := el.Children[1]
-	if xpath.AtomType(n.TypeAnno) != xpath.XSint {
-		t.Errorf("n TypeAnno = %d, want xs:int", n.TypeAnno)
+	if xpath.AtomType(n.TypeAnno()) != xpath.XSint {
+		t.Errorf("n TypeAnno = %d, want xs:int", n.TypeAnno())
 	}
-	if n.SchemaType == nil || n.SchemaType.Local != "int" ||
-		n.SchemaType.Namespace != "http://www.w3.org/2001/XMLSchema" || n.SchemaType.Complex {
-		t.Errorf("n SchemaType = %+v, want xs:int simple", n.SchemaType)
+	if n.SchemaType() == nil || n.SchemaType().Local != "int" ||
+		n.SchemaType().Namespace != "http://www.w3.org/2001/XMLSchema" || n.SchemaType().Complex {
+		t.Errorf("n SchemaType = %+v, want xs:int simple", n.SchemaType())
 	}
 	if len(el.Attrs) != 1 {
 		t.Fatalf("expected one attribute, got %d", len(el.Attrs))
 	}
-	if a := el.Attrs[0]; a.SchemaType == nil || a.SchemaType.Local != "Zip" ||
-		xpath.AtomType(a.TypeAnno) != xpath.XSstring {
-		t.Errorf("@kind annotation = %+v/%d, want t:Zip / xs:string", a.SchemaType, a.TypeAnno)
+	if a := el.Attrs[0]; a.SchemaType() == nil || a.SchemaType().Local != "Zip" ||
+		xpath.AtomType(a.TypeAnno()) != xpath.XSstring {
+		t.Errorf("@kind annotation = %+v/%d, want t:Zip / xs:string", a.SchemaType(), a.TypeAnno())
 	}
 }
 
@@ -514,9 +514,9 @@ func TestValidateNodeLeavesInvalidTreesAlone(t *testing.T) {
 	}
 	// Nothing is annotated on failure: a half-validated tree must not be left
 	// claiming types it never earned.
-	if el.SchemaType != nil || el.TypeAnno != 0 || el.Children[0].SchemaType != nil {
+	if el.SchemaType() != nil || el.TypeAnno() != 0 || el.Children[0].SchemaType() != nil {
 		t.Errorf("annotations leaked from a FAILED validation: root=%+v child=%+v",
-			el.SchemaType, el.Children[0].SchemaType)
+			el.SchemaType(), el.Children[0].SchemaType())
 	}
 }
 
@@ -532,8 +532,8 @@ func TestValidateNodeStrictVsLax(t *testing.T) {
 	if err := s.ValidateNode(el, NodeValidateOptions{}); err != nil {
 		t.Errorf("lax validation of an undeclared element must be tolerated, got %v", err)
 	}
-	if el.SchemaType != nil || el.TypeAnno != 0 {
-		t.Errorf("lax validation annotated an unassessed element: %+v", el.SchemaType)
+	if el.SchemaType() != nil || el.TypeAnno() != 0 {
+		t.Errorf("lax validation annotated an unassessed element: %+v", el.SchemaType())
 	}
 	// Lax still fails an element that DOES match a declaration and is invalid.
 	el = bridgeParse(t, `<t:head xmlns:t="urn:t"><t:zip>nope</t:zip></t:head>`)
@@ -549,8 +549,8 @@ func TestValidateNodeAgainstNamedType(t *testing.T) {
 	if err := s.ValidateNode(el, NodeValidateOptions{Type: typ}); err != nil {
 		t.Fatalf("[xsl:]type validation: %v", err)
 	}
-	if el.SchemaType == nil || el.SchemaType.Local != "Addr" {
-		t.Errorf("root SchemaType = %+v, want t:Addr", el.SchemaType)
+	if el.SchemaType() == nil || el.SchemaType().Local != "Addr" {
+		t.Errorf("root SchemaType = %+v, want t:Addr", el.SchemaType())
 	}
 	el = bridgeParse(t, `<anything xmlns:t="urn:t"><t:zip>nope</t:zip></anything>`)
 	if err := s.ValidateNode(el, NodeValidateOptions{Type: typ}); err == nil {
@@ -587,8 +587,8 @@ func TestValidateNodeNormalizesConstructedText(t *testing.T) {
 	if err := s.ValidateNode(el, NodeValidateOptions{Strict: true}); err != nil {
 		t.Fatalf("constructed content with split text nodes: %v", err)
 	}
-	if xpath.AtomType(el.Children[0].TypeAnno) != xpath.XSstring {
-		t.Errorf("zip TypeAnno = %d, want xs:string", el.Children[0].TypeAnno)
+	if xpath.AtomType(el.Children[0].TypeAnno()) != xpath.XSstring {
+		t.Errorf("zip TypeAnno = %d, want xs:string", el.Children[0].TypeAnno())
 	}
 	// The caller's tree keeps its own structure: only annotations are written.
 	if got := len(el.Children[0].Children); got != 6 {

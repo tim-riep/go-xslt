@@ -37,8 +37,8 @@ func Items(o Object) []Item {
 			// choke point every sequence consumer in this package funnels
 			// through — additive only: nil for every ordinary node, which is
 			// every node that predates this mechanism.
-			if n != nil && n.RealItem != nil {
-				out[i] = n.RealItem
+			if n != nil && n.RealItem() != nil {
+				out[i] = n.RealItem()
 				continue
 			}
 			out[i] = n

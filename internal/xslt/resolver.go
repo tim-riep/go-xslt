@@ -138,7 +138,7 @@ func (r *fileResolver) ResolveDoc(uri string) (*xmltree.Node, bool) {
 	// (fn:base-uri of any node in it, absent a closer xml:base override) AND
 	// its document-uri (a genuinely retrieved resource, unlike a constructed
 	// temporary tree — see xmltree.Node.Ephemeral).
-	doc.Base = fileURI(p)
+	doc.SetBase(fileURI(p))
 	r.docs[p] = doc
 	return doc, true
 }
@@ -267,7 +267,7 @@ func elementByID(n *xmltree.Node, id string) *xmltree.Node {
 			if a.Value != id {
 				continue
 			}
-			if a.IDKind == xmltree.IDKindID ||
+			if a.IDKind() == xmltree.IDKindID ||
 				(a.Name.Local == "id" && a.Name.Space == "http://www.w3.org/XML/1998/namespace") {
 				return n
 			}

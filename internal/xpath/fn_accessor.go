@@ -105,7 +105,7 @@ func fnNilled(c *Context, a []Object) (Object, error) {
 	// F&O §5.3: [nilled] is true only for an element that validation accepted
 	// as empty under xsi:nil="true". An unvalidated element is xs:untyped and
 	// never nilled, so this stays false for every schema-unaware run.
-	return NewBool(n.Nilled), nil
+	return NewBool(n.Nilled()), nil
 }
 
 // fnData implements fn:data($arg as item()*) as xs:anyAtomicType*.
@@ -183,7 +183,7 @@ func fnDocumentURI(c *Context, a []Object) (Object, error) {
 	// detached fn:copy-of/snapshot clone) is never a "retrieved" resource,
 	// even though its Document root carries a Base for fn:base-uri's sake
 	// (accessor-007) — that Base must not leak out as a document-uri.
-	if n.Ephemeral {
+	if n.Ephemeral() {
 		return Sequence{}, nil
 	}
 	// Prefer the node's own recorded retrieval location (set by the engine's
@@ -191,7 +191,7 @@ func fnDocumentURI(c *Context, a []Object) (Object, error) {
 	// file) when known; otherwise fall back to the calling expression's
 	// static base URI, matching a host resolver (e.g. the QT3 conformance
 	// harness's) that has no reason to populate xmltree.Node.Base itself.
-	base := n.Base
+	base := n.Base()
 	if base == "" {
 		base = c.BaseURI
 	}

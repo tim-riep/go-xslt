@@ -354,7 +354,7 @@ func (n *rdResultDocument) exec(eng *engine, r rt, out *xmltree.Node) error {
 		// serialization, so its target must keep top-level items discrete
 		// too (see Output.ItemSeparator).
 		if cfg.HasItemSeparator && target != nil {
-			target.NoAtomicMerge = true
+			target.SetNoAtomicMerge(true)
 		}
 		// This instruction also decides whether the principal result is a tree
 		// or a raw sequence (its own @build-tree / json-or-adaptive @method) —
@@ -392,7 +392,7 @@ func (n *rdResultDocument) exec(eng *engine, r rt, out *xmltree.Node) error {
 			// transform finishes (see checkPrincipalSealed).
 			eng.principalSealedAt = len(eng.principalRoot.Children)
 			if n := eng.principalSealedAt; n > 0 {
-				if last := eng.principalRoot.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic {
+				if last := eng.principalRoot.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic() {
 					eng.principalSealedLastText = last
 					eng.principalSealedTextLen = len(last.Value)
 				}
@@ -403,7 +403,8 @@ func (n *rdResultDocument) exec(eng *engine, r rt, out *xmltree.Node) error {
 
 	// Execute the body into a temporary fragment so it does not touch the
 	// principal output tree.
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: cfg.HasItemSeparator}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(cfg.HasItemSeparator)
 	prepareRawRoot(frag, cfg)
 	eng.secondaryDocDepth++
 	// While the body runs, fn:current-output-uri() reports THIS document's

@@ -103,7 +103,7 @@ func namespaceNodes(n *xmltree.Node, cache map[*xmltree.Node][]*xmltree.Node) No
 		}
 		// inherit-namespaces="no" (xmltree.Node.NSBarrier): this element's
 		// in-scope namespaces are its own declarations only.
-		if cur.NSBarrier {
+		if cur.NSBarrier() {
 			break
 		}
 	}
@@ -299,7 +299,7 @@ func matchTest(t NodeTest, axis string, c *xmltree.Node, ctx *Context) (bool, er
 		// instead by its DECLARATION's nillable property (§2.5.5.4), and an
 		// xsi:nil on a non-nillable declaration never validates in the first
 		// place, so a nilled node reaching here always had a nillable one.
-		if t.Kind == testElement && !t.TypedElem && t.TypeName != "" && !t.Nillable && c.Nilled {
+		if t.Kind == testElement && !t.TypedElem && t.TypeName != "" && !t.Nillable && c.Nilled() {
 			return false, nil
 		}
 		if t.Kind == testSchemaElement {
@@ -447,7 +447,7 @@ func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 		// attribute(my:string-int-union, xs:string) match an attribute whose
 		// annotation is the union my:string-int-type purely because the
 		// member that accepted "hello" happened to be xs:string (match-211).
-		if c != nil && c.SchemaType != nil && c.SchemaType.Namespace != nsXS {
+		if c != nil && c.SchemaType() != nil && c.SchemaType().Namespace != nsXS {
 			return false
 		}
 	}
@@ -471,7 +471,7 @@ func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 		// atomize) while carrying its real type in SchemaType, so the
 		// annotation test has to consult both or it reports every validated
 		// element as untyped (import-schema-076).
-		return c.Kind == xmltree.KindElement && !IsTypeAnnotated(c) && c.SchemaType == nil
+		return c.Kind == xmltree.KindElement && !IsTypeAnnotated(c) && c.SchemaType() == nil
 	case "untypedAtomic":
 		// The default annotation for an ATTRIBUTE's typed value. For an
 		// ELEMENT it is normally impossible (type-0203: element(*,
@@ -479,8 +479,8 @@ func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 		// with one exception, [xsl:]type="xs:untypedAtomic", which §24.4.1.2
 		// gives an element exactly that annotation (validation-0108).
 		if c.Kind != xmltree.KindAttribute {
-			return c.SchemaType != nil && c.SchemaType.Namespace == nsXS &&
-				c.SchemaType.Local == "untypedAtomic"
+			return c.SchemaType() != nil && c.SchemaType().Namespace == nsXS &&
+				c.SchemaType().Local == "untypedAtomic"
 		}
 		// A LIST- or UNION-typed attribute has no TypeAnno of its own (its
 		// typed value is a sequence, which one AtomType cannot hold), so
@@ -490,8 +490,8 @@ func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 		// [xsl:]type="xs:untypedAtomic" stamps on the node it validates
 		// (§24.4.1.2) exactly as it does for an element — validation-0108
 		// asserts the attribute half of that alongside the element half.
-		if c.SchemaType != nil {
-			return c.SchemaType.Namespace == nsXS && c.SchemaType.Local == "untypedAtomic"
+		if c.SchemaType() != nil {
+			return c.SchemaType().Namespace == nsXS && c.SchemaType().Local == "untypedAtomic"
 		}
 		at, annotated := nodeAnnotationType(c)
 		return !annotated || at == XSuntypedAtomic
@@ -517,9 +517,9 @@ func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 		// could never match an attribute validated against xs:NMTOKENS
 		// (import-schema-020), since AtomTypeByName knows only atomic names.
 		if item, isList := xsListItemType(local); isList {
-			return c.ListTyped && anno == item
+			return c.ListTyped() && anno == item
 		}
-		if c.ListTyped {
+		if c.ListTyped() {
 			// An ATOMIC type name never matches a list-annotated node:
 			// TypeAnno holds the item type there, not the node's own.
 			return false

@@ -298,8 +298,8 @@ func prepareRawRoot(root *xmltree.Node, cfg Output) {
 	if root == nil || !outputIsRaw(cfg) {
 		return
 	}
-	root.NoAtomicMerge = true
-	root.KeepDocItems = true
+	root.SetNoAtomicMerge(true)
+	root.SetKeepDocItems(true)
 }
 
 // checkSerializationErrors validates the handful of xsl:output serialization
@@ -765,7 +765,7 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 			return nil, nil, err
 		}
 		if e.SourceURI != "" {
-			d.Base = e.SourceURI
+			d.SetBase(e.SourceURI)
 		}
 		// Validation FIRST, whitespace stripping second. XSLT 3.0 §4.4's
 		// stripping rules are written against the tree the processor is
@@ -830,10 +830,11 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 			initialNodes = append(initialNodes, nd)
 			continue
 		}
-		nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true,
+		nd := &xmltree.Node{Kind: xmltree.KindText,
 			Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+		nd.SetSynthCtx(true)
 		if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-			nd.TypeAnno = tag
+			nd.SetTypeAnno(tag)
 		}
 		initialNodes = append(initialNodes, nd)
 	}
@@ -873,10 +874,11 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 		if nd, ok := e.GlobalContextItem.(*xmltree.Node); ok {
 			eng.globalCtx = nd
 		} else {
-			gc := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true,
+			gc := &xmltree.Node{Kind: xmltree.KindText,
 				Value: xpath.ToString(xpath.FromItems([]xpath.Item{e.GlobalContextItem}))}
+			gc.SetSynthCtx(true)
 			if tag, ok := xpath.ItemAtomTypeTag(e.GlobalContextItem); ok {
-				gc.TypeAnno = tag
+				gc.SetTypeAnno(tag)
 			}
 			eng.globalCtx = gc
 		}
@@ -896,7 +898,7 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 	// serialization time, not by the default single space during
 	// construction) — see Output.ItemSeparator.
 	if ss.output.HasItemSeparator {
-		resultRoot.NoAtomicMerge = true
+		resultRoot.SetNoAtomicMerge(true)
 	}
 	prepareRawRoot(resultRoot, ss.output)
 	eng.principalRoot = resultRoot
@@ -1103,10 +1105,12 @@ entryKind:
 				}
 				// Same synthetic-node modelling as xsl:apply-templates over an
 				// atomic sequence (see execApplyTemplates).
-				nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true, Atomic: true,
+				nd := &xmltree.Node{Kind: xmltree.KindText,
 					Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+				nd.SetSynthCtx(true)
+				nd.SetAtomic(true)
 				if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-					nd.TypeAnno = tag
+					nd.SetTypeAnno(tag)
 				}
 				sel = append(sel, nd)
 			}
@@ -1266,7 +1270,7 @@ func (ss *Stylesheet) transformInto(srcXML string, params map[string]string, bas
 
 	resultRoot := &xmltree.Node{Kind: xmltree.KindDocument}
 	if ss.output.HasItemSeparator {
-		resultRoot.NoAtomicMerge = true
+		resultRoot.SetNoAtomicMerge(true)
 	}
 	prepareRawRoot(resultRoot, ss.output)
 	eng.principalRoot = resultRoot
@@ -2122,7 +2126,11 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 	//
 	// XSLT 3.0 "temporary output state" (5.7.1): a variable/param value built
 	// from a sequence-constructor BODY forbids xsl:result-document (XTDE1480).
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: vd.as != "", KeepDocItems: vd.as != "", Base: xpath.NodeBaseURI(vd.el, ""), Ephemeral: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(vd.as != "")
+	frag.SetKeepDocItems(vd.as != "")
+	frag.SetBase(xpath.NodeBaseURI(vd.el, ""))
+	frag.SetEphemeral(true)
 	eng.tempOutputDepth++
 	err := eng.execSequence(vd.body, r, frag)
 	eng.tempOutputDepth--
@@ -2197,12 +2205,12 @@ func fragAsSequence(frag *xmltree.Node) xpath.Object {
 	// empty sequence (namespace-3005).
 	emitOutOfBand := func(at int, last bool) {
 		for _, a := range frag.Attrs {
-			if a.SeqIndex == at || (last && a.SeqIndex > at) {
+			if a.SeqIndex() == at || (last && a.SeqIndex() > at) {
 				ns = append(ns, a)
 			}
 		}
 		for _, a := range frag.NS {
-			if a.SeqIndex == at || (last && a.SeqIndex > at) {
+			if a.SeqIndex() == at || (last && a.SeqIndex() > at) {
 				ns = append(ns, a)
 			}
 		}
@@ -2478,7 +2486,7 @@ func stripEmptyLiteralText(el *xmltree.Node) {
 	}
 	kept := el.Children[:0]
 	for _, c := range el.Children {
-		if c.Kind == xmltree.KindText && !c.Atomic && c.Value == "" {
+		if c.Kind == xmltree.KindText && !c.Atomic() && c.Value == "" {
 			continue
 		}
 		kept = append(kept, c)
@@ -2506,7 +2514,7 @@ func realItemOf(n *xmltree.Node) xpath.Item {
 	if n == nil {
 		return nil
 	}
-	return n.RealItem
+	return n.RealItem()
 }
 
 // attachRealItem records it on nd.RealItem when it is a map, array, or
@@ -2518,7 +2526,7 @@ func realItemOf(n *xmltree.Node) xpath.Item {
 func attachRealItem(nd *xmltree.Node, it xpath.Item) {
 	switch it.(type) {
 	case *xpath.Map, *xpath.Array, *xpath.Function:
-		nd.RealItem = it
+		nd.SetRealItem(it)
 	}
 }
 
@@ -2554,12 +2562,14 @@ func (eng *engine) execForEach(n *forEach, r rt, out *xmltree.Node) error {
 			// NO separator at all (seqtor-007/011/012 and others: several
 			// xsl:sequence select="." contributions across for-each
 			// iterations must still join "1 2 | 3 4 |", not "12|34|").
-			nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true, Atomic: true, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+			nd.SetSynthCtx(true)
+			nd.SetAtomic(true)
 			// Preserve the item's exact original atomic type through
 			// atomization (position-0102: "." + 1 over an xs:integer item
 			// must stay integer arithmetic, not untypedAtomic->xs:double).
 			if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-				nd.TypeAnno = tag
+				nd.SetTypeAnno(tag)
 			}
 			attachRealItem(nd, it)
 			nodes[i] = nd
@@ -2667,7 +2677,7 @@ func (eng *engine) execApplyTemplates(n *applyTemplates, r rt, out *xmltree.Node
 	} else {
 		// With no @select the instruction processes the CHILDREN of the
 		// context item, which therefore has to be a node (XTTE0510).
-		if r.node != nil && r.node.SynthCtx {
+		if r.node != nil && r.node.SynthCtx() {
 			return errAt(n.el, "err:XTTE0510: xsl:apply-templates with no select requires a node context item")
 		}
 		nodes = childrenOf(r.node)
@@ -2703,9 +2713,11 @@ func itemsAsNodes(items []xpath.Item) xpath.NodeSet {
 			ns = append(ns, nd)
 			continue
 		}
-		nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true, Atomic: true, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+		nd := &xmltree.Node{Kind: xmltree.KindText, Value: xpath.ToString(xpath.FromItems([]xpath.Item{it}))}
+		nd.SetSynthCtx(true)
+		nd.SetAtomic(true)
 		if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-			nd.TypeAnno = tag
+			nd.SetTypeAnno(tag)
 		}
 		attachRealItem(nd, it)
 		ns = append(ns, nd)
@@ -2995,7 +3007,10 @@ func (eng *engine) invokeTemplate(tmpl *Template, r rt, out *xmltree.Node, calle
 	// nodes atomize and cast up to the declared atomic type); it is a type
 	// error (XTTE0505) if the result — after conversion — does not match
 	// (type-0169/0170/…: wrong cardinality or an item of the wrong kind).
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true, Ephemeral: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
+	frag.SetEphemeral(true)
 	if err := eng.execSequence(tmpl.body, r, frag); err != nil {
 		return err
 	}
@@ -3385,8 +3400,8 @@ func (eng *engine) execCopy(n *copyInstr, r rt, out *xmltree.Node) error {
 		// complex content (an LRE, xsl:element, or RTF), the copy instead
 		// derives its base-uri from its new position, so el.Base is left
 		// unset there (base-uri-025/028/030/…).
-		if out.NoAtomicMerge {
-			el.Base = retainedBase(el, node)
+		if out.NoAtomicMerge() {
+			el.SetBase(retainedBase(el, node))
 		}
 		out.Append(el)
 		if err := eng.execSequence(n.body, r, el); err != nil {
@@ -3404,7 +3419,7 @@ func (eng *engine) execCopy(n *copyInstr, r rt, out *xmltree.Node) error {
 		}
 		return eng.applyValidation(n.val, el)
 	case xmltree.KindText:
-		if node.Atomic {
+		if node.Atomic() {
 			// The context item was an ATOMIC value, which this engine carries
 			// as a synthetic text node — so copying it must keep the "adjacent
 			// atomics get a space between them" rule of §5.7.1, exactly as
@@ -3436,7 +3451,7 @@ func (eng *engine) execCopy(n *copyInstr, r rt, out *xmltree.Node) error {
 	case xmltree.KindPI:
 		out.Append(&xmltree.Node{Kind: xmltree.KindPI, Name: node.Name, Value: node.Value})
 	case xmltree.KindDocument:
-		if out.KeepDocItems {
+		if out.KeepDocItems() {
 			// out is a discrete-sequence collector (an @as-typed body/
 			// xsl:sequence result), not element/RTF content being built:
 			// xsl:copy of a document node must produce an actual NEW
@@ -3446,7 +3461,9 @@ func (eng *engine) execCopy(n *copyInstr, r rt, out *xmltree.Node) error {
 			// anyway, so every OTHER context (building real content) still
 			// flattens below, unchanged (copy-4302: as="document-node()*"
 			// over three xsl:copy of a document-node context item).
-			d := &xmltree.Node{Kind: xmltree.KindDocument, Base: xpath.NodeBaseURI(node, ""), Ephemeral: true}
+			d := &xmltree.Node{Kind: xmltree.KindDocument}
+			d.SetBase(xpath.NodeBaseURI(node, ""))
+			d.SetEphemeral(true)
 			mergeUnparsed(d, node)
 			if err := eng.execSequence(n.body, r, d); err != nil {
 				return err
@@ -3494,15 +3511,21 @@ func (eng *engine) execCopy(n *copyInstr, r rt, out *xmltree.Node) error {
 // unparsed-entity-uri() still resolves against the copy (unparsed-entity-05/
 // 06/07/08).
 func mergeUnparsed(dst, src *xmltree.Node) {
-	if dst == nil || src == nil || len(src.Unparsed) == 0 || dst.Kind != xmltree.KindDocument {
+	if dst == nil || src == nil || dst.Kind != xmltree.KindDocument {
 		return
 	}
-	if dst.Unparsed == nil {
-		dst.Unparsed = map[string]xmltree.UnparsedEntity{}
+	srcUnparsed := src.Unparsed()
+	if len(srcUnparsed) == 0 {
+		return
 	}
-	for k, v := range src.Unparsed {
-		if _, ok := dst.Unparsed[k]; !ok {
-			dst.Unparsed[k] = v
+	dstUnparsed := dst.Unparsed()
+	if dstUnparsed == nil {
+		dstUnparsed = map[string]xmltree.UnparsedEntity{}
+		dst.SetUnparsed(dstUnparsed)
+	}
+	for k, v := range srcUnparsed {
+		if _, ok := dstUnparsed[k]; !ok {
+			dstUnparsed[k] = v
 		}
 	}
 }
@@ -3658,7 +3681,9 @@ func retainedBase(el, orig *xmltree.Node) string {
 func cloneNode(n *xmltree.Node) *xmltree.Node {
 	switch n.Kind {
 	case xmltree.KindDocument:
-		d := &xmltree.Node{Kind: xmltree.KindDocument, Base: xpath.NodeBaseURI(n, ""), Ephemeral: true}
+		d := &xmltree.Node{Kind: xmltree.KindDocument}
+		d.SetBase(xpath.NodeBaseURI(n, ""))
+		d.SetEphemeral(true)
 		mergeUnparsed(d, n)
 		for _, c := range n.Children {
 			ch := cloneNode(c)
@@ -3668,7 +3693,7 @@ func cloneNode(n *xmltree.Node) *xmltree.Node {
 		return d
 	case xmltree.KindElement:
 		el := xmltree.NewElement(n.Name)
-		el.NSBarrier = n.NSBarrier // see deepCopyInto's note on this field
+		el.SetNSBarrier(n.NSBarrier()) // see deepCopyInto's note on this field
 		xmltree.CopyTypeInfo(el, n)
 		for _, ns := range n.NS {
 			el.NS = append(el.NS, &xmltree.Node{Kind: xmltree.KindNamespace, Name: ns.Name, Value: ns.Value, Parent: el})
@@ -3676,7 +3701,7 @@ func cloneNode(n *xmltree.Node) *xmltree.Node {
 		for _, a := range n.Attrs {
 			xmltree.CopyTypeInfo(el.SetAttr(a.Name, a.Value), a)
 		}
-		el.Base = retainedBase(el, n)
+		el.SetBase(retainedBase(el, n))
 		for _, c := range n.Children {
 			ch := cloneNode(c)
 			ch.Parent = el
@@ -3758,7 +3783,9 @@ func (eng *engine) homeDoc(mod *xmltree.Node) *xmltree.Node {
 	if d, ok := eng.homeDocs[mod]; ok {
 		return d
 	}
-	cp := &xmltree.Node{Kind: xmltree.KindDocument, Base: mod.Base, Unparsed: mod.Unparsed}
+	cp := &xmltree.Node{Kind: xmltree.KindDocument}
+	cp.SetBase(mod.Base())
+	cp.SetUnparsed(mod.Unparsed())
 	for _, c := range mod.Children {
 		deepCopyInto(c, cp)
 	}
@@ -3822,7 +3849,7 @@ func (ss *Stylesheet) stripWalk(n *xmltree.Node, preserve bool) {
 // says runs first ("Stripping of type annotations happens before stripping of
 // whitespace text nodes, so this situation will not occur").
 func simpleContentTyped(n *xmltree.Node) bool {
-	return xpath.IsTypeAnnotated(n) || n.ListTyped
+	return xpath.IsTypeAnnotated(n) || n.ListTyped()
 }
 
 // spaceStripped decides strip vs preserve for an element name: the more
@@ -3890,16 +3917,16 @@ func spaceMatchBest(set []spaceTest, name xmltree.Name) (prec, rank int, ok bool
 // xsl:on-empty select="'|'" must still read "... |", the space coming from
 // exactly this empty-but-present atomic node).
 func appendAtomicText(out *xmltree.Node, s string) {
-	if !out.NoAtomicMerge {
+	if !out.NoAtomicMerge() {
 		if n := len(out.Children); n > 0 {
-			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic {
+			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic() {
 				last.Value += " " + s
 				return
 			}
 		}
 	}
 	t := xmltree.NewText(s)
-	t.Atomic = true
+	t.SetAtomic(true)
 	out.Append(t)
 }
 
@@ -3932,9 +3959,9 @@ func appendAtomicText(out *xmltree.Node, s string) {
 // content is finalized — see stripEmptyLiteralText — precisely so it cannot
 // perturb adjacency decisions made while content is still being built.
 func appendLiteralText(out *xmltree.Node, s string, doe bool) {
-	if !out.NoAtomicMerge {
+	if !out.NoAtomicMerge() {
 		if n := len(out.Children); n > 0 {
-			if last := out.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic && last.Raw == doe {
+			if last := out.Children[n-1]; last.Kind == xmltree.KindText && !last.Atomic() && last.Raw() == doe {
 				last.Value += s
 				return
 			}
@@ -3951,7 +3978,7 @@ func appendLiteralText(out *xmltree.Node, s string, doe bool) {
 // NoAtomicMerge/KeepDocItems and legitimately holds maps and arrays, and
 // element content is already covered by XTDE0450 in emitSequenceValue.
 func (eng *engine) checkSerializableItems(v xpath.Object, out *xmltree.Node) error {
-	if out == nil || out.Kind != xmltree.KindDocument || out.NoAtomicMerge || out.KeepDocItems {
+	if out == nil || out.Kind != xmltree.KindDocument || out.NoAtomicMerge() || out.KeepDocItems() {
 		return nil
 	}
 	switch eng.sheet.output.Method {
@@ -3991,7 +4018,7 @@ func emitSequenceValueRef(v xpath.Object, out *xmltree.Node) error {
 // in a temporary tree and d-o-e does not survive (doe-0183..0186).
 func emitSequenceValueOpts(v xpath.Object, out *xmltree.Node, keepRaw, byRef bool) error {
 	items := xpath.Items(v)
-	if !out.NoAtomicMerge {
+	if !out.NoAtomicMerge() {
 		// Constructing tree CONTENT (element/RTF): arrays flatten into their
 		// members, XDM's content-construction flattening rule (an array
 		// contributed to element content contributes each of its members as
@@ -4005,9 +4032,9 @@ func emitSequenceValueOpts(v xpath.Object, out *xmltree.Node, keepRaw, byRef boo
 	}
 	for _, it := range items {
 		if nd, ok := it.(*xmltree.Node); ok {
-			if keepRaw && nd.Kind == xmltree.KindText && nd.Raw && !nd.Atomic {
+			if keepRaw && nd.Kind == xmltree.KindText && nd.Raw() && !nd.Atomic() {
 				t := xmltree.NewText(nd.Value)
-				t.Raw = true
+				t.SetRaw(true)
 				out.Append(t)
 				continue
 			}
@@ -4019,11 +4046,11 @@ func emitSequenceValueOpts(v xpath.Object, out *xmltree.Node, keepRaw, byRef boo
 			// is not element content and legitimately holds attribute items
 			// in any position.
 			if (nd.Kind == xmltree.KindAttribute || nd.Kind == xmltree.KindNamespace) &&
-				!out.NoAtomicMerge && out.Kind == xmltree.KindElement && len(out.Children) > 0 {
+				!out.NoAtomicMerge() && out.Kind == xmltree.KindElement && len(out.Children) > 0 {
 				return errAt(nil, "err:XTDE0410: an attribute or namespace node cannot be added to an element after its children")
 			}
-			if byRef && out.KeepDocItems && out.Kind == xmltree.KindDocument && !nd.SynthCtx &&
-				(out.NoAtomicMerge || nd.Kind != xmltree.KindText || nd.Parent != nil) {
+			if byRef && out.KeepDocItems() && out.Kind == xmltree.KindDocument && !nd.SynthCtx() &&
+				(out.NoAtomicMerge() || nd.Kind != xmltree.KindText || nd.Parent != nil) {
 				// xsl:sequence (byRef) into a discrete-sequence collector
 				// contributes the node ITSELF — it never copies — so the node
 				// keeps its identity (function-1025 counts the distinct nodes
@@ -4043,8 +4070,9 @@ func emitSequenceValueOpts(v xpath.Object, out *xmltree.Node, keepRaw, byRef boo
 				// returns a text child whose root() must stay its document);
 				// only a fresh parentless text node keeps copying, so adjacent
 				// constructed text merges as before.
-				c := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true}
-				c.RealItem = nd
+				c := &xmltree.Node{Kind: xmltree.KindText}
+				c.SetSynthCtx(true)
+				c.SetRealItem(nd)
 				out.Append(c)
 				continue
 			}
@@ -4093,37 +4121,38 @@ func appendAtomicItem(out *xmltree.Node, it xpath.Item) error {
 		if out.Kind == xmltree.KindElement {
 			return errAt(nil, "err:XTDE0450: a function item cannot appear in the constructed content of an element")
 		}
-		nd := &xmltree.Node{Kind: xmltree.KindText, SynthCtx: true}
+		nd := &xmltree.Node{Kind: xmltree.KindText}
+		nd.SetSynthCtx(true)
 		attachRealItem(nd, it)
 		out.Append(nd)
 		return nil
 	}
 	s := xpath.ToString(xpath.FromItems([]xpath.Item{it}))
-	if !out.NoAtomicMerge {
+	if !out.NoAtomicMerge() {
 		if n := len(out.Children); n > 0 {
-			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic {
+			if last := out.Children[n-1]; last.Kind == xmltree.KindText && last.Atomic() {
 				last.Value += " " + s
-				last.TypeAnno = 0
+				last.SetTypeAnno(0)
 				return nil
 			}
 		}
 	}
 	t := xmltree.NewText(s)
-	t.Atomic = true
+	t.SetAtomic(true)
 	if tag, ok := xpath.ItemAtomTypeTag(it); ok {
-		t.TypeAnno = tag
+		t.SetTypeAnno(tag)
 	}
 	out.Append(t)
 	return nil
 }
 
 func deepCopyInto(node *xmltree.Node, out *xmltree.Node) {
-	if nd, ok := node.RealItem.(*xmltree.Node); ok {
+	if nd, ok := node.RealItem().(*xmltree.Node); ok {
 		node = nd // a node carried by reference (see RealItem)
 	}
 	switch node.Kind {
 	case xmltree.KindDocument:
-		if out.KeepDocItems {
+		if out.KeepDocItems() {
 			// out is a discrete-sequence collector (an @as-typed body or
 			// xsl:sequence result), not element/RTF content being built: a
 			// document-node item (e.g. from fn:document/fn:doc) must stay a
@@ -4150,7 +4179,7 @@ func deepCopyInto(node *xmltree.Node, out *xmltree.Node) {
 		// new position and the whole point of the attribute is lost as soon as
 		// the constructed element passes through an @as-typed body, an
 		// xsl:copy-of, or the result-tree copy (namespace-0913/0914).
-		el.NSBarrier = node.NSBarrier
+		el.SetNSBarrier(node.NSBarrier())
 		xmltree.CopyTypeInfo(el, node)
 		for _, ns := range node.NS {
 			el.NS = append(el.NS, &xmltree.Node{Kind: xmltree.KindNamespace, Name: ns.Name, Value: ns.Value, Parent: el})
@@ -4165,8 +4194,8 @@ func deepCopyInto(node *xmltree.Node, out *xmltree.Node) {
 		// position, so el.Base stays unset (deeper recursive calls below
 		// always pass a fresh, non-NoAtomicMerge out, so descendants never
 		// retain either — only the outermost copy can).
-		if out.NoAtomicMerge {
-			el.Base = retainedBase(el, node)
+		if out.NoAtomicMerge() {
+			el.SetBase(retainedBase(el, node))
 		}
 		out.Append(el)
 		for _, c := range node.Children {
@@ -4180,7 +4209,7 @@ func deepCopyInto(node *xmltree.Node, out *xmltree.Node) {
 		// select="." (analyze-string-091b: 6 separate non-matching-substring
 		// executions each copying their single-char "." must still join with
 		// spaces, exactly as if they were 6 items of one xsl:sequence).
-		if node.Atomic {
+		if node.Atomic() {
 			appendAtomicText(out, node.Value)
 		} else {
 			// NOTE: disable-output-escaping is deliberately NOT carried over
@@ -4224,14 +4253,14 @@ func appendAttrItem(out *xmltree.Node, name xmltree.Name, value string) *xmltree
 	// same-named attribute overwritten eight times (function-1201). A
 	// document node never legitimately owns attributes, so this is the only
 	// reading a document collector can have.
-	if out.NoAtomicMerge || (out.Kind == xmltree.KindDocument && out.KeepDocItems) {
+	if out.NoAtomicMerge() || (out.Kind == xmltree.KindDocument && out.KeepDocItems()) {
 		a := xmltree.NewAttribute(name, value)
 		a.Parent = out
 		// Remember where in the sequence this standalone attribute was built,
 		// so fragAsSequence can put it back there instead of hoisting every
 		// attribute in front of the children (sequence-0102, result-document-
 		// 0304). See Node.SeqIndex.
-		a.SeqIndex = len(out.Children)
+		a.SetSeqIndex(len(out.Children))
 		out.Attrs = append(out.Attrs, a)
 		return a
 	}
@@ -4353,7 +4382,9 @@ func (eng *engine) execAnalyzeString(n *analyzeString, r rt, out *xmltree.Node) 
 		// with a space against an adjacent atomic from another iteration,
 		// like any other sequence-constructor-contributed atomic value
 		// (analyze-string-091b).
-		synthetic := &xmltree.Node{Kind: xmltree.KindText, Value: sg.text, Atomic: true, SynthCtx: true}
+		synthetic := &xmltree.Node{Kind: xmltree.KindText, Value: sg.text}
+		synthetic.SetAtomic(true)
+		synthetic.SetSynthCtx(true)
 		err := eng.execSequence(body, rt{node: synthetic, pos: i + 1, size: size}, out)
 		if sg.matching {
 			eng.regexGroups = eng.regexGroups[:len(eng.regexGroups)-1]
@@ -4429,7 +4460,9 @@ func (eng *engine) evalKeyUse(kd *KeyDef, r rt) (xpath.Object, error) {
 	if kd.use != nil {
 		return eng.eval(kd.use, kd.el, r)
 	}
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
 	if err := eng.execSequence(kd.body, r, frag); err != nil {
 		return nil, err
 	}
@@ -4637,13 +4670,16 @@ func (eng *engine) stringFromBody(body []instruction, r rt, sep string) (string,
 // adjacent atomic values must be joined by the instruction's separator, not
 // pre-merged with the single space that building element content would use.
 func (eng *engine) sequenceFromBody(body []instruction, r rt) ([]xpath.Item, error) {
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true, Ephemeral: true}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument}
+	frag.SetNoAtomicMerge(true)
+	frag.SetKeepDocItems(true)
+	frag.SetEphemeral(true)
 	if err := eng.execSequence(body, r, frag); err != nil {
 		return nil, err
 	}
 	items := make([]xpath.Item, 0, len(frag.Children)+len(frag.Attrs))
 	for _, c := range frag.Children {
-		if nd, ok := c.RealItem.(*xmltree.Node); ok {
+		if nd, ok := c.RealItem().(*xmltree.Node); ok {
 			// A node xsl:sequence contributed by reference (see
 			// emitSequenceValueOpts) — the item is that node, not its
 			// carrier (seqtor-036c: three sequenced " " text nodes merge
@@ -4686,7 +4722,7 @@ func simpleContentJoin(items []xpath.Item, sep string, mergeText bool) string {
 	parts := make([]string, 0, len(items))
 	prevText, prevSynth := false, false
 	for _, it := range items {
-		if nd, ok := it.(*xmltree.Node); ok && nd.Kind == xmltree.KindText && !nd.Atomic {
+		if nd, ok := it.(*xmltree.Node); ok && nd.Kind == xmltree.KindText && !nd.Atomic() {
 			if nd.Value == "" {
 				continue // step 1: zero-length text nodes are discarded
 			}
@@ -4696,12 +4732,12 @@ func simpleContentJoin(items []xpath.Item, sep string, mergeText bool) string {
 			// (SynthCtx), never about real ones, and a @select delivering
 			// several real text nodes must concatenate them with no separator
 			// (seqtor-043d: ten xsl:function results declared as="text()").
-			if prevText && (mergeText || (!nd.SynthCtx && !prevSynth)) {
+			if prevText && (mergeText || (!nd.SynthCtx() && !prevSynth)) {
 				parts[len(parts)-1] += nd.Value
 				continue
 			}
 			parts = append(parts, nd.Value)
-			prevText, prevSynth = true, nd.SynthCtx
+			prevText, prevSynth = true, nd.SynthCtx()
 			continue
 		}
 		prevText, prevSynth = false, false
@@ -4823,7 +4859,9 @@ func (eng *engine) sortKeyValue(sk sortKey, outerEl *xmltree.Node, ctx rt) (xpat
 				return v, xpath.ToString(v), nil
 			}
 		}
-		frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+		frag := &xmltree.Node{Kind: xmltree.KindDocument}
+		frag.SetNoAtomicMerge(true)
+		frag.SetKeepDocItems(true)
 		if err := eng.execSequence(sk.body, ctx, frag); err != nil {
 			return nil, "", err
 		}
