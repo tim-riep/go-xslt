@@ -889,10 +889,16 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 			// (where-populated-coco-102: XTTE0780 when the wrapped element
 			// this drops as unpopulated was the function's only possible
 			// result).
-			frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true}
+			frag := &xmltree.Node{Kind: xmltree.KindDocument, NoAtomicMerge: true, KeepDocItems: true, Ephemeral: true}
 			if err := b.exec(eng, r, frag); err != nil {
 				return nil, true, err
 			}
+			// Give this now-finalized temporary tree real document-order
+			// numbering (xmltree.AssignOrder's doc comment), the same
+			// treatment an xsl:variable's RTF gets at transform.go:2139 —
+			// a function's returned value is just as reachable as a
+			// standalone sequence a caller may later sort/union/compare.
+			xmltree.AssignOrder(frag)
 			return fragAsSequence(frag), true, nil
 		}
 	}
@@ -945,13 +951,18 @@ func (eng *engine) evalFuncBody(fd *FuncDef, r rt) (result xpath.Object, confide
 	// a leading non-content xsl:variable with a multi-item xsl:sequence tail
 	// must not silently collapse to one joined string).
 	wantsNodes := fd.as != "" && xpath.SeqTypeWantsNodes(fd.as)
-	frag := &xmltree.Node{Kind: xmltree.KindDocument, KeepDocItems: true, NoAtomicMerge: !wantsNodes}
+	frag := &xmltree.Node{Kind: xmltree.KindDocument, KeepDocItems: true, NoAtomicMerge: !wantsNodes, Ephemeral: true}
 	eng.tempOutputDepth++
 	err = eng.execSequence(fd.body, r, frag)
 	eng.tempOutputDepth--
 	if err != nil {
 		return nil, false, err
 	}
+	// Same treatment as xsl:variable's RTF (transform.go:2139): once this
+	// tree is finished it is an independently-reachable value, so it needs
+	// real document-order numbering before any later union/sort/compare of
+	// the returned nodes — see xmltree.AssignOrder's doc comment.
+	xmltree.AssignOrder(frag)
 	if fragHasMarkup(frag) {
 		return fnUntypeAtomics(fragAsSequence(frag)), false, nil
 	}
