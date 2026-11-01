@@ -3,7 +3,6 @@ package xslt
 import (
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 	"github.com/tim-riep/go-xslt/internal/xpath"
@@ -1283,24 +1282,11 @@ func isLexicalQName(s string) bool {
 	return isNCName(s)
 }
 
-func isNCName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		if i == 0 {
-			if !unicode.IsLetter(r) && r != '_' {
-				return false
-			}
-			continue
-		}
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != '.' &&
-			r != 0xB7 {
-			return false
-		}
-	}
-	return true
-}
+// isNCName is the XML Names NCName production (xmltree.IsNCName: the XML 1.0
+// 5th edition characters, the same ones the XPath lexer and xs:NCName casting
+// accept), so xsl:element, xsl:attribute, xsl:namespace and
+// xsl:processing-instruction judge a name exactly as the rest of the engine.
+func isNCName(s string) bool { return xmltree.IsNCName(s) }
 
 // isPackageVersion (the PackageVersion grammar) lives in shadow.go, used by
 // checkPackageAttrs — that runs AFTER shadow-attribute expansion, which this
