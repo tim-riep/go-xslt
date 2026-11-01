@@ -1809,7 +1809,7 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 			if p, perr := xpath.Parse(sel); perr == nil {
 				if v, verr := p.Eval(&xpath.Context{NoFocus: true}); verr == nil {
 					if vd.as != "" {
-						if cv, _ := xpath.CoerceToDeclaredTypeCtx(vd.as, v, asTypeCtx(vd.el)); cv != nil {
+						if cv, _ := coerceAs(vd.as, v, vd.el); cv != nil {
 							v = cv
 						}
 					}
@@ -1831,7 +1831,7 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 			// xs:integer 541).
 			v := xpath.Object(xpath.NewUntyped(pv))
 			if vd.as != "" {
-				if cv, _ := xpath.CoerceToDeclaredTypeCtx(vd.as, v, asTypeCtx(vd.el)); cv != nil {
+				if cv, _ := coerceAs(vd.as, v, vd.el); cv != nil {
 					v = cv
 				}
 			}
@@ -2015,6 +2015,17 @@ type evalEnv struct {
 // halves that needs at once: the name lookup the parse uses, and the
 // derivation resolver the resulting type test asks at match time
 // (decl_import_schema.go); nil whenever no schema was imported.
+// coerceAs is xpath.CoerceToDeclaredTypeCtx(as, v, asTypeCtx(el)), except that
+// a value which already matches a type whose test needs no context (a
+// built-in atomic type, item()) is accepted without building one: a typed
+// parameter or result is bound on every call.
+func coerceAs(as string, v xpath.Object, el *xmltree.Node) (xpath.Object, bool) {
+	if schemaForElement(el) == nil && xpath.MatchesDeclaredTypeNoContext(as, v) {
+		return v, true
+	}
+	return xpath.CoerceToDeclaredTypeCtx(as, v, asTypeCtx(el))
+}
+
 func asTypeCtx(el *xmltree.Node) *xpath.Context {
 	// DefaultElemNS matters here as much as in any other evaluation: an
 	// UNPREFIXED ElementName inside element(N)/element(N,T) takes the default
@@ -2498,7 +2509,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 		// reporting a constructed result's true shape (e.g. document-node
 		// flattening) make a mismatch less trustworthy as a genuine error.
 		if vd.as != "" {
-			cv, ok := xpath.CoerceToDeclaredTypeCtx(vd.as, v, asTypeCtx(vd.el))
+			cv, ok := coerceAs(vd.as, v, vd.el)
 			if !ok {
 				return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 			}
@@ -2532,7 +2543,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 			if err != nil {
 				return nil, err
 			}
-			cv, ok := xpath.CoerceToDeclaredTypeCtx(vd.as, v, asTypeCtx(vd.el))
+			cv, ok := coerceAs(vd.as, v, vd.el)
 			if !ok {
 				return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 			}
@@ -2586,7 +2597,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 	}
 	if vd.as != "" {
 		seq := fragAsSequence(frag)
-		cv, ok := xpath.CoerceToDeclaredTypeCtx(vd.as, seq, asTypeCtx(vd.el))
+		cv, ok := coerceAs(vd.as, seq, vd.el)
 		if !ok {
 			return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 		}
@@ -3538,7 +3549,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 					// declared type (variable-0206: an upstream tunnel
 					// with-param select="17" [xs:integer] reaching a
 					// downstream $t1 declared as="node()").
-					cv, ok := xpath.CoerceToDeclaredTypeCtx(p.as, tv, asTypeCtx(p.el))
+					cv, ok := coerceAs(p.as, tv, p.el)
 					if !ok {
 						return errAt(p.el, "err:XTTE0590: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 					}
@@ -3575,7 +3586,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 				// its own): it is a type error (XTTE0590) if conversion
 				// fails (error-0590a: with-param select="current-date()"
 				// supplied for a param declared as="xs:integer").
-				cv, ok := xpath.CoerceToDeclaredTypeCtx(p.as, val, asTypeCtx(p.el))
+				cv, ok := coerceAs(p.as, val, p.el)
 				if !ok {
 					return errAt(cp.el, "err:XTTE0590: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 				}
@@ -3604,7 +3615,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 			if err != nil {
 				return err
 			}
-			cv, ok := xpath.CoerceToDeclaredTypeCtx(tmpl.as, v, asTypeCtx(tmpl.el))
+			cv, ok := coerceAs(tmpl.as, v, tmpl.el)
 			if !ok {
 				return errAt(tmpl.el, "err:XTTE0505: result of template %s does not match declared type %q", templateLabel(tmpl), tmpl.as)
 			}
@@ -3626,7 +3637,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 		return err
 	}
 	seq := fragAsSequence(frag)
-	cv, ok := xpath.CoerceToDeclaredTypeCtx(tmpl.as, seq, asTypeCtx(tmpl.el))
+	cv, ok := coerceAs(tmpl.as, seq, tmpl.el)
 	if !ok {
 		return errAt(tmpl.el, "err:XTTE0505: result of template %s does not match declared type %q", templateLabel(tmpl), tmpl.as)
 	}
@@ -5083,7 +5094,7 @@ func (eng *engine) execAnalyzeString(n *analyzeString, r rt, out *xmltree.Node) 
 	// genuinely-typed non-string atomic (a number: analyze-string-001) or a
 	// sequence of more than one item (analyze-string-003) does not coerce,
 	// unlike fn:string()'s lenient any-atomic acceptance.
-	cv, ok := xpath.CoerceToDeclaredTypeCtx("xs:string?", selVal, asTypeCtx(n.el))
+	cv, ok := coerceAs("xs:string?", selVal, n.el)
 	if !ok {
 		return errAt(n.el, "err:XPTY0004: xsl:analyze-string/@select does not match the required type xs:string?")
 	}
