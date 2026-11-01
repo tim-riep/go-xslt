@@ -455,7 +455,9 @@ func permissiveNCName(s string) bool {
 		if i == 0 {
 			// Nl (letter numbers) covers XML name starters IsLetter misses:
 			// U+3007 ideographic zero, Roman numerals (sun AD_name00102m1).
-			if !(unicode.IsLetter(r) || unicode.Is(unicode.Nl, r) || r == '_') {
+			// The 5th edition's NameStartChar adds what no letter category
+			// holds (an emoji, a Bengali digit).
+			if !(unicode.IsLetter(r) || unicode.Is(unicode.Nl, r) || r == '_' || xmltree.IsNCNameStartChar(r)) {
 				return false
 			}
 			continue

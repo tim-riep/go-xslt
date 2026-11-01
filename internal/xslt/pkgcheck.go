@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -715,9 +714,9 @@ func typeNameTokens(t string) []string {
 	rs := []rune(t)
 	for i := 0; i < len(rs); {
 		r := rs[i]
-		if r == '_' || unicode.IsLetter(r) {
+		if xmltree.IsNCNameStartChar(r) {
 			j := i
-			for j < len(rs) && (rs[j] == '_' || rs[j] == '-' || rs[j] == '.' || rs[j] == ':' || unicode.IsLetter(rs[j]) || unicode.IsDigit(rs[j])) {
+			for j < len(rs) && xmltree.IsNameChar(rs[j]) {
 				j++
 			}
 			if j >= len(rs) || rs[j] != '(' {

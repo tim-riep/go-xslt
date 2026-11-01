@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
 
 type tokKind int
@@ -411,20 +413,11 @@ func isKeywordOp(text string) bool {
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // isNameStart / isNameChar implement the XML NameStartChar / NameChar
-// productions exactly (the same tables the XSD \i / \c regex escapes use).
-// unicode.IsLetter would be WRONG here: it admits characters the XML Name
-// production deliberately excludes — U+00B5 MICRO SIGN, for instance, is an
-// Ll letter but not a NameStartChar, so an expression naming it is a syntax
-// error (error-XPST0003o).
-func isNameStart(r rune) bool { return inRanges(r, xmlNameStartRanges) }
+// productions exactly (xmltree's tables, the same ones the XSD \i / \c regex
+// escapes use). unicode.IsLetter would be WRONG here: it admits characters the
+// XML Name production deliberately excludes — U+00B5 MICRO SIGN, for
+// instance, is an Ll letter but not a NameStartChar, so an expression naming
+// it is a syntax error (error-XPST0003o).
+func isNameStart(r rune) bool { return xmltree.IsNameStartChar(r) }
 
-func isNameChar(r rune) bool { return inRanges(r, xmlNameCharRanges) }
-
-func inRanges(r rune, rs [][2]rune) bool {
-	for _, rg := range rs {
-		if r >= rg[0] && r <= rg[1] {
-			return true
-		}
-	}
-	return false
-}
+func isNameChar(r rune) bool { return xmltree.IsNameChar(r) }

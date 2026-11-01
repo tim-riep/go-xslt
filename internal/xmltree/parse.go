@@ -72,12 +72,13 @@ var errTooDeep = fmt.Errorf("elements nested more than %d levels deep (implement
 var errLazyAttrNorm = errors.New("attribute whitespace: parse again eagerly")
 
 // Parse parses an XML document into a tree. The returned node is a Document
-// node whose single element child is the root element. XML 1.1 documents are
-// parsed with 1.0 rules (see ParseLenient11 for the XSD validator's tolerant
-// entry point — fn:parse-xml must NOT get the leniency, the QT3 suite expects
-// 1.0-processor errors there).
+// node whose single element child is the root element. Names follow the XML
+// 1.0 5th edition (see parseRepairing). A document declaring version 1.1 is
+// parsed with 1.0 rules otherwise: ParseLenient11 is the tolerant entry point
+// that also takes the C0 character references of 1.1, and fn:parse-xml must
+// NOT get that leniency — the QT3 suite expects 1.0-processor errors there.
 func Parse(src string) (*Node, error) {
-	return parseRaw(src, "", nil, nil)
+	return parseRepairing(decodeBOM(src), "", nil, nil, false)
 }
 
 // ParseWithBase parses like Parse, but also resolves a DOCTYPE's external
@@ -87,15 +88,16 @@ func Parse(src string) (*Node, error) {
 // local .dtd of character entities like &egrave;). baseDir == "" behaves
 // exactly like Parse (no external subset is ever fetched).
 func ParseWithBase(src, baseDir string) (*Node, error) {
-	return parseRaw(src, baseDir, nil, nil)
+	return parseRepairing(decodeBOM(src), baseDir, nil, nil, false)
 }
 
 // ParseLenient11 parses like Parse but bridges declared XML 1.1 documents to
-// Go's 1.0-4th-edition decoder with two pre-passes: C0 character references
-// (legal in 1.1) and 5th-edition-only name characters (e.g. U+0133) are
-// substituted with sentinels and restored in the parsed tree (the
-// XmlVersions xv001/003/004/006/008). Used by the XSD validator for schema and
-// instance documents.
+// Go's 1.0-4th-edition decoder with a pre-pass for C0 character references
+// (legal in 1.1 only), substituted with sentinels and restored in the parsed
+// tree (the XmlVersions xv001/003/004/006/008). The 5th-edition name
+// characters (e.g. U+0133) are bridged for every document, declared 1.1 or
+// not (parseRepairing). Used by the XSD validator for schema and instance
+// documents.
 func ParseLenient11(src string) (*Node, error) {
 	return ParseLenient11WithBase(src, "")
 }
@@ -104,7 +106,7 @@ func ParseLenient11(src string) (*Node, error) {
 // resolution — the entry point the XSLT engine uses for stylesheet modules,
 // source documents and document()/fn:doc() results, all of which may legally be
 // XML 1.1 (the misc/xml-version test set). fn:parse-xml deliberately keeps the
-// strict 1.0 Parse.
+// 1.0 Parse, which has the name repair but not the C0 references.
 func ParseLenient11WithBase(src, baseDir string) (*Node, error) {
 	return parseLenient11WithBaseStrip(src, baseDir, nil, nil)
 }
@@ -141,37 +143,78 @@ func ParseLenient11WithBaseStripSpaceFS(src, baseDir string, files *fsaccess.Gua
 
 func parseLenient11WithBaseStrip(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHook) (*Node, error) {
 	src = decodeBOM(src) // UTF-16 sources become UTF-8 before any tokenizing
-	if !declaresXML11(src) {
-		return parseRaw(src, baseDir, files, strip)
+	return parseRepairing(src, baseDir, files, strip, declaresXML11(src))
+}
+
+// maxNameRepairs bounds the repair rounds of parseRepairing: each round
+// substitutes the characters of one offending name, so a document naming more
+// distinct 5th-edition-only characters than this is refused with the decoder's
+// own error. Every round is a full parse, and only invalid input reaches one.
+const maxNameRepairs = 32
+
+// parseRepairing parses like parseRaw and, when that fails on a name the
+// tokenizer's tables (encoding/xml's, XML 1.0 2nd/4th edition Appendix B)
+// refuse although the XML 1.0 5th edition Name production allows it — an
+// emoji, U+0133, a Bengali digit — substitutes the characters of that name
+// with ASCII tokens, parses again, and puts the originals back into the tree.
+// This applies to every document: the 5th edition is the current XML 1.0, and
+// XML 1.1 shares its Name production. The tokenizer itself stays a copy of
+// encoding/xml's and is not involved; a document that parses at once pays
+// nothing. c0Refs additionally bridges the character references to C0
+// controls an XML 1.1 document may use (substC0Refs); it is for documents that
+// declare version 1.1 and are read by a lenient entry point.
+func parseRepairing(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHook, c0Refs bool) (*Node, error) {
+	prepped := src
+	var restore map[rune]rune
+	if c0Refs {
+		prepped, restore = substC0Refs(src)
 	}
-	prepped, restore := substC0Refs(src)
-	tokens := map[string]rune{} // ASCII name-safe token -> original 5e name char
+	var tokens map[string]rune // ASCII name-safe token -> original 5e name char
+	var first error
 	for attempt := 0; ; attempt++ {
 		doc, err := parseRaw(prepped, baseDir, files, strip)
 		if err == nil {
 			if len(restore) > 0 || len(tokens) > 0 {
 				restoreSentinels(doc, restore, tokens)
 			}
+			if len(tokens) > 0 && !restoredNamesValid(doc) {
+				// A token stood in a position the Name production does not
+				// allow its character (a combining mark opening a name).
+				return nil, first
+			}
 			return doc, nil
 		}
-		if attempt >= 4 {
-			return doc, err
+		if first == nil {
+			first = err
 		}
-		// Error-driven name repair: substitute only runes the 1.1/5e Name
-		// production actually allows — a genuinely illegal name char keeps its
-		// error (the set's .n twins must stay invalid). The sentinel must be
-		// name-legal for the 4e decoder, so it is an ASCII token, not a PUA
-		// rune.
+		if attempt >= maxNameRepairs {
+			return doc, first
+		}
+		// Error-driven name repair: substitute only runes the 5th-edition
+		// Name production actually allows — a genuinely illegal name char
+		// keeps its error (the XmlVersions set's .n twins must stay
+		// invalid). The sentinel must be name-legal for the 4e decoder, so
+		// it is an ASCII token, not a PUA rune.
 		bad, ok := invalidNameIn(err)
 		if !ok {
 			return doc, err
 		}
 		added := false
 		for _, r := range bad {
-			if r >= 0x80 && isName11(r) {
+			if r >= 0x80 && IsNameChar(r) {
+				// A rune that may open a name gets a token that may; one that
+				// may only continue a name gets a token a name cannot start
+				// with, so the decoder itself refuses it where the Name
+				// production does (a combining mark opening an element name).
 				tok := fmt.Sprintf("Zq5e%XeZ", r)
+				if !IsNameStartChar(r) {
+					tok = fmt.Sprintf("-q5e%Xe-", r)
+				}
 				if _, dup := tokens[tok]; dup {
 					continue
+				}
+				if tokens == nil {
+					tokens = map[string]rune{}
 				}
 				tokens[tok] = r
 				prepped = strings.ReplaceAll(prepped, string(r), tok)
@@ -179,9 +222,36 @@ func parseLenient11WithBaseStrip(src, baseDir string, files *fsaccess.Guard, str
 			}
 		}
 		if !added {
-			return doc, err
+			return doc, first
 		}
 	}
+}
+
+// restoredNamesValid reports whether every element and attribute name of the
+// tree, after restoreSentinels, is a Name. A character that may continue but
+// not start a name (U+0300, a digit) was swapped for a token that may start
+// one, so its position in the name has to be checked once it is back.
+func restoredNamesValid(n *Node) bool {
+	okPrefix := func(p string) bool { return p == "" || IsNCName(p) }
+	if n.Kind == KindElement && !(IsName(n.Name.Local) && okPrefix(n.Name.Prefix)) {
+		return false
+	}
+	for _, a := range n.Attrs {
+		if !IsName(a.Name.Local) || !okPrefix(a.Name.Prefix) {
+			return false
+		}
+	}
+	for _, ns := range n.NSDecls() {
+		if !okPrefix(ns.Name.Local) {
+			return false
+		}
+	}
+	for _, c := range n.Children {
+		if !restoredNamesValid(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // declaresXML11 reports whether the prolog declares version="1.1".
@@ -250,26 +320,6 @@ func invalidNameIn(err error) (string, bool) {
 	return "", false
 }
 
-// isName11 reports whether r is an XML 1.1 / 1.0-5th-edition NameChar
-// (NameStartChar ∪ the extra tail chars). Kept in sync with the table in
-// internal/xpath/regex_class.go (which cannot be imported here — xpath depends
-// on xmltree).
-func isName11(r rune) bool {
-	for _, rng := range [][2]rune{
-		{':', ':'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'},
-		{0xC0, 0xD6}, {0xD8, 0xF6}, {0xF8, 0x2FF}, {0x370, 0x37D}, {0x37F, 0x1FFF},
-		{0x200C, 0x200D}, {0x2070, 0x218F}, {0x2C00, 0x2FEF}, {0x3001, 0xD7FF},
-		{0xF900, 0xFDCF}, {0xFDF0, 0xFFFD}, {0x10000, 0xEFFFF},
-		{'-', '-'}, {'.', '.'}, {'0', '9'}, {0xB7, 0xB7},
-		{0x300, 0x36F}, {0x203F, 0x2040},
-	} {
-		if r >= rng[0] && r <= rng[1] {
-			return true
-		}
-	}
-	return false
-}
-
 // restoreSentinels maps the C0 sentinel runes and the ASCII name tokens back
 // to their originals in every name, attribute, and text value of the tree.
 func restoreSentinels(n *Node, runes map[rune]rune, tokens map[string]rune) {
@@ -287,19 +337,25 @@ func restoreSentinels(n *Node, runes map[rune]rune, tokens map[string]rune) {
 		}
 		return s
 	}
+	fixName := func(nm *Name) {
+		nm.Local = fix(nm.Local)
+		// A namespace URI is an attribute value too (xml-version-012 binds a
+		// prefix to a URI ending in a U+0346 combining mark). The prefix is a
+		// name, and so is the Space of a name whose prefix was never bound.
+		nm.Space = fix(nm.Space)
+		nm.Prefix = fix(nm.Prefix)
+	}
 	var walk func(*Node)
 	walk = func(nd *Node) {
-		nd.Name.Local = fix(nd.Name.Local)
-		// A namespace URI is an attribute value too (xml-version-012 binds a
-		// prefix to a URI ending in a U+0346 combining mark).
-		nd.Name.Space = fix(nd.Name.Space)
+		fixName(&nd.Name)
 		nd.Value = fix(nd.Value)
 		for i := range nd.Attrs {
-			nd.Attrs[i].Name.Local = fix(nd.Attrs[i].Name.Local)
-			nd.Attrs[i].Name.Space = fix(nd.Attrs[i].Name.Space)
+			fixName(&nd.Attrs[i].Name)
 			nd.Attrs[i].Value = fix(nd.Attrs[i].Value)
 		}
+		// A namespace node's Local is the declared prefix.
 		for _, ns := range nd.NSDecls() {
+			fixName(&ns.Name)
 			ns.Value = fix(ns.Value)
 		}
 		for _, ch := range nd.Children {
@@ -307,6 +363,14 @@ func restoreSentinels(n *Node, runes map[rune]rune, tokens map[string]rune) {
 		}
 	}
 	walk(n)
+	// Unparsed entities are keyed by name and carry URIs.
+	if u := n.Unparsed(); len(u) > 0 {
+		fixed := make(map[string]UnparsedEntity, len(u))
+		for k, e := range u {
+			fixed[fix(k)] = UnparsedEntity{SystemID: fix(e.SystemID), PublicID: fix(e.PublicID)}
+		}
+		n.SetUnparsed(fixed)
+	}
 }
 
 func parseRaw(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHook) (*Node, error) {
