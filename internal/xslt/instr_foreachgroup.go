@@ -315,8 +315,17 @@ func (n *fegInstr) fegKeyAtoms(eng *engine, node *xmltree.Node, pos, size int) (
 // instant, not lexical form — for-each-group-061/064), and a pair eq cannot
 // compare (e.g. dateTime vs integer) is simply unequal rather than an error
 // (for-each-group-064/065). Groups are ordered by first appearance of their key.
+//
+// The groups are indexed by xpath.GroupingBucketKey, so finding an item's
+// group scans only the groups that could match, not all of them (200,000
+// items in 5,000 groups made 500 million comparisons). A bucket holds its
+// groups in creation order and every group SameGroupingKey could match is in
+// the probed bucket (or, for a class with no bucket key, on the unbucketed
+// list), so the first match found is the one the full scan found.
 func (n *fegInstr) fegFormBy(eng *engine, pop []*xmltree.Node, coll func(a, b string) int) ([]*fegGroup, error) {
 	var groups []*fegGroup
+	var idx fegIndex
+	idx.coll = coll
 	size := len(pop)
 	for i, node := range pop {
 		atoms, err := n.fegKeyAtoms(eng, node, i+1, size)
@@ -348,22 +357,69 @@ func (n *fegInstr) fegFormBy(eng *engine, pop []*xmltree.Node, coll func(a, b st
 					continue valueLoop // already added to this group for this item
 				}
 			}
-			var target *fegGroup
-			for _, g := range groups {
-				if xpath.SameGroupingKey(a, g.key.(*xpath.Atomic), coll) {
-					target = g
-					break
-				}
+			if a.T == xpath.XSfloat && !idx.narrow {
+				idx.rebuild(groups) // a float compares in float space: coarser buckets
 			}
+			target := idx.find(a)
 			if target == nil {
 				target = &fegGroup{key: a, atoms: []*xpath.Atomic{a}, hasKey: true}
 				groups = append(groups, target) // preserve first-appearance order of keys
+				idx.add(target)
 			}
 			target.nodes = append(target.nodes, node)
 			joined = append(joined, target)
 		}
 	}
 	return groups, nil
+}
+
+// fegIndex files group-by groups by the bucket key of their (single,
+// atomic) grouping key; see fegFormBy.
+type fegIndex struct {
+	coll    func(a, b string) int
+	narrow  bool
+	buckets map[string][]*fegGroup
+	other   []*fegGroup // keys of a class with no bucket key
+}
+
+func (x *fegIndex) cands(a *xpath.Atomic) ([]*fegGroup, string, bool) {
+	k, ok := xpath.GroupingBucketKey(a, x.coll, x.narrow)
+	if !ok {
+		return x.other, "", false
+	}
+	return x.buckets[k], k, true
+}
+
+func (x *fegIndex) find(a *xpath.Atomic) *fegGroup {
+	cs, _, _ := x.cands(a)
+	for _, g := range cs {
+		if xpath.SameGroupingKey(a, g.key.(*xpath.Atomic), x.coll) {
+			return g
+		}
+	}
+	return nil
+}
+
+func (x *fegIndex) add(g *fegGroup) {
+	cs, k, ok := x.cands(g.key.(*xpath.Atomic))
+	if !ok {
+		x.other = append(x.other, g)
+		return
+	}
+	if x.buckets == nil {
+		x.buckets = map[string][]*fegGroup{}
+	}
+	x.buckets[k] = append(cs, g)
+}
+
+// rebuild switches to float-precision buckets and refiles the groups made so
+// far, in their creation order.
+func (x *fegIndex) rebuild(groups []*fegGroup) {
+	x.narrow = true
+	x.buckets, x.other = nil, nil
+	for _, g := range groups {
+		x.add(g)
+	}
 }
 
 func (n *fegInstr) fegFormAdjacent(eng *engine, pop []*xmltree.Node, coll func(a, b string) int) ([]*fegGroup, error) {

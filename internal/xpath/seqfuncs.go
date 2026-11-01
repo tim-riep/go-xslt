@@ -124,6 +124,15 @@ func dvBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bo
 	return "", false
 }
 
+// GroupingBucketKey exposes dvBucketKey to hosts that group by
+// SameGroupingKey (xsl:for-each-group group-by): two values SameGroupingKey
+// reports equal always share the key, so a candidate scan may be confined to
+// one bucket. narrow must be true as soon as any compared value is an
+// xs:float (see fnDistinctValues).
+func GroupingBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bool) {
+	return dvBucketKey(x, coll, narrow)
+}
+
 // SameGroupingKey reports whether two atomic values count as "the same" for
 // xsl:for-each-group grouping purposes: comparable via eq (dateTime/date/time
 // compare by normalized instant, not lexical form), NaN equal to NaN, and a
