@@ -664,8 +664,45 @@ func isTopLevelParent(p *xmltree.Node) bool {
 }
 
 // validateSchemaAttrs walks el and every descendant XSD element, rejecting an
-// unqualified attribute that the element's grammar does not allow.
+// unqualified attribute that the element's grammar does not allow, a child the
+// grammar does not allow, and the content arrangements checked by
+// checkContentGrammar. An error leaves with the line and column of the
+// element it concerns.
 func validateSchemaAttrs(el *xmltree.Node, v Version) error {
+	if err := checkSchemaElement(el, v); err != nil {
+		return locateSchemaError(err, el)
+	}
+	if el.Kind == xmltree.KindElement && el.Name.Space == xsNS &&
+		(el.Name.Local == "appinfo" || el.Name.Local == "documentation") {
+		return nil // arbitrary content — nothing below is schema grammar
+	}
+	for _, ch := range el.Children {
+		if err := validateSchemaAttrs(ch, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// locateSchemaError gives a schema error that has no position yet the line and
+// column of el.
+func locateSchemaError(err error, el *xmltree.Node) error {
+	if e, ok := err.(*Error); ok && e.Line == 0 && e.Col == 0 {
+		e.Line, e.Col = int(el.Line), int(el.Col)
+	}
+	return err
+}
+
+// invalidAt is invalidf for an error about node n itself.
+func invalidAt(n *xmltree.Node, code, format string, args ...any) *Error {
+	e := invalidf(code, format, args...)
+	e.Line, e.Col = int(n.Line), int(n.Col)
+	return e
+}
+
+// checkSchemaElement runs the checks that concern el alone (its attributes and
+// its direct children).
+func checkSchemaElement(el *xmltree.Node, v Version) error {
 	if el.Kind == xmltree.KindElement && el.Name.Space == xsNS {
 		if allowed, known := xsdAllowedAttrs[el.Name.Local]; known {
 			for _, a := range el.Attrs {
@@ -702,7 +739,7 @@ func validateSchemaAttrs(el *xmltree.Node, v Version) error {
 					return invalidf("", "an XSD 1.0 xs:all group may contain only element declarations")
 				}
 				if v == Version10 && xsd11OnlyElements[ch.Name.Local] {
-					return invalidf("", "xs:%s is an XSD 1.1 construct (not valid in a 1.0 schema)", ch.Name.Local)
+					return invalidAt(ch, "", "xs:%s is an XSD 1.1 construct (not valid in a 1.0 schema)", ch.Name.Local)
 				}
 				if !allowedCh[ch.Name.Local] {
 					return invalidf("", "element xs:%s is not allowed inside xs:%s", ch.Name.Local, el.Name.Local)
@@ -779,14 +816,10 @@ func validateSchemaAttrs(el *xmltree.Node, v Version) error {
 			}
 		}
 	}
-	if el.Kind == xmltree.KindElement && el.Name.Space == xsNS &&
-		(el.Name.Local == "appinfo" || el.Name.Local == "documentation") {
-		return nil // arbitrary content — nothing below is schema grammar
-	}
-	for _, ch := range el.Children {
-		if err := validateSchemaAttrs(ch, v); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// isXSElement reports whether n is an element of the XSD namespace.
+func isXSElement(n *xmltree.Node) bool {
+	return n.Kind == xmltree.KindElement && n.Name.Space == xsNS
 }
