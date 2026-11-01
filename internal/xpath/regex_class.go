@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
 
 // expandClassSubtraction rewrites XSD character-class subtraction
@@ -355,20 +357,14 @@ func classEscape(r rune) string {
 // XML 1.0 (5th edition) NameStartChar / NameChar. These back the XSD regex
 // escapes \i and \c (whose definition is "the first character of a Name" and
 // "a Name character") as well as the xs:Name / xs:NCName / xs:NMTOKEN lexical
-// spaces, so all of them agree by construction.
+// spaces, so all of them agree by construction. The tables are
+// xmltree.NameStartRanges / NameExtraRanges — the engine's one definition,
+// shared with the parser's name repair and the XSLT name checks.
 
-var xmlNameStartRanges = [][2]rune{
-	{':', ':'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'},
-	{0xC0, 0xD6}, {0xD8, 0xF6}, {0xF8, 0x2FF}, {0x370, 0x37D}, {0x37F, 0x1FFF},
-	{0x200C, 0x200D}, {0x2070, 0x218F}, {0x2C00, 0x2FEF}, {0x3001, 0xD7FF},
-	{0xF900, 0xFDCF}, {0xFDF0, 0xFFFD}, {0x10000, 0xEFFFF},
-}
+var xmlNameStartRanges = xmltree.NameStartRanges()
 
 // The additional characters a NameChar may have beyond a NameStartChar.
-var xmlNameExtraRanges = [][2]rune{
-	{'-', '-'}, {'.', '.'}, {'0', '9'}, {0xB7, 0xB7},
-	{0x300, 0x36F}, {0x203F, 0x2040},
-}
+var xmlNameExtraRanges = xmltree.NameExtraRanges()
 
 var xmlNameCharRanges = append(append([][2]rune{}, xmlNameStartRanges...), xmlNameExtraRanges...)
 
