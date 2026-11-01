@@ -44,7 +44,7 @@ ratios are what carries over.
 
 ## Where the time goes
 
-Five rounds of profiling and measurement brought go-xslt from 1.5–4.5 times
+Six rounds of profiling and measurement brought go-xslt from 1.5–4.5 times
 libxslt's time to where it is now:
 
 - reusing evaluation contexts (per predicate, key walk, template match and
@@ -63,7 +63,20 @@ libxslt's time to where it is now:
 - normalizing whitespace in attribute values only where an attribute value
   actually contains a tab or line break, writing parsed nodes straight into
   their blocks, numbering document order while parsing, and building
-  copies from per-run blocks.
+  copies from per-run blocks;
+- for XSLT 3.0: `xsl:for-each-group group-by` files its groups by key
+  instead of comparing every item with every group so far (5× faster with
+  5,000 groups); maps are persistent hash tries, so `map:put` no longer
+  copies the whole map, and `array:append` appends in place — collecting one
+  entry per record in `xsl:iterate` was quadratic and is now linear (5,000
+  keys over 20,000 records: 53 s before, 0.4 s now); a typed parameter is
+  bound without parsing its `as` type again on every call, and built-in
+  functions convert their arguments with fewer allocations (12 % less time
+  for a transform made of function calls).
+
+The sixth round was measured on Linux (a 4-core x86-64 virtual machine)
+against the previous version rather than against libxslt, so the table
+above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
 An earlier version of this page put a third of the time into the operating
 system's memory calls. That came from the CPU profiler on macOS, which books
