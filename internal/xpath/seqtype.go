@@ -658,16 +658,21 @@ func matchesItemType(it ItemType, item Item, ctx *Context) bool {
 		if it.Wild || it.MapVal == nil {
 			return true
 		}
-		for _, k := range m.Keys() {
-			kt, ok := itemAtomType(k)
-			if !ok || !atomDerivesFrom(kt, it.MapKey) {
-				return false
-			}
-			if !MatchesSeqTypeCtx(it.MapVal, m.Get(k), ctx) {
-				return false
-			}
+		if mv := it.MapVal; m.keysOne && m.valsOne && !mv.Empty && mv.Item.Kind == itAtomic && mv.Item.SchemaType == nil {
+			// Every key is a kt and every value one atomic item of type vt
+			// (Map's summary): the loop below would test exactly these two
+			// types for every entry. An accumulating map(K, V) parameter is
+			// checked on every xsl:iterate step.
+			return atomDerivesFrom(m.kt, it.MapKey) &&
+				(mv.Item.Atom == XSanyAtomicType || atomDerivesFrom(m.vt, mv.Item.Atom))
 		}
-		return true
+		all := true
+		m.Range(func(k Item, v Object) bool {
+			kt, isAtom := itemAtomType(k)
+			all = isAtom && atomDerivesFrom(kt, it.MapKey) && MatchesSeqTypeCtx(it.MapVal, v, ctx)
+			return all
+		})
+		return all
 	case itArray:
 		a, ok := item.(*Array)
 		if !ok {

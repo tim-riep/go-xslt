@@ -7,20 +7,6 @@ import (
 	"strconv"
 )
 
-// Map is an XPath 3.1 map: an ordered set of key/value entries. Keys are
-// atomic items compared by the op:same-key rule (a value-and-category
-// canonical form). Values are arbitrary Objects (sequences).
-type Map struct {
-	keys   []Item            // insertion order
-	values map[string]Object // keyed by atomic string form
-	raw    map[string]Item   // original key item (for map:keys)
-}
-
-// NewMap returns an empty map.
-func NewMap() *Map {
-	return &Map{values: map[string]Object{}, raw: map[string]Item{}}
-}
-
 // mapKey produces the op:same-key canonical form of an atomic key: a category
 // prefix plus a value form, so that equal-value keys of compatible types
 // collapse (all string-family keys; all numeric keys with 1 == 1.0 and
@@ -192,56 +178,6 @@ func CompositeKeyString(items []Item) string {
 		b += ":" + strconv.Itoa(len(s)) + ":" + s
 	}
 	return b
-}
-
-// Put sets a key/value entry (returns the same map; maps are treated as
-// mutable internally but the map: functions copy where the spec requires).
-func (m *Map) Put(key Item, val Object) {
-	k := mapKey(key)
-	if _, exists := m.values[k]; !exists {
-		m.keys = append(m.keys, key)
-	} else {
-		// Replacing an entry replaces its KEY item too: map:put(map{3:..},
-		// xs:float('3.0'), ..) is map(xs:float, ..) (map-put-011, map-merge-011
-		// use-last, same-key-004 keys become xs:float+).
-		for i, old := range m.keys {
-			if mapKey(old) == k {
-				m.keys[i] = key
-				break
-			}
-		}
-	}
-	m.values[k] = val
-	m.raw[k] = key
-}
-
-// Get returns the value for key (empty sequence if absent).
-func (m *Map) Get(key Item) Object {
-	if v, ok := m.values[mapKey(key)]; ok {
-		return v
-	}
-	return Sequence{}
-}
-
-// Contains reports whether key is present.
-func (m *Map) Contains(key Item) bool {
-	_, ok := m.values[mapKey(key)]
-	return ok
-}
-
-// Keys returns the keys in insertion order.
-func (m *Map) Keys() []Item { return m.keys }
-
-// Size returns the number of entries.
-func (m *Map) Size() int { return len(m.keys) }
-
-// Copy returns a shallow copy of the map.
-func (m *Map) Copy() *Map {
-	c := NewMap()
-	for _, k := range m.keys {
-		c.Put(k, m.values[mapKey(k)])
-	}
-	return c
 }
 
 // Array is an XPath 3.1 array: a sequence of members, each an Object (sequence).

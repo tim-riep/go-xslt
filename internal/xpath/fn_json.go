@@ -1599,20 +1599,26 @@ func jsToJSONValue(o Object, p *serParams) (any, error) {
 	case *Map:
 		out := &jsObj{}
 		seen := map[string]bool{}
-		for _, k := range v.Keys() {
-			mv, err := jsToJSONValue(v.Get(k), p)
-			if err != nil {
-				return nil, err
+		var err error
+		v.Range(func(k Item, val Object) bool {
+			var mv any
+			if mv, err = jsToJSONValue(val, p); err != nil {
+				return false
 			}
 			name := itemString(k)
 			// Distinct map keys whose string values coincide (e.g. an xs:QName
 			// and a string) would emit duplicate JSON object names, which is an
 			// error unless allow-duplicate-names is set (serialize-json-010/011).
 			if seen[name] && (p == nil || !p.allowDup) {
-				return nil, fmt.Errorf("err:SERE0022: duplicate name %q in JSON output", name)
+				err = fmt.Errorf("err:SERE0022: duplicate name %q in JSON output", name)
+				return false
 			}
 			seen[name] = true
 			out.put(name, mv)
+			return true
+		})
+		if err != nil {
+			return nil, err
 		}
 		return out, nil
 	case *Array:

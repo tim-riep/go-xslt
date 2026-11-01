@@ -889,9 +889,7 @@ var mapFuncs = map[string]coreFunc{
 		if err != nil {
 			return nil, err
 		}
-		nm := m.Copy()
-		nm.Put(k, arg(a, 2))
-		return nm, nil
+		return m.With(k, arg(a, 2)), nil
 	},
 	"remove": func(c *Context, a []Object) (Object, error) {
 		m, err := mapArg("remove", a, 0)

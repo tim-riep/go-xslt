@@ -1162,9 +1162,10 @@ func evalLookup(n *LookupExpr, ctx *Context) (Object, error) {
 		switch v := it.(type) {
 		case *Map:
 			if n.Wild {
-				for _, k := range v.Keys() {
-					out = append(out, Items(v.Get(k))...)
-				}
+				v.Range(func(_ Item, val Object) bool {
+					out = append(out, Items(val)...)
+					return true
+				})
 			} else {
 				for _, k := range keys {
 					out = append(out, Items(v.Get(k))...)
