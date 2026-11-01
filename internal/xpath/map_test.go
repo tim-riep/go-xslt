@@ -147,3 +147,49 @@ func TestMapConcurrentWith(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestArrayAppendShared appends to old and new arrays in any order: every
+// array keeps exactly its own members although appends share backing
+// arrays, also when several goroutines append to one array at once (-race).
+func TestArrayAppendShared(t *testing.T) {
+	r := rand.New(rand.NewSource(3))
+	arrs := []*Array{NewArray(nil), NewArray([]Object{NewInteger(-1)})}
+	models := [][]int64{nil, {-1}}
+	for step := 0; step < 3000; step++ {
+		i := len(arrs) - 1
+		if r.Intn(3) == 0 {
+			i = r.Intn(len(arrs))
+		}
+		arrs = append(arrs, arrs[i].Append(NewInteger(int64(step))))
+		models = append(models, append(append([]int64(nil), models[i]...), int64(step)))
+	}
+	for i, a := range arrs {
+		if a.Size() != len(models[i]) {
+			t.Fatalf("array %d: size %d, want %d", i, a.Size(), len(models[i]))
+		}
+		for j, want := range models[i] {
+			if got := a.Get(j + 1).(*Atomic).i.Int64(); got != want {
+				t.Fatalf("array %d member %d: %d, want %d", i, j+1, got, want)
+			}
+		}
+		if m := a.Members(); cap(m) != len(m) {
+			t.Fatalf("array %d: Members has spare capacity", i)
+		}
+	}
+	base := NewArray(nil).Append(NewInteger(0))
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			a := base
+			for i := 0; i < 200; i++ {
+				a = a.Append(NewInteger(int64(g)))
+			}
+			if a.Size() != 201 || ToString(a.Get(201)) != strconv.Itoa(g) {
+				t.Errorf("goroutine %d: size %d", g, a.Size())
+			}
+		}(g)
+	}
+	wg.Wait()
+}

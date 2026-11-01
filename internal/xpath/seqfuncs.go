@@ -1018,7 +1018,7 @@ var arrayFuncs = map[string]coreFunc{
 		if !ok {
 			return Sequence{}, nil
 		}
-		return NewArray(append(append([]Object{}, ar.Members()...), arg(a, 1))), nil
+		return ar.Append(arg(a, 1)), nil
 	},
 	"flatten": func(c *Context, a []Object) (Object, error) {
 		var out []Item

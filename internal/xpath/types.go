@@ -181,8 +181,16 @@ func CompositeKeyString(items []Item) string {
 }
 
 // Array is an XPath 3.1 array: a sequence of members, each an Object (sequence).
+//
+// Arrays made by Append share a backing array: appending to the newest one
+// writes the slot after its members in place (an array never reads past its
+// own length), so building an array one array:append at a time is linear,
+// not quadratic. claim records how far the shared backing array has been
+// handed out (see mapLog); nil means the members are the caller's slice of
+// NewArray, which Append never writes into.
 type Array struct {
 	members []Object
+	claim   *mapLog
 }
 
 // NewArray builds an array from members.
@@ -199,8 +207,28 @@ func (a *Array) Get(i int) Object {
 	return a.members[i-1]
 }
 
-// Members returns the underlying members slice.
-func (a *Array) Members() []Object { return a.members }
+// Members returns the underlying members slice. Its capacity is its
+// length, so appending to it never writes into a shared backing array.
+func (a *Array) Members() []Object { return a.members[:len(a.members):len(a.members)] }
+
+// Append returns a new array: a's members followed by m.
+func (a *Array) Append(m Object) *Array {
+	n := len(a.members)
+	if c := a.claim; c != nil && cap(a.members) > n {
+		c.mu.Lock()
+		if c.n == n {
+			c.n++
+			ms := append(a.members, m) // within capacity: the slot no other array sees
+			c.mu.Unlock()
+			return &Array{members: ms, claim: c}
+		}
+		c.mu.Unlock()
+	}
+	ms := make([]Object, n+1, n+1+n/2+4)
+	copy(ms, a.members)
+	ms[n] = m
+	return &Array{members: ms, claim: &mapLog{n: n + 1}}
+}
 
 // Flatten replaces arrays in an item sequence by their members, recursively
 // (XDM flattening, used by atomization and XSLT content construction).
