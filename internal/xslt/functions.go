@@ -784,7 +784,7 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 		// rules cannot reconcile with the declared type is XTTE0790
 		// (function-1019: 'banana' passed where xs:integer is declared).
 		if p.as != "" {
-			cv, ok := xpath.CoerceToDeclaredTypeCtx(p.as, v, asTypeCtx(p.el))
+			cv, ok := coerceAs(p.as, v, p.el)
 			if !ok {
 				return nil, true, errAt(p.el, "err:XTTE0790: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 			}
@@ -839,7 +839,7 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 		// there stays best-effort/lenient, matching every other @as site in
 		// this engine (VarDef, template params, …) rather than raising a
 		// false positive.
-		cv, ok := xpath.CoerceToDeclaredTypeCtx(fd.as, result, asTypeCtx(fd.el))
+		cv, ok := coerceAs(fd.as, result, fd.el)
 		if ok {
 			result = cv
 		} else if confident {

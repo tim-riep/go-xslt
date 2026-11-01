@@ -679,7 +679,7 @@ func (def *acc2Def) coerce(v xpath.Object) (xpath.Object, error) {
 	if def.as == "" {
 		return v, nil
 	}
-	cv, ok := xpath.CoerceToDeclaredTypeCtx(def.as, v, asTypeCtx(def.el))
+	cv, ok := coerceAs(def.as, v, def.el)
 	if !ok {
 		name, _ := def.el.AttrLocal("name")
 		return nil, errAt(def.el, "err:XPTY0004: accumulator %q value does not match declared type %q", name, def.as)

@@ -93,10 +93,9 @@ func TestTyMapSameKey(t *testing.T) {
 	if m.Contains(false) {
 		t.Errorf("false must not be a key")
 	}
-	c := m.Copy()
-	c.Put(NewInteger(2), NewString("x"))
+	c := m.With(NewInteger(2), NewString("x"))
 	if m.Size() != 3 || c.Size() != 4 || ToString(c.Get(true)) != "t" {
-		t.Errorf("Copy must be independent: %d %d", m.Size(), c.Size())
+		t.Errorf("With must leave its source alone: %d %d", m.Size(), c.Size())
 	}
 	if len(Items(m.Get(NewInteger(99)))) != 0 {
 		t.Errorf("an absent key must give the empty sequence")

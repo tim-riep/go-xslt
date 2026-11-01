@@ -36,6 +36,23 @@ func TestForEachGroup(t *testing.T) {
 			want: "zma",
 		},
 		{
+			// The bucketed group index (fegIndex) must find the same group the
+			// full scan did: across numeric types, the string family, a float
+			// arriving after the buckets were built at double precision, and a
+			// key class with no bucket.
+			name: "group-by over mixed key types",
+			sheet: `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xsl:output method="text"/>
+  <xsl:template match="/">
+    <xsl:for-each-group group-by="." select="(1, 'a', 1.0e0, 0.1, xs:float(1), 'a', xs:untypedAtomic('a'), 2.5,
+        xs:double(0.1), xs:float(0.1), xs:float(2.5), xs:date('2024-01-01'), xs:anyURI('a'), 0.1e0)">
+      <xsl:value-of select="current-grouping-key()"/>:<xsl:value-of select="count(current-group())"/>;</xsl:for-each-group>
+  </xsl:template>
+</xsl:stylesheet>`,
+			src:  `<r/>`,
+			want: "1:3;a:4;0.1:4;2.5:2;2024-01-01:1;",
+		},
+		{
 			name: "group-adjacent starts new group when key changes",
 			sheet: hdr + `
   <xsl:template match="/r">

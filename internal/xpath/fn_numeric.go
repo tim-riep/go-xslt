@@ -855,6 +855,22 @@ func roundFloatPrec(f float64, p int) float64 {
 	if p < -308 { // rounds to a power of ten larger than any finite double
 		return math.Copysign(0, f)
 	}
+	if p == 0 {
+		// f is not integral here, so |f| < 2^52: floor(f) and the fraction
+		// f - floor(f) are both exact, and comparing the fraction with 1/2
+		// is the exact half-up rounding the big.Rat path below computes,
+		// without its allocations (TestRoundFloatPrecZero).
+		fl := math.Floor(f)
+		if f-fl >= 0.5 {
+			fl++
+		}
+		return signedZero(fl, f)
+	}
+	return roundFloatPrecExact(f, p)
+}
+
+// roundFloatPrecExact is roundFloatPrec's general path, on the exact value.
+func roundFloatPrecExact(f float64, p int) float64 {
 	r := new(big.Rat).SetFloat64(f)
 	if r == nil { // only NaN/Inf make SetFloat64 fail, and both are handled above
 		return f
@@ -973,22 +989,16 @@ func init() {
 // numFirstAtomic returns the first *Atomic in an argument, if any, so we can
 // inspect the numeric subtype of the input.
 func numFirstAtomic(o Object) *Atomic {
-	items := Items(o)
-	if len(items) == 0 {
+	if itemCount(o) == 0 {
 		return nil
 	}
-	if a, ok := items[0].(*Atomic); ok {
-		return a
-	}
-	return nil
+	a, _ := itemAt(o, 0).(*Atomic)
+	return a
 }
 
 // numIsEmpty reports whether an argument carries no items (empty sequence).
 func numIsEmpty(o Object) bool {
-	if o == nil {
-		return true
-	}
-	return len(Items(o)) == 0
+	return itemCount(o) == 0
 }
 
 // numRoundHalfToEven implements fn:round-half-to-even($value, $precision = 0).

@@ -124,6 +124,15 @@ func dvBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bo
 	return "", false
 }
 
+// GroupingBucketKey exposes dvBucketKey to hosts that group by
+// SameGroupingKey (xsl:for-each-group group-by): two values SameGroupingKey
+// reports equal always share the key, so a candidate scan may be confined to
+// one bucket. narrow must be true as soon as any compared value is an
+// xs:float (see fnDistinctValues).
+func GroupingBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bool) {
+	return dvBucketKey(x, coll, narrow)
+}
+
 // SameGroupingKey reports whether two atomic values count as "the same" for
 // xsl:for-each-group grouping purposes: comparable via eq (dateTime/date/time
 // compare by normalized instant, not lexical form), NaN equal to NaN, and a
@@ -880,9 +889,7 @@ var mapFuncs = map[string]coreFunc{
 		if err != nil {
 			return nil, err
 		}
-		nm := m.Copy()
-		nm.Put(k, arg(a, 2))
-		return nm, nil
+		return m.With(k, arg(a, 2)), nil
 	},
 	"remove": func(c *Context, a []Object) (Object, error) {
 		m, err := mapArg("remove", a, 0)
@@ -1011,7 +1018,7 @@ var arrayFuncs = map[string]coreFunc{
 		if !ok {
 			return Sequence{}, nil
 		}
-		return NewArray(append(append([]Object{}, ar.Members()...), arg(a, 1))), nil
+		return ar.Append(arg(a, 1)), nil
 	},
 	"flatten": func(c *Context, a []Object) (Object, error) {
 		var out []Item

@@ -3,6 +3,8 @@ package xpath
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -497,6 +499,10 @@ func MatchesSeqTypeCtx(st *SeqType, o Object, ctx *Context) bool {
 	if ctx == nil {
 		ctx = &Context{}
 	}
+	return matchesSeqType(st, o, ctx)
+}
+
+func matchesSeqType(st *SeqType, o Object, ctx *Context) bool {
 	items := Items(o)
 	if st.Empty {
 		return len(items) == 0
@@ -652,16 +658,21 @@ func matchesItemType(it ItemType, item Item, ctx *Context) bool {
 		if it.Wild || it.MapVal == nil {
 			return true
 		}
-		for _, k := range m.Keys() {
-			kt, ok := itemAtomType(k)
-			if !ok || !atomDerivesFrom(kt, it.MapKey) {
-				return false
-			}
-			if !MatchesSeqTypeCtx(it.MapVal, m.Get(k), ctx) {
-				return false
-			}
+		if mv := it.MapVal; m.keysOne && m.valsOne && !mv.Empty && mv.Item.Kind == itAtomic && mv.Item.SchemaType == nil {
+			// Every key is a kt and every value one atomic item of type vt
+			// (Map's summary): the loop below would test exactly these two
+			// types for every entry. An accumulating map(K, V) parameter is
+			// checked on every xsl:iterate step.
+			return atomDerivesFrom(m.kt, it.MapKey) &&
+				(mv.Item.Atom == XSanyAtomicType || atomDerivesFrom(m.vt, mv.Item.Atom))
 		}
-		return true
+		all := true
+		m.Range(func(k Item, v Object) bool {
+			kt, isAtom := itemAtomType(k)
+			all = isAtom && atomDerivesFrom(kt, it.MapKey) && MatchesSeqTypeCtx(it.MapVal, v, ctx)
+			return all
+		})
+		return all
 	case itArray:
 		a, ok := item.(*Array)
 		if !ok {
@@ -904,17 +915,8 @@ func SeqTypeWantsNodes(asType string) bool {
 // attribute (xsl:template/@as, …) that can name a non-built-in element via a
 // stylesheet-bound prefix (as-0130: element(my:item)*).
 func CoerceToDeclaredTypeCtx(asType string, value Object, ctx *Context) (Object, bool) {
-	toks, err := lex(asType)
-	if err != nil {
-		return value, false
-	}
-	// A declared type reaches here as unparsed SOURCE (the host keeps @as as a
-	// string and parses it on demand), so this is where its schema component
-	// names get resolved — through the same injected lookup a compile-time
-	// parse uses, carried on the Context (schema_names.go).
-	p := &parser{toks: toks, schema: schemaLookupOf(ctx)}
-	st, err := p.parseSequenceType()
-	if err != nil || p.cur().kind != tEOF {
+	st := declaredType(asType, ctx)
+	if st == nil {
 		return value, false
 	}
 	if MatchesSeqTypeCtx(st, value, ctx) {
@@ -922,6 +924,77 @@ func CoerceToDeclaredTypeCtx(asType string, value Object, ctx *Context) (Object,
 	}
 	cv, ok := convertForParamCtx(st, value, ctx)
 	return cv, ok
+}
+
+// declaredTypes caches declaredType's parses that need no schema lookup:
+// the same @as is bound on every call of a function or template, and lexing
+// and parsing it each time was an eighth of what a call of a typed
+// xsl:function allocated. A parsed SeqType is never modified after parsing,
+// so one copy serves every goroutine. The cache is bounded; past the bound a
+// type is simply parsed every time again.
+var (
+	declaredTypes  sync.Map // string -> *SeqType
+	declaredTypesN atomic.Int32
+)
+
+const maxDeclaredTypes = 4096
+
+// declaredType parses a declared type written as source, or returns nil when
+// it does not parse. A declared type reaches here as unparsed SOURCE (the
+// host keeps @as as a string and parses it on demand), so this is where its
+// schema component names get resolved — through the same injected lookup a
+// compile-time parse uses, carried on the Context (schema_names.go); a parse
+// with a lookup is not cached, since its result depends on the schema.
+func declaredType(asType string, ctx *Context) *SeqType {
+	sn := schemaLookupOf(ctx)
+	if sn == nil {
+		if v, ok := declaredTypes.Load(asType); ok {
+			return v.(*SeqType)
+		}
+	}
+	toks, err := lex(asType)
+	if err != nil {
+		return nil
+	}
+	p := &parser{toks: toks, schema: sn}
+	st, err := p.parseSequenceType()
+	if err != nil || p.cur().kind != tEOF {
+		return nil
+	}
+	if sn == nil && declaredTypesN.Load() < maxDeclaredTypes {
+		if _, loaded := declaredTypes.LoadOrStore(asType, st); !loaded {
+			declaredTypesN.Add(1)
+		}
+	}
+	return st
+}
+
+// MatchesDeclaredTypeNoContext reports whether value already matches the
+// declared type asType, for a host with no schema in scope, when that type's
+// test needs no evaluation context: empty-sequence(), item() or a built-in
+// atomic type, with any occurrence. For every other type, and for a value
+// that does not match, it returns false and the caller goes on to
+// CoerceToDeclaredTypeCtx, whose answer for a matching value is the same
+// (value, true) — so a host may try this first and build the context only
+// when it is needed.
+func MatchesDeclaredTypeNoContext(asType string, value Object) bool {
+	st := declaredType(asType, nil)
+	if st == nil {
+		return false
+	}
+	if !st.Empty {
+		switch st.Item.Kind {
+		case itItem:
+		case itAtomic:
+			if st.Item.SchemaType != nil {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	// matchesItemType reads no context for these item types.
+	return matchesSeqType(st, value, nil)
 }
 
 func convertForParam(st *SeqType, av Object) (Object, bool) {

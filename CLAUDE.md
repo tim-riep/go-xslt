@@ -404,6 +404,18 @@ Desktop GUI (**run from `desktop/`**):
   node-only form. Plain Go `string`/`float64`/`bool` still occur as untyped
   results of fast paths and the 1.0 conversion functions — `Items()`
   normalizes everything, so new code should work on items.
+- **Maps and arrays share structure** (`xpath/map.go`, `Array.Append` in
+  `xpath/types.go`): a `*Map` is a persistent hash trie and `map:put` is
+  `Map.With`, which freezes its source; `Map.Put` changes a map IN PLACE
+  and is only for builders before the map is handed out (it edits only trie
+  nodes that map made itself, so a frozen map's nodes never change). Keep
+  that split — never `Put` into a map you did not just create. Arrays from
+  `Append` share one backing array, so `Members()` is capped at its length
+  and nothing may write into a member slice. Iterate with `Map.Range`
+  (`Keys()` builds a new slice). A parsed `SeqType` is shared too
+  (`declaredType` caches @as parses for every goroutine; xslt's `coerceAs`
+  skips the context for types that need none): never modify one after
+  parsing.
 - **Never trust the locally embedded spec copy**
   (`test/conformance/xslt30-test/specs/xslt-lcwd30.xml` is a stale March-2015
   Working Draft, not the June-2017 REC) for a precise semantic question —

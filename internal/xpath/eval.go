@@ -300,11 +300,10 @@ func varPrefixKey(prefix string) string {
 }
 
 func firstItem(o Object) Item {
-	items := Items(o)
-	if len(items) == 0 {
+	if itemCount(o) == 0 {
 		return ""
 	}
-	return items[0]
+	return itemAt(o, 0)
 }
 
 // asPositionalInt reports whether a predicate value is a numeric (positional)
@@ -1162,9 +1161,10 @@ func evalLookup(n *LookupExpr, ctx *Context) (Object, error) {
 		switch v := it.(type) {
 		case *Map:
 			if n.Wild {
-				for _, k := range v.Keys() {
-					out = append(out, Items(v.Get(k))...)
-				}
+				v.Range(func(_ Item, val Object) bool {
+					out = append(out, Items(val)...)
+					return true
+				})
 			} else {
 				for _, k := range keys {
 					out = append(out, Items(v.Get(k))...)

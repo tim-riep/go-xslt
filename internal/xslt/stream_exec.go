@@ -1718,7 +1718,7 @@ func (s *strbIterState) step(eng *engine, r rt, out *xmltree.Node) (bool, error)
 				continue
 			}
 			if p.as != "" {
-				if cv, cok := xpath.CoerceToDeclaredTypeCtx(p.as, nv, asTypeCtx(p.el)); cok {
+				if cv, cok := coerceAs(p.as, nv, p.el); cok {
 					nv = cv
 				}
 			}

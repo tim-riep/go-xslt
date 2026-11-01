@@ -732,7 +732,7 @@ func coerceStaticValue(el *xmltree.Node, name string, v xpath.Object) (xpath.Obj
 	if !ok || strings.TrimSpace(as) == "" {
 		return v, nil
 	}
-	cv, ok := xpath.CoerceToDeclaredTypeCtx(as, v, asTypeCtx(el))
+	cv, ok := coerceAs(as, v, el)
 	if !ok {
 		return nil, errAt(el, "err:XTTE0590: value of static xsl:%s %q does not match declared type %q", el.Name.Local, name, as)
 	}

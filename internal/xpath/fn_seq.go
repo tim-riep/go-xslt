@@ -193,10 +193,13 @@ func sqHasFunctionItem(items []Item) bool {
 				}
 			}
 		case *Map:
-			for _, k := range v.Keys() {
-				if sqHasFunctionItem(Items(v.Get(k))) {
-					return true
-				}
+			found := false
+			v.Range(func(_ Item, val Object) bool {
+				found = sqHasFunctionItem(Items(val))
+				return !found
+			})
+			if found {
+				return true
 			}
 		}
 	}
@@ -233,12 +236,12 @@ func (d deepEq) item(a, b Item) bool {
 		if !ok || am.Size() != bm.Size() {
 			return false
 		}
-		for _, k := range am.Keys() {
-			if !bm.Contains(k) || !d.items(Items(am.Get(k)), Items(bm.Get(k))) {
-				return false
-			}
-		}
-		return true
+		eq := true
+		am.Range(func(k Item, av Object) bool {
+			eq = bm.Contains(k) && d.items(Items(av), Items(bm.Get(k)))
+			return eq
+		})
+		return eq
 	}
 	if aar, ok := a.(*Array); ok {
 		bar, ok := b.(*Array)
