@@ -44,6 +44,7 @@ type Request struct {
 	ParamExprs      map[string]string // … or as the value of an XPath expression
 	InitialTemplate string            // named template to start with
 	BaseDir         string            // resolves relative URIs; empty = no file reads
+	SourceURI       string            // where Source was read from; empty = parsed against BaseDir
 	Security        Security
 	Features        Features          // optional XSLT 3.0 features; zero = all off
 	Limits          Limits            // instruction steps and nesting depth; zero = defaults
@@ -84,6 +85,7 @@ One run of a compiled `Stylesheet`. The stylesheet, its `BaseDir` and its
 ```go
 type TransformRequest struct {
 	Source          string
+	SourceURI       string
 	Params          map[string]string
 	ParamExprs      map[string]string
 	InitialTemplate string

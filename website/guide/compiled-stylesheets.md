@@ -22,8 +22,8 @@ res := sheet.Transform(engine.TransformRequest{
 ```
 
 `Compile` uses only `Stylesheet`, `BaseDir` and `Security` of the request.
-`Source`, `Params` and `InitialTemplate` belong to each run and go into the
-`TransformRequest`.
+`Source`, `SourceURI`, `Params` and `InitialTemplate` belong to each run and go
+into the `TransformRequest`.
 
 When compilation fails, the returned stylesheet is `nil` and the diagnostics
 carry the error with its line and column in the stylesheet. A successful

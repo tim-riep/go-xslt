@@ -22,6 +22,10 @@ dragging in the GUI's Wails/CGo dependencies:
   `github.com/tim-riep/go-xslt/engine`). Re-exports `internal/engine` via type
   aliases: `Transform(Request) Result`, `TransformTo(io.Writer, Request) Result`
   (bounded-memory output), `Request`/`Result`/`Diagnostic`/…
+  `Request.SourceURI` is where the source was read from (a path or URI): it is
+  the source document's document-uri and base-uri; `BaseDir` stays the
+  stylesheet's (imports, static base, result-document hrefs). Empty: the source
+  is parsed against `BaseDir` and has no document-uri.
 - `xsd/` — **public read-only schema component model** (`Compile` →
   `*Schema`: global elements/types/attributes, substitution members, content
   particles with min/max, attribute uses, builtin bases through restriction
@@ -379,6 +383,9 @@ Desktop GUI (**run from `desktop/`**):
   LIBRARY module; it may read the directories of the files on its command
   line, more only via `-allow-*` flags. Flags are uniform across commands:
   `-s/--stylesheet`, `-x/--schema`, the document is always the last argument.
+  `transform` sets `SourceURI` to the absolute source path (not for stdin), so
+  document-uri(/) is the source file while `BaseDir` is the stylesheet's
+  directory.
   `.github/workflows/conformance.yml` runs `scripts/conformance.sh --strict`
   nightly (fails on any number differing from the published one). `scripts/bench/main.go` benchmarks it
   against xsltproc/xmllint (`go run scripts/bench/main.go`).
