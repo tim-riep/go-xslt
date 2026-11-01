@@ -54,6 +54,34 @@ func baseDirURI(dir string) string {
 	return uri
 }
 
+// sourceURIOf turns Request.SourceURI into the URI of the source document: a
+// string with a URI scheme of two or more letters ("file:", "https:") is taken
+// as it is, anything else is a file path and becomes an absolute "file:" URI
+// the same way BaseDir does (a single letter before the colon is a Windows
+// drive, not a scheme). Empty stays empty.
+func sourceURIOf(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if i := strings.IndexByte(s, ':'); i >= 2 {
+		isScheme := s[0] >= 'A' && s[0] <= 'Z' || s[0] >= 'a' && s[0] <= 'z'
+		for _, c := range s[:i] {
+			if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.') {
+				isScheme = false
+			}
+		}
+		if isScheme {
+			return s
+		}
+	}
+	abs, err := filepath.Abs(s)
+	if err != nil {
+		abs = s
+	}
+	return fileuri.FromPath(abs)
+}
+
 func (r *standaloneResolver) path(uri string) string {
 	u := strings.TrimSpace(uri)
 	if i := strings.IndexByte(u, '#'); i >= 0 {

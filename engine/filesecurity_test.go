@@ -188,3 +188,24 @@ func TestSchemaImportsAreLimited(t *testing.T) {
 		t.Errorf("control: xsd.Compile with AllowedDirs: %+v", diags)
 	}
 }
+
+// A SourceURI outside the allowed directories only labels the source: it does
+// not let relative doc() references taken from it read there. The same call
+// succeeds once that directory is allowed.
+func TestSourceURIDoesNotWidenFileAccess(t *testing.T) {
+	project, outside := fileLayout(t)
+	src := filepath.Join(outside, "src.xml")
+	req := func(sec engine.Security) engine.Result {
+		return engine.Transform(engine.Request{
+			Stylesheet: `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:template match="/"><out><xsl:value-of select="doc-available(resolve-uri('secret.xml', base-uri(/)))"/></out></xsl:template>
+</xsl:stylesheet>`,
+			Source: `<s/>`, SourceURI: src, BaseDir: project, Security: sec})
+	}
+	if res := req(engine.Security{}); !strings.Contains(res.Output, "<out>false</out>") {
+		t.Errorf("outside the allowed dirs: got %s %+v", res.Output, res.Diagnostics)
+	}
+	if res := req(engine.Security{AllowedDirs: []string{outside}}); !strings.Contains(res.Output, "<out>true</out>") {
+		t.Errorf("with AllowedDirs: got %s %+v", res.Output, res.Diagnostics)
+	}
+}

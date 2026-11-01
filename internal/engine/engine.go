@@ -87,6 +87,12 @@ type Request struct {
 	// hrefs of xsl:result-document (returned in SecondaryOutputs; nothing is
 	// written to disk). Empty disables disk resolution.
 	BaseDir string `json:"baseDir"`
+	// SourceURI is the URI (or file path) the Source document was read from.
+	// It becomes the document URI and the base URI of the source document
+	// (fn:document-uri, fn:base-uri, and relative references resolved from
+	// it). Empty: the source is parsed against BaseDir, as before. BaseDir
+	// stays the base of the stylesheet and of everything it imports.
+	SourceURI string `json:"sourceURI,omitempty"`
 	// Security limits which files and network resources the run may read;
 	// the zero value allows files under BaseDir only, and no network.
 	Security Security `json:"security"`

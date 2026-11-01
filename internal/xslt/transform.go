@@ -854,7 +854,7 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 		// is recorded only for the consequence §10.3.6 states unconditionally.
 		eng.hostStreamedDocs = map[*xmltree.Node]bool{doc: true}
 	}
-	if doc != nil && e.SourceURI != "" {
+	if doc != nil && e.SourceURI != "" && !netfetch.IsNetworkURI(e.SourceURI) {
 		// Seed the resolver's doc cache under the SAME resolved path the
 		// primary source's base-uri already carries (set above where doc was
 		// parsed), so fn:doc(fn:document-uri(.)) returns this identical node

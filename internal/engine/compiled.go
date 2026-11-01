@@ -27,6 +27,10 @@ type Stylesheet struct {
 type TransformRequest struct {
 	// Source is the XML input document. May be empty when InitialTemplate is set.
 	Source string `json:"source"`
+	// SourceURI is the URI (or file path) Source was read from; see
+	// Request.SourceURI. Empty: the source is parsed against the Stylesheet's
+	// BaseDir.
+	SourceURI string `json:"sourceURI,omitempty"`
 	// Params are top-level stylesheet parameters (string-typed).
 	Params map[string]string `json:"params"`
 	// ParamExprs sets parameters to the value of an XPath expression; see
@@ -82,7 +86,7 @@ func (s *Stylesheet) TransformContext(ctx context.Context, tr TransformRequest) 
 	if d := checkParamExprs(tr.ParamExprs); len(d) > 0 {
 		return Result{Diagnostics: d}
 	}
-	entry := xslt.Entry{Template: tr.InitialTemplate, Params: tr.Params, ParamSelects: tr.ParamExprs, Fetcher: tr.Security.fetcher(), Files: FileGuard(tr.Security, s.baseDir), Limits: tr.Limits.internal(), Context: ctx}
+	entry := xslt.Entry{SourceURI: sourceURIOf(tr.SourceURI), Template: tr.InitialTemplate, Params: tr.Params, ParamSelects: tr.ParamExprs, Fetcher: tr.Security.fetcher(), Files: FileGuard(tr.Security, s.baseDir), Limits: tr.Limits.internal(), Context: ctx}
 	rr, err := s.ss.TransformEntry(tr.Source, entry, s.baseDir)
 	if err != nil {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(err, "run")}}
@@ -110,7 +114,7 @@ func (s *Stylesheet) TransformToContext(ctx context.Context, w io.Writer, tr Tra
 	if d := checkParamExprs(tr.ParamExprs); len(d) > 0 {
 		return Result{Diagnostics: d}
 	}
-	entry := xslt.Entry{Template: tr.InitialTemplate, Params: tr.Params, ParamSelects: tr.ParamExprs, Fetcher: tr.Security.fetcher(), Files: FileGuard(tr.Security, s.baseDir), Limits: tr.Limits.internal(), Context: ctx}
+	entry := xslt.Entry{SourceURI: sourceURIOf(tr.SourceURI), Template: tr.InitialTemplate, Params: tr.Params, ParamSelects: tr.ParamExprs, Fetcher: tr.Security.fetcher(), Files: FileGuard(tr.Security, s.baseDir), Limits: tr.Limits.internal(), Context: ctx}
 	lw := &limitWriter{w: w, max: math.MaxInt64}
 	if tr.Limits.MaxOutputBytes > 0 {
 		lw.max = tr.Limits.MaxOutputBytes
