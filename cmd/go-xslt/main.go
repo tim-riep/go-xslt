@@ -213,6 +213,10 @@ func transform(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		req.Source = text
 		if sourceName != "-" {
 			sourceDir = filepath.Dir(sourceName)
+			// The source document's own URI, not the stylesheet's directory.
+			if abs, err := filepath.Abs(sourceName); err == nil {
+				req.SourceURI = abs
+			}
 		}
 	}
 	styleName := *style

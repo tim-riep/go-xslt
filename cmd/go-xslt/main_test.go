@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tim-riep/go-xslt/internal/fileuri"
 )
 
 func TestCLI(t *testing.T) {
@@ -75,5 +77,56 @@ func TestCLI(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(out, "sub", "side.txt")); err != nil || string(b) != "side" {
 		t.Errorf("secondary output: %q %v", b, err)
+	}
+}
+
+// With the stylesheet and the source in different directories, the source
+// document's URI is the source file, and relative references taken from it
+// resolve beside it.
+func TestCLISourceURI(t *testing.T) {
+	root := t.TempDir()
+	styleDir, srcDir := filepath.Join(root, "sub"), filepath.Join(root, "data")
+	for _, d := range []string{styleDir, srcDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(p, text string) {
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	style := filepath.Join(styleDir, "t.xsl")
+	write(style, `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output method="text"/>
+  <xsl:template match="/">du=<xsl:value-of select="document-uri(/)"/>|bu=<xsl:value-of select="base-uri(/)"/>|doc=<xsl:value-of select="document(/r/@href, /)/o"/>|rel=<xsl:value-of select="doc(resolve-uri('other.xml', base-uri(/)))/o"/></xsl:template>
+</xsl:stylesheet>`)
+	src := filepath.Join(srcDir, "in.xml")
+	write(src, `<r href="other.xml"/>`)
+	write(filepath.Join(srcDir, "other.xml"), `<o>other</o>`)
+
+	var so, se bytes.Buffer
+	if code := run([]string{"transform", "-s", style, src}, strings.NewReader(""), &so, &se); code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	want := fileuri.FromPath(src)
+	if got := so.String(); got != "du="+want+"|bu="+want+"|doc=other|rel=other" {
+		t.Errorf("got %q, want document-uri and base-uri %q", got, want)
+	}
+
+	// stdin has no location: the source is parsed against the stylesheet's
+	// directory, as before.
+	so.Reset()
+	se.Reset()
+	plain := filepath.Join(styleDir, "p.xsl")
+	write(plain, `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output method="text"/>
+  <xsl:template match="/">du=<xsl:value-of select="document-uri(/)"/></xsl:template>
+</xsl:stylesheet>`)
+	if code := run([]string{"transform", "-s", plain, "-"}, strings.NewReader(`<r/>`), &so, &se); code != 0 {
+		t.Fatalf("stdin exit %d: %s", code, se.String())
+	}
+	if got := so.String(); !strings.HasPrefix(got, "du="+fileuri.FromPath(styleDir)) {
+		t.Errorf("stdin: got %q, want the stylesheet directory", got)
 	}
 }

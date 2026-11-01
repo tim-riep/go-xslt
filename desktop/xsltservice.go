@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/tim-riep/go-xslt/desktop/internal/project"
 	"github.com/tim-riep/go-xslt/engine"
 )
 
@@ -10,8 +11,18 @@ import (
 type XsltService struct{}
 
 // RunTransform compiles and executes an XSLT transformation and returns the
-// serialized output together with any diagnostics.
+// serialized output together with any diagnostics. req.BaseDir is the project
+// directory; the frontend puts the source file's project-relative path in
+// req.SourceURI, which is resolved here (inside the project, symlinks checked)
+// to the file's absolute path, so the source document's URI is that file.
 func (s *XsltService) RunTransform(req engine.Request) engine.Result {
+	if req.SourceURI != "" {
+		abs, err := project.Resolve(req.BaseDir, req.SourceURI)
+		if err != nil {
+			return engine.Result{Diagnostics: []engine.Diagnostic{{Severity: engine.SeverityError, Phase: "parse", Message: "source file: " + err.Error()}}}
+		}
+		req.SourceURI = abs
+	}
 	return engine.Transform(req)
 }
 

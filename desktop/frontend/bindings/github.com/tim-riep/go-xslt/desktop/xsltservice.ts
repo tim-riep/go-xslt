@@ -22,7 +22,10 @@ import * as $models from "./models.js";
 
 /**
  * RunTransform compiles and executes an XSLT transformation and returns the
- * serialized output together with any diagnostics.
+ * serialized output together with any diagnostics. req.BaseDir is the project
+ * directory; the frontend puts the source file's project-relative path in
+ * req.SourceURI, which is resolved here (inside the project, symlinks checked)
+ * to the file's absolute path, so the source document's URI is that file.
  */
 export function RunTransform(req: engine$0.Request): $CancellablePromise<engine$0.Result> {
     return $Call.ByID(3851859095, req);

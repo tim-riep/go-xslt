@@ -148,10 +148,20 @@ export interface Request {
 
     /**
      * BaseDir is the workspace directory used to resolve relative URIs in
-     * xsl:import/xsl:include, document()/doc(), unparsed-text(), and to write
-     * xsl:result-document. Empty disables disk resolution.
+     * xsl:import/xsl:include, document()/doc(), unparsed-text(), and the
+     * hrefs of xsl:result-document (returned in SecondaryOutputs; nothing is
+     * written to disk). Empty disables disk resolution.
      */
     "baseDir": string;
+
+    /**
+     * SourceURI is the URI (or file path) the Source document was read from.
+     * It becomes the document URI and the base URI of the source document
+     * (fn:document-uri, fn:base-uri, and relative references resolved from
+     * it). Empty: the source is parsed against BaseDir, as before. BaseDir
+     * stays the base of the stylesheet and of everything it imports.
+     */
+    "sourceURI"?: string;
 
     /**
      * Security limits which files and network resources the run may read;
