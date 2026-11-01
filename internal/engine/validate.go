@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/tim-riep/go-xslt/internal/xsd"
@@ -93,11 +95,18 @@ func runValidate(ctx context.Context, req ValidateRequest) ValidateResult {
 		r, err = sch.ValidateOptsCtx(ctx, req.Instance, req.Language, req.MaxErrors)
 	}
 	if err != nil {
-		return ValidateResult{Valid: false, Diagnostics: []Diagnostic{{
-			Severity: SeverityError,
-			Phase:    "validate",
-			Message:  err.Error(),
-		}}}
+		d := Diagnostic{Severity: SeverityError, Phase: "validate", Message: err.Error()}
+		// A schema error located in the schema document: its line and column go
+		// into the text (not into Line/Col, which locate a place in the
+		// INSTANCE and are printed with the instance's file name).
+		var xe *xsd.Error
+		if errors.As(err, &xe) {
+			d.Code = xe.Code
+			if xe.Line > 0 {
+				d.Message = fmt.Sprintf("schema line %d, column %d: %s", xe.Line, xe.Col, xe.Message)
+			}
+		}
+		return ValidateResult{Valid: false, Diagnostics: []Diagnostic{d}}
 	}
 	res := ValidateResult{Valid: r.Valid}
 	for _, e := range r.Errors {
