@@ -973,22 +973,16 @@ func init() {
 // numFirstAtomic returns the first *Atomic in an argument, if any, so we can
 // inspect the numeric subtype of the input.
 func numFirstAtomic(o Object) *Atomic {
-	items := Items(o)
-	if len(items) == 0 {
+	if itemCount(o) == 0 {
 		return nil
 	}
-	if a, ok := items[0].(*Atomic); ok {
-		return a
-	}
-	return nil
+	a, _ := itemAt(o, 0).(*Atomic)
+	return a
 }
 
 // numIsEmpty reports whether an argument carries no items (empty sequence).
 func numIsEmpty(o Object) bool {
-	if o == nil {
-		return true
-	}
-	return len(Items(o)) == 0
+	return itemCount(o) == 0
 }
 
 // numRoundHalfToEven implements fn:round-half-to-even($value, $precision = 0).

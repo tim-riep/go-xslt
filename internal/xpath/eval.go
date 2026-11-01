@@ -300,11 +300,10 @@ func varPrefixKey(prefix string) string {
 }
 
 func firstItem(o Object) Item {
-	items := Items(o)
-	if len(items) == 0 {
+	if itemCount(o) == 0 {
 		return ""
 	}
-	return items[0]
+	return itemAt(o, 0)
 }
 
 // asPositionalInt reports whether a predicate value is a numeric (positional)

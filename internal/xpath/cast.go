@@ -120,61 +120,102 @@ func toAtomic(it Item) (*Atomic, error) {
 // items. Nodes yield xs:untypedAtomic; arrays atomize their members; maps and
 // functions raise a type error.
 func Atomize(o Object) ([]Item, error) {
+	// The common shapes are taken without first building the []Item that
+	// Items would allocate: one item, or a node list (whose carrier nodes
+	// unwrap to their real items, exactly as in Items). The result has room
+	// for one item per input item.
 	var out []Item
-	for _, it := range Items(o) {
-		switch v := it.(type) {
-		case *Array:
-			for _, m := range v.Members() {
-				sub, err := Atomize(m)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, sub...)
+	var err error
+	switch v := o.(type) {
+	case NodeSet:
+		if len(v) == 0 {
+			return nil, nil
+		}
+		out = make([]Item, 0, len(v))
+		for _, n := range v {
+			var it Item = n
+			if n != nil && n.RealItem() != nil {
+				it = n.RealItem()
 			}
-		case *Map, *Function:
-			return nil, fmt.Errorf("err:FOTY0012: cannot atomize a %T", it)
-		default:
-			if nd, isNode := it.(*xmltree.Node); isNode {
-				// XDM 3.1 §5.3 dm:typed-value: a NILLED element's typed value
-				// is the empty sequence, whatever its declared type — checked
-				// before anything else, since a nilled element can carry any
-				// content type otherwise (fn-nilled-38/39/47/51: nilled
-				// elements of a mixed, simple-content-complex, and
-				// user-defined simple type all atomize to empty).
-				if nd.Kind == xmltree.KindElement && nd.Nilled() {
-					continue
-				}
-				// A LIST-typed node atomizes to a SEQUENCE, so it is handled
-				// here rather than in toAtomic, whose one-*Atomic result
-				// cannot carry it (see nodeTypedItems).
-				if items, ok := nodeTypedItems(nd); ok {
-					out = append(out, items...)
-					continue
-				}
-				// A validated element whose type has no simple content at
-				// all — element-only complex content, with TypeAnno left at
-				// zero because there is no built-in primitive to atomize
-				// through (see internal/xsd/bridge.go's typeAnnoFor) — has
-				// no typed value: F&O 3.1's atomization rule raises
-				// err:FOTY0012 rather than falling back to a lenient
-				// untypedAtomic reading (fn-normalize-space-24,
-				// fn-string-length-23). Scoped to a node with at least one
-				// ELEMENT child and no non-whitespace text of its own, so a
-				// genuinely MIXED-content type (whose typed value IS the
-				// untypedAtomic string value, not an error — this engine
-				// has no separate "mixed vs element-only" bit on
-				// SchemaTypeName to tell the two apart from the annotation
-				// alone) is not misclassified merely for lacking one.
-				if isElementOnlyCandidate(nd) {
-					return nil, fmt.Errorf("err:FOTY0012: element %q has element-only content and no typed value", nd.Name.Local)
-				}
-			}
-			a, err := toAtomic(it)
-			if err != nil {
+			if out, err = atomizeItem(out, it); err != nil {
 				return nil, err
 			}
-			out = append(out, a)
 		}
+		return out, nil
+	case Sequence:
+		if len(v) == 0 {
+			return nil, nil
+		}
+		out = make([]Item, 0, len(v))
+		for _, it := range v {
+			if out, err = atomizeItem(out, it); err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
+	case nil:
+		return nil, nil
+	}
+	if out, err = atomizeItem(make([]Item, 0, 1), o); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// atomizeItem appends the atomized value of one item to out.
+func atomizeItem(out []Item, it Item) ([]Item, error) {
+	switch v := it.(type) {
+	case *Array:
+		for _, m := range v.Members() {
+			sub, err := Atomize(m)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, sub...)
+		}
+	case *Map, *Function:
+		return out, fmt.Errorf("err:FOTY0012: cannot atomize a %T", it)
+	default:
+		if nd, isNode := it.(*xmltree.Node); isNode {
+			// XDM 3.1 §5.3 dm:typed-value: a NILLED element's typed value
+			// is the empty sequence, whatever its declared type — checked
+			// before anything else, since a nilled element can carry any
+			// content type otherwise (fn-nilled-38/39/47/51: nilled
+			// elements of a mixed, simple-content-complex, and
+			// user-defined simple type all atomize to empty).
+			if nd.Kind == xmltree.KindElement && nd.Nilled() {
+				return out, nil
+			}
+			// A LIST-typed node atomizes to a SEQUENCE, so it is handled
+			// here rather than in toAtomic, whose one-*Atomic result
+			// cannot carry it (see nodeTypedItems).
+			if items, ok := nodeTypedItems(nd); ok {
+				out = append(out, items...)
+				return out, nil
+			}
+			// A validated element whose type has no simple content at
+			// all — element-only complex content, with TypeAnno left at
+			// zero because there is no built-in primitive to atomize
+			// through (see internal/xsd/bridge.go's typeAnnoFor) — has
+			// no typed value: F&O 3.1's atomization rule raises
+			// err:FOTY0012 rather than falling back to a lenient
+			// untypedAtomic reading (fn-normalize-space-24,
+			// fn-string-length-23). Scoped to a node with at least one
+			// ELEMENT child and no non-whitespace text of its own, so a
+			// genuinely MIXED-content type (whose typed value IS the
+			// untypedAtomic string value, not an error — this engine
+			// has no separate "mixed vs element-only" bit on
+			// SchemaTypeName to tell the two apart from the annotation
+			// alone) is not misclassified merely for lacking one.
+			if isElementOnlyCandidate(nd) {
+				return out, fmt.Errorf("err:FOTY0012: element %q has element-only content and no typed value", nd.Name.Local)
+			}
+		}
+		a, err := toAtomic(it)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }
