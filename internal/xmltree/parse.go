@@ -202,7 +202,14 @@ func parseRepairing(src, baseDir string, files *fsaccess.Guard, strip StripSpace
 		added := false
 		for _, r := range bad {
 			if r >= 0x80 && IsNameChar(r) {
+				// A rune that may open a name gets a token that may; one that
+				// may only continue a name gets a token a name cannot start
+				// with, so the decoder itself refuses it where the Name
+				// production does (a combining mark opening an element name).
 				tok := fmt.Sprintf("Zq5e%XeZ", r)
+				if !IsNameStartChar(r) {
+					tok = fmt.Sprintf("-q5e%Xe-", r)
+				}
 				if _, dup := tokens[tok]; dup {
 					continue
 				}
@@ -215,7 +222,7 @@ func parseRepairing(src, baseDir string, files *fsaccess.Guard, strip StripSpace
 			}
 		}
 		if !added {
-			return doc, err
+			return doc, first
 		}
 	}
 }
@@ -225,11 +232,17 @@ func parseRepairing(src, baseDir string, files *fsaccess.Guard, strip StripSpace
 // not start a name (U+0300, a digit) was swapped for a token that may start
 // one, so its position in the name has to be checked once it is back.
 func restoredNamesValid(n *Node) bool {
-	if n.Kind == KindElement && !IsName(n.Name.Local) {
+	okPrefix := func(p string) bool { return p == "" || IsNCName(p) }
+	if n.Kind == KindElement && !(IsName(n.Name.Local) && okPrefix(n.Name.Prefix)) {
 		return false
 	}
 	for _, a := range n.Attrs {
-		if !IsName(a.Name.Local) {
+		if !IsName(a.Name.Local) || !okPrefix(a.Name.Prefix) {
+			return false
+		}
+	}
+	for _, ns := range n.NSDecls() {
+		if !okPrefix(ns.Name.Local) {
 			return false
 		}
 	}
@@ -324,19 +337,25 @@ func restoreSentinels(n *Node, runes map[rune]rune, tokens map[string]rune) {
 		}
 		return s
 	}
+	fixName := func(nm *Name) {
+		nm.Local = fix(nm.Local)
+		// A namespace URI is an attribute value too (xml-version-012 binds a
+		// prefix to a URI ending in a U+0346 combining mark). The prefix is a
+		// name, and so is the Space of a name whose prefix was never bound.
+		nm.Space = fix(nm.Space)
+		nm.Prefix = fix(nm.Prefix)
+	}
 	var walk func(*Node)
 	walk = func(nd *Node) {
-		nd.Name.Local = fix(nd.Name.Local)
-		// A namespace URI is an attribute value too (xml-version-012 binds a
-		// prefix to a URI ending in a U+0346 combining mark).
-		nd.Name.Space = fix(nd.Name.Space)
+		fixName(&nd.Name)
 		nd.Value = fix(nd.Value)
 		for i := range nd.Attrs {
-			nd.Attrs[i].Name.Local = fix(nd.Attrs[i].Name.Local)
-			nd.Attrs[i].Name.Space = fix(nd.Attrs[i].Name.Space)
+			fixName(&nd.Attrs[i].Name)
 			nd.Attrs[i].Value = fix(nd.Attrs[i].Value)
 		}
+		// A namespace node's Local is the declared prefix.
 		for _, ns := range nd.NSDecls() {
+			fixName(&ns.Name)
 			ns.Value = fix(ns.Value)
 		}
 		for _, ch := range nd.Children {
@@ -344,6 +363,14 @@ func restoreSentinels(n *Node, runes map[rune]rune, tokens map[string]rune) {
 		}
 	}
 	walk(n)
+	// Unparsed entities are keyed by name and carry URIs.
+	if u := n.Unparsed(); len(u) > 0 {
+		fixed := make(map[string]UnparsedEntity, len(u))
+		for k, e := range u {
+			fixed[fix(k)] = UnparsedEntity{SystemID: fix(e.SystemID), PublicID: fix(e.PublicID)}
+		}
+		n.SetUnparsed(fixed)
+	}
 }
 
 func parseRaw(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHook) (*Node, error) {

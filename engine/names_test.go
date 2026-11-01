@@ -64,7 +64,7 @@ func runNames(t *testing.T, names ...string) []string {
 }
 
 func TestNameRulesAgreeOnFifthEditionNames(t *testing.T) {
-	names := []string{"\U0001F600", "৪", "a\U0001F600", "\U00010000x", "ĳ", "à", "x·"}
+	names := []string{"\U0001F600", "\u09EA", "a\U0001F600", "\U00010000x", "\u0133", "a\u0300", "x\u00B7"}
 	for i, line := range runNames(t, names...) {
 		want := "castable=true element=ok attribute=ok pi=ok namespace=ok"
 		if !strings.HasSuffix(line, want) {
@@ -74,7 +74,7 @@ func TestNameRulesAgreeOnFifthEditionNames(t *testing.T) {
 }
 
 func TestNameRulesAgreeOnIllegalNames(t *testing.T) {
-	names := []string{"1a", "a￾", "̀a", "-a", "a b", "×", "µ", "a:b:c", ""}
+	names := []string{"1a", "a\uFFFE", "\u0300a", "-a", "a b", "\u00D7", "\u00B5", "a:b:c", ""}
 	lines := runNames(t, names...)
 	if len(lines) != len(names) {
 		t.Fatalf("got %d lines: %q", len(lines), lines)
@@ -98,8 +98,8 @@ func TestParserAcceptsFifthEditionNames(t *testing.T) {
 </xsl:stylesheet>`
 	for _, c := range []struct{ src, want string }{
 		{"<\U0001F600/>", "<out>\U0001F600|0|<\U0001F600/></out>"},
-		{"<a><৪/></a>", "<out>a|1|<a><৪/></a></out>"},
-		{"<?xml version=\"1.0\"?><a \U0001F600x=\"1\"><ĳ/></a>", "<out>a|1|<a \U0001F600x=\"1\"><ĳ/></a></out>"},
+		{"<a><\u09EA/></a>", "<out>a|1|<a><\u09EA/></a></out>"},
+		{"<?xml version=\"1.0\"?><a \U0001F600x=\"1\"><\u0133/></a>", "<out>a|1|<a \U0001F600x=\"1\"><\u0133/></a></out>"},
 	} {
 		res := engine.Transform(engine.Request{Stylesheet: xsl, Source: c.src})
 		if res.HasErrors() {
@@ -110,7 +110,7 @@ func TestParserAcceptsFifthEditionNames(t *testing.T) {
 			t.Errorf("%q: got %q, want %q", c.src, res.Output, c.want)
 		}
 	}
-	for _, src := range []string{"<a￾/>", "<1a/>", "<a><̀b/></a>"} {
+	for _, src := range []string{"<a\uFFFE/>", "<1a/>", "<a><\u0300b/></a>"} {
 		if res := engine.Transform(engine.Request{Stylesheet: xsl, Source: src}); !res.HasErrors() {
 			t.Errorf("%q was accepted: %q", src, res.Output)
 		}
@@ -123,15 +123,39 @@ func TestFifthEditionNamesInStylesheetAndParseXML(t *testing.T) {
 	xsl := `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
   <xsl:output method="xml" omit-xml-declaration="yes"/>
   <xsl:template match="/">
-    <\U0001F600 ৪="v"><xsl:value-of select="count(parse-xml('&lt;r>&lt;\U0001F600/>&lt;\U0001F600/>&lt;/r>')/r/\U0001F600)"/><xsl:value-of select="count(/r/৪)"/></\U0001F600>
+    <\U0001F600 \u09EA="v"><xsl:value-of select="count(parse-xml('&lt;r>&lt;\U0001F600/>&lt;\U0001F600/>&lt;/r>')/r/\U0001F600)"/><xsl:value-of select="count(/r/\u09EA)"/></\U0001F600>
   </xsl:template>
 </xsl:stylesheet>`
-	xsl = strings.NewReplacer(`\U0001F600`, "\U0001F600", `৪`, "৪").Replace(xsl)
-	res := engine.Transform(engine.Request{Stylesheet: xsl, Source: "<r><৪/></r>"})
+	xsl = strings.NewReplacer(`\U0001F600`, "\U0001F600", `\u09EA`, "\u09EA").Replace(xsl)
+	res := engine.Transform(engine.Request{Stylesheet: xsl, Source: "<r><\u09EA/></r>"})
 	if res.HasErrors() {
 		t.Fatalf("%+v", res.Diagnostics)
 	}
-	if want := "<\U0001F600 ৪=\"v\">21</\U0001F600>"; strings.TrimSpace(res.Output) != want {
+	if want := "<\U0001F600 \u09EA=\"v\">21</\U0001F600>"; strings.TrimSpace(res.Output) != want {
 		t.Errorf("got %q, want %q", res.Output, want)
+	}
+}
+
+// The prefix and the namespace declaration of a 5th-edition name come through
+// the engine unchanged: name(), namespace-uri(), the namespace axis and a
+// deep copy.
+func TestFifthEditionPrefixThroughEngine(t *testing.T) {
+	xsl := `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output method="xml" omit-xml-declaration="yes"/>
+  <xsl:template match="/">
+    <xsl:copy-of select="."/>|<xsl:value-of select="name(/*), namespace-uri(/*), prefix-from-QName(node-name(/*)), /*/namespace::*[not(name()='xml')]/name()" separator=" "/>
+  </xsl:template>
+</xsl:stylesheet>`
+	src := "<\U0001F600:a xmlns:\U0001F600=\"u\"><!-- c \U0001F600 --><?p \U0001F600?><\u09EA b\U0001F600=\"1\"/></\U0001F600:a>"
+	res := engine.Transform(engine.Request{Stylesheet: xsl, Source: src})
+	if res.HasErrors() {
+		t.Fatalf("%+v", res.Diagnostics)
+	}
+	want := src + "|\U0001F600:a u \U0001F600 \U0001F600"
+	if got := strings.TrimSpace(res.Output); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	if strings.Contains(res.Output, "Zq5e") {
+		t.Errorf("a repair token leaked: %q", res.Output)
 	}
 }

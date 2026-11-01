@@ -41,8 +41,8 @@ func TestNameClassesMatchXMLTreePredicates(t *testing.T) {
 
 func TestNCNameCastMatchesPredicate(t *testing.T) {
 	for _, s := range []string{
-		"\U0001F600", "৪", "a\U0001F600", "\U00010000x", "a", "1a", "a￾",
-		"̀a", "à", "a:b", "", "-a", "a-", "×", "x·",
+		"\U0001F600", "\u09EA", "a\U0001F600", "\U00010000x", "a", "1a", "a\uFFFE",
+		"\u0300a", "a\u0300", "a:b", "", "-a", "a-", "\u00D7", "x\u00B7",
 	} {
 		_, err := CastTo(NewString(s), XSncname)
 		if got, want := err == nil, xmltree.IsNCName(s); got != want {

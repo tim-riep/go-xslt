@@ -2,7 +2,7 @@ package xmltree
 
 import "testing"
 
-// The XML 1.0 (5th edition) §2.3 productions, transcribed from the
+// The XML 1.0 (5th edition) \u00A72.3 productions, transcribed from the
 // specification independently of the tables in names.go.
 func specNameStart(r rune) bool {
 	switch {
@@ -62,15 +62,15 @@ func TestNameStrings(t *testing.T) {
 		{"a", true, true}, {"_x.y-z", true, true}, {"a:b", false, true},
 		{":a", false, true}, {"", false, false}, {"1a", false, false},
 		{"-a", false, false}, {".a", false, false}, {"a b", false, false},
-		{"\U0001F600", true, true}, {"৪", true, true},
+		{"\U0001F600", true, true}, {"\u09EA", true, true},
 		{"a\U0001F600", true, true}, {"\U00010000x", true, true},
-		{"x৪", true, true}, {"̀a", false, false}, {"à", true, true},
-		{"a￾", false, false}, {"a￿", false, false},
-		{"\U000F0000", false, false}, {"×", false, false},
-		{"µ", true, true}, // U+00B5 MICRO SIGN lies in [#xF8-#x2FF]? no: in [#xD8-#xF6]'s gap
+		{"x\u09EA", true, true}, {"\u0300a", false, false}, {"a\u0300", true, true},
+		{"a\uFFFE", false, false}, {"a\uFFFF", false, false},
+		{"\U000F0000", false, false}, {"\u00D7", false, false},
+		{"\u00B5", true, true}, // U+00B5 MICRO SIGN lies in [#xF8-#x2FF]? no: in [#xD8-#xF6]'s gap
 		{"a\xff", false, false},
 	} {
-		if c.s == "µ" {
+		if c.s == "\u00B5" {
 			// 0xB5 is below 0xC0: not a NameStartChar.
 			c.ncn, c.nam = false, false
 		}
