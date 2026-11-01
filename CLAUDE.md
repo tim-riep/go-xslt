@@ -50,7 +50,20 @@ dragging in the GUI's Wails/CGo dependencies:
   `TestXMLConf` records the W3C XML suite's verdicts) that hands out
   substrings of the source instead of copies. Change it only together with
   those gates; where encoding/xml is laxer than XML 1.0, it stays as lax.
-  Also a serializer for xml/html/text (`serialize.go`, plus an
+  The tokenizer's name tables (`namechars.go`) are encoding/xml's, XML 1.0
+  2nd/4th edition, BMP only. `names.go` is the engine's ONE definition of an
+  XML name — the XML 1.0 5th edition NameStartChar/NameChar
+  (`IsNameStartChar`/`IsNameChar`/`IsNCName`/`IsName`, table accessors for
+  the regex builders): the XPath lexer, `xs:NCName`/`xs:Name` casts, XSD's
+  `\i \c`, and the XSLT name checks (`isNCName`, `isLexicalQName`) all use
+  it, so never write another letter test for a name (`unicode.IsLetter`
+  admits U+00B5 and rejects emoji). `parseRepairing` bridges the two tables
+  for EVERY document, 1.0 or 1.1, after an "invalid XML name" error
+  (5th-edition-only name characters become ASCII tokens, are parsed, then
+  restored; a bad position, e.g. U+0300 first, keeps the error); only the
+  C0 character references are 1.1-and-`ParseLenient11`-only. The streaming
+  reader has no such repair: a streamed source naming such a character fails
+  with FODC0002 where the buffered path succeeds. Also a serializer for xml/html/text (`serialize.go`, plus an
   `io.Writer`-based `WriteTo`/`ChunkWriter` for bounded-memory output);
   `stream.go` is the incremental pull-reader behind XSLT streaming (pull-style
   over `xml.Decoder.RawToken()`, builds ordinary `*Node`s one record at a
