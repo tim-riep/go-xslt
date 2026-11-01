@@ -232,6 +232,11 @@ type nodeExt struct {
 	// QT3 conformance harness's) has no reason to know about this field, so
 	// document nodes it hands back must still read as retrieved by default.
 	Ephemeral bool
+	// NoDocURI marks a Document node whose Base is only the directory its
+	// relative references resolve against, not the place it was retrieved
+	// from: fn:base-uri keeps that Base, fn:document-uri is the empty
+	// sequence (F&O 3.1 §2.6, the URI the document was retrieved from).
+	NoDocURI bool
 }
 
 // ext lazily allocates n's nodeExt on first write. Every setter below goes
@@ -411,6 +416,14 @@ func (n *Node) Ephemeral() bool {
 	return n.extPtr.Ephemeral
 }
 func (n *Node) SetEphemeral(v bool) { n.ext().Ephemeral = v }
+
+func (n *Node) NoDocURI() bool {
+	if n.extPtr == nil {
+		return false
+	}
+	return n.extPtr.NoDocURI
+}
+func (n *Node) SetNoDocURI(v bool) { n.ext().NoDocURI = v }
 
 // NSDecls returns the namespace nodes declared on this element (nil for the
 // overwhelmingly common element that declares none). The returned slice is the

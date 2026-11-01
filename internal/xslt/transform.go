@@ -805,6 +805,10 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 		}
 		if e.SourceURI != "" {
 			d.SetBase(e.SourceURI)
+		} else {
+			// No location was given: the base is BaseDir, but the source was
+			// not retrieved from a directory (fn:document-uri is empty).
+			d.SetNoDocURI(true)
 		}
 		// Validation FIRST, whitespace stripping second. XSLT 3.0 §4.4's
 		// stripping rules are written against the tree the processor is

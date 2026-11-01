@@ -114,19 +114,19 @@ func TestCLISourceURI(t *testing.T) {
 		t.Errorf("got %q, want document-uri and base-uri %q", got, want)
 	}
 
-	// stdin has no location: the source is parsed against the stylesheet's
-	// directory, as before.
+	// stdin has no location: no document URI, and the base URI is the
+	// stylesheet's directory, as before.
 	so.Reset()
 	se.Reset()
 	plain := filepath.Join(styleDir, "p.xsl")
 	write(plain, `<xsl:stylesheet version="3.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
   <xsl:output method="text"/>
-  <xsl:template match="/">du=<xsl:value-of select="document-uri(/)"/></xsl:template>
+  <xsl:template match="/">du=<xsl:value-of select="document-uri(/)"/>|bu=<xsl:value-of select="base-uri(/)"/></xsl:template>
 </xsl:stylesheet>`)
 	if code := run([]string{"transform", "-s", plain, "-"}, strings.NewReader(`<r/>`), &so, &se); code != 0 {
 		t.Fatalf("stdin exit %d: %s", code, se.String())
 	}
-	if got := so.String(); !strings.HasPrefix(got, "du="+fileuri.FromPath(styleDir)) {
-		t.Errorf("stdin: got %q, want the stylesheet directory", got)
+	if got := so.String(); !strings.HasPrefix(got, "du=|bu="+fileuri.FromPath(styleDir)) {
+		t.Errorf("stdin: got %q, want no document-uri and the stylesheet directory as base-uri", got)
 	}
 }

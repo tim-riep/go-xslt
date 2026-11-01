@@ -77,7 +77,8 @@ func TestSourceURIIsTheSourceDocumentURI(t *testing.T) {
 }
 
 // Without a SourceURI the source is parsed against BaseDir, as before: its
-// base URI is the stylesheet's directory and relative doc() resolves there.
+// base URI is the stylesheet's directory and relative references resolve
+// there; it has no document URI.
 func TestWithoutSourceURIBaseDirStillRules(t *testing.T) {
 	styleDir, srcDir := sourceLayout(t)
 	if err := os.WriteFile(filepath.Join(styleDir, "other.xml"), []byte(`<o>other</o>`), 0o600); err != nil {
@@ -86,6 +87,9 @@ func TestWithoutSourceURIBaseDirStillRules(t *testing.T) {
 	res := engine.Transform(engine.Request{Stylesheet: sourceURIXSL, Source: `<s/>`, BaseDir: styleDir})
 	out := res.Output
 	dirURI := fileuri.FromPath(styleDir)
+	if !strings.HasPrefix(out, "du=|") {
+		t.Errorf("got %q, want an empty document-uri (a directory is not where the source was retrieved from)", out)
+	}
 	if !strings.Contains(out, "|bu="+dirURI) || !strings.HasSuffix(out, "|doc=true") {
 		t.Errorf("got %q (%+v), want base-uri under %q and doc=true", out, res.Diagnostics, dirURI)
 	}
