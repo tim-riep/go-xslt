@@ -25,6 +25,7 @@ go-xslt transform input.xml               # the source names its own stylesheet
 
 | Option | |
 |---|---|
+| `input.xml` | The source, always the last argument. It is the source document's URI: `document-uri(/)` and `base-uri(/)` are this file, whichever directory the stylesheet is in. From stdin (`-`) the source has no document URI. |
 | `-s`, `--stylesheet file` | The stylesheet. Without it, the source must embed one (`<?xml-stylesheet href="#id"?>`). |
 | `-o`, `--output file` | Write the result to a file instead of stdout. |
 | `-p`, `--param name=value` | A stylesheet parameter (repeatable), as a string. |

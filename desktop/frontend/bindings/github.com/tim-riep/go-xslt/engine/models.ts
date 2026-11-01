@@ -5,22 +5,45 @@
 // @ts-ignore: Unused imports
 import * as engine$0 from "../internal/engine/models.js";
 
+/**
+ * Diagnostic is an error or warning, with its W3C error code and, where
+ * known, the line and column it refers to.
+ */
 export type Diagnostic = engine$0.Diagnostic;
 
+/**
+ * Request is one transformation: the stylesheet, the source document,
+ * parameters, the initial template/mode, and the security, limit and
+ * feature settings.
+ */
 export type Request = engine$0.Request;
 
+/**
+ * Result is the outcome of a transformation: the principal output, the
+ * documents written by xsl:result-document, messages and Diagnostics.
+ */
 export type Result = engine$0.Result;
 
 /**
- * XSD schema-validation API.
+ * ValidateRequest is one schema validation: the instance document, the
+ * schemas, the XSD version and the security settings.
  */
 export type ValidateRequest = engine$0.ValidateRequest;
 
+/**
+ * ValidateResult says whether the instance is valid and lists every
+ * error found, in document order.
+ */
 export type ValidateResult = engine$0.ValidateResult;
 
 /**
- * Standalone XPath 3.1 evaluation API.
+ * XPathRequest is one standalone XPath 3.1 evaluation: the expression,
+ * an optional context document, namespace and variable bindings.
  */
 export type XPathRequest = engine$0.XPathRequest;
 
+/**
+ * XPathResult is the value of an XPath evaluation, as a string and as
+ * a list of items.
+ */
 export type XPathResult = engine$0.XPathResult;

@@ -186,6 +186,12 @@ func fnDocumentURI(c *Context, a []Object) (Object, error) {
 	if n.Ephemeral() {
 		return Sequence{}, nil
 	}
+	// A document parsed from text the host gave no location for has only the
+	// directory it is resolved against, which is not where it was retrieved
+	// from.
+	if n.NoDocURI() {
+		return Sequence{}, nil
+	}
 	// Prefer the node's own recorded retrieval location (set by the engine's
 	// resolver — internal/xslt's fileResolver, or a stylesheet module's own
 	// file) when known; otherwise fall back to the calling expression's

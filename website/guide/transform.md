@@ -23,6 +23,7 @@ res := engine.Transform(engine.Request{
 | `ParamExprs` | Values for global `xsl:param`s as XPath expressions, so they can be typed: `"5"`, `"xs:date('2026-01-31')"`, `"map{'a': 1}"`, `"parse-xml('<x/>')"`. Evaluated without a context item; an expression that does not evaluate is reported as an error. A name here wins over `Params`. |
 | `InitialTemplate` | The name of a template to start with, instead of applying templates to the source document. |
 | `BaseDir` | The directory against which relative URIs are resolved: `xsl:import`, `xsl:include`, `document()`, `fn:doc`, `fn:unparsed-text`, collections and `xsl:result-document`. Empty means no file is read. |
+| `SourceURI` | The file path or URI `Source` was read from. It becomes the document URI and base URI of the source document (`fn:document-uri`, `fn:base-uri`, and what relative references taken from it, such as `document(@href)`, resolve against). `BaseDir` stays the base of the stylesheet. Empty means the source is parsed against `BaseDir` and has no document URI. |
 | `Security` | Which files and network resources the run may read. See [Security](/guide/security). |
 | `Features` | Optional XSLT 3.0 features: schema awareness, XSLT 1.0 compatibility, strict streaming. See [Features](/reference/engine#features). |
 | `Limits` | How many instructions the run may execute and how deeply it may nest. See [Resource limits](/guide/security#resource-limits). |

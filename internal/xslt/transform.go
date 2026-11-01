@@ -805,6 +805,10 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 		}
 		if e.SourceURI != "" {
 			d.SetBase(e.SourceURI)
+		} else {
+			// No location was given: the base is BaseDir, but the source was
+			// not retrieved from a directory (fn:document-uri is empty).
+			d.SetNoDocURI(true)
 		}
 		// Validation FIRST, whitespace stripping second. XSLT 3.0 §4.4's
 		// stripping rules are written against the tree the processor is
@@ -854,7 +858,7 @@ func (ss *Stylesheet) transformEntryInto(srcXML string, e Entry, baseDir string,
 		// is recorded only for the consequence §10.3.6 states unconditionally.
 		eng.hostStreamedDocs = map[*xmltree.Node]bool{doc: true}
 	}
-	if doc != nil && e.SourceURI != "" {
+	if doc != nil && e.SourceURI != "" && !netfetch.IsNetworkURI(e.SourceURI) {
 		// Seed the resolver's doc cache under the SAME resolved path the
 		// primary source's base-uri already carries (set above where doc was
 		// parsed), so fn:doc(fn:document-uri(.)) returns this identical node

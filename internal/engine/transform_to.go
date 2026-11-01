@@ -63,7 +63,7 @@ func runTo(ctx context.Context, w io.Writer, req Request) Result {
 		return Result{Diagnostics: []Diagnostic{diagFromErr(err, "compile")}}
 	}
 
-	entry := xslt.Entry{Template: req.InitialTemplate, Params: req.Params, ParamSelects: req.ParamExprs, Fetcher: req.Security.fetcher(), Files: files, Limits: req.Limits.internal(), Context: ctx}
+	entry := xslt.Entry{SourceURI: sourceURIOf(req.SourceURI), Template: req.InitialTemplate, Params: req.Params, ParamSelects: req.ParamExprs, Fetcher: req.Security.fetcher(), Files: files, Limits: req.Limits.internal(), Context: ctx}
 	lw := &limitWriter{w: w, max: math.MaxInt64}
 	if req.Limits.MaxOutputBytes > 0 {
 		lw.max = req.Limits.MaxOutputBytes

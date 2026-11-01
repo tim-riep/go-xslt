@@ -54,6 +54,8 @@ export function TransformRunView({ tab, run }: { tab: RunTab; run: SavedRun }) {
       runTransform({
         stylesheet: stylesheetBuf.text,
         source: sourceBuf.text,
+        // The project-relative path; the Go side resolves it to the file.
+        sourceURI: sourcePath,
         params,
         initialTemplate: run.initialTemplate ?? "",
         baseDir: tab.projectId,
@@ -67,7 +69,7 @@ export function TransformRunView({ tab, run }: { tab: RunTab; run: SavedRun }) {
         // The engine's defaults: 20 million instructions, nesting 10,000.
         limits: { maxSteps: 0, maxDepth: 0, maxOutputBytes: 0 },
       }),
-    [stylesheetBuf.text, sourceBuf.text, params, run.initialTemplate, tab.projectId, run.schemaAware, run.backwardsCompatible, run.strictStreaming],
+    [stylesheetBuf.text, sourceBuf.text, sourcePath, params, run.initialTemplate, tab.projectId, run.schemaAware, run.backwardsCompatible, run.strictStreaming],
   );
 
   const { run: doRun, status, result } = useRunner<TransformResult>(tab.id, tab.projectId, execute);
