@@ -30,6 +30,14 @@ func TestCLI(t *testing.T) {
   <xsl:template match="/"><xsl:value-of select="1 +"/></xsl:template>
 </xsl:stylesheet>`)
 	schema := write("s.xsd", `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="n" type="xs:int"/></xs:schema>`)
+	misplaced := write("misplaced.xsd", `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+<xs:element name="n" type="t"/>
+<xs:complexType name="t">
+  <xs:simpleContent><xs:extension base="xs:integer"/></xs:simpleContent>
+  <xs:assert test=". ge 2"/>
+</xs:complexType>
+</xs:schema>`)
+	small := write("small.xml", `<n>1</n>`)
 	good := write("good.xml", `<n>5</n>`)
 	invalid := write("invalid.xml", `<n>five</n>`)
 	hinted := write("hinted.xml", `<n xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="s.xsd">x</n>`)
@@ -58,6 +66,8 @@ func TestCLI(t *testing.T) {
 		{"valid", []string{"validate", "-x", schema, good}, 0, "valid", ""},
 		{"invalid", []string{"validate", "-x", schema, invalid}, 1, "invalid", "error"},
 		{"hints", []string{"validate", hinted}, 1, "invalid", ""},
+		{"schema error position", []string{"validate", "-xsd", "1.1", "-x", misplaced, small}, 1, "invalid", "schema line 5, column 3: xs:assert is not allowed in an xs:complexType with xs:simpleContent"},
+		{"schema error code", []string{"validate", "-xsd", "1.1", "-x", misplaced, small}, 1, "invalid", "[s4s-elt-invalid-content.1]"},
 		{"xpath", []string{"xpath", "count(//i), 'x'", src}, 0, "2\nx\n", ""},
 		{"xpath stdin", []string{"xpath", "count(//i)", "-"}, 0, "1\n", ""},
 		{"long flags", []string{"transform", "--stylesheet", style, "--param", "who=all", "--output-dir", out, src}, 0, "hello all (2)", ""},

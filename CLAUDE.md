@@ -138,6 +138,18 @@ dragging in the GUI's Wails/CGo dependencies:
   the pure-union cycle XSD 1.0 tolerates (stE110) to the members that do not
   lead back — so walks over `members`/`base`/`item` need no visited set
   (issue #12 was a stack overflow in one of them).
+  `schemavalid.go` checks every schema document against the schema for schemas
+  before anything is compiled: the attributes each element admits, its allowed
+  child set, annotation placement and (`checkContentGrammar`) the type
+  containers' child arrangement — a complexType is simpleContent XOR
+  complexContent XOR the implicit model, with nothing else beside the first
+  two (issue #22: an `xs:assert` there was accepted and never evaluated), and
+  simpleContent/complexContent hold exactly one restriction|extension. Child
+  ORDER within the implicit model is not part of it (enforced where the type
+  is built). Its errors are `*Error` with `Line`/`Col` of the offending
+  element and, for the arrangement checks, code `s4s-elt-invalid-content.1`;
+  `engine.Validate` puts the position into the message text ("schema line L,
+  column C: …"), since `Diagnostic.Line/Col` mean a place in the instance.
 - `desktop/main.go`, `desktop/xsltservice.go`, `desktop/projectservice.go` —
   Wails app + two bound services: `XsltService` (`RunTransform`/`RunValidate`/
   `RunXPath`, engine-only) and `ProjectService` (project registry/CRUD, file

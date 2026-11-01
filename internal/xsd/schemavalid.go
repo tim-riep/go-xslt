@@ -663,6 +663,87 @@ func isTopLevelParent(p *xmltree.Node) bool {
 	return false
 }
 
+// errElementContent is the code of a misplaced or repeated child element, as
+// Xerces names the schema-for-schemas content-model violation.
+const errElementContent = "s4s-elt-invalid-content.1"
+
+// checkContentGrammar enforces, for the containers of a type's content, the
+// part of the schema-for-schemas content model that the allowed-children sets
+// cannot say: how many of which children, and which ones exclude each other.
+//
+//	complexType:    annotation?, (simpleContent | complexContent |
+//	                (openContent?, (group|all|choice|sequence)?,
+//	                 (attribute|attributeGroup)*, anyAttribute?, assert*))
+//	simpleContent,
+//	complexContent: annotation?, (restriction | extension)
+//
+// The ORDER inside the third alternative is not checked here (the particle
+// before the attributes and anyAttribute last are enforced where the type is
+// built); the point is that no child is accepted and then ignored, as an
+// xs:assert or xs:openContent beside xs:simpleContent used to be. XSD 1.0 has
+// no assert/openContent; they are refused before this runs.
+func checkContentGrammar(el *xmltree.Node) error {
+	switch el.Name.Local {
+	case "complexType":
+		return checkComplexTypeContent(el)
+	case "simpleContent", "complexContent":
+		var body *xmltree.Node
+		for _, ch := range el.Children {
+			if !isXS(ch, "restriction") && !isXS(ch, "extension") {
+				continue
+			}
+			if body != nil {
+				return invalidAt(ch, errElementContent,
+					"xs:%s must contain exactly one of xs:restriction and xs:extension (a second, xs:%s, is not allowed)", el.Name.Local, ch.Name.Local)
+			}
+			body = ch
+		}
+		if body == nil {
+			return invalidAt(el, errElementContent,
+				"xs:%s must contain xs:restriction or xs:extension", el.Name.Local)
+		}
+	}
+	return nil
+}
+
+func checkComplexTypeContent(el *xmltree.Node) error {
+	var model, openContent, particle *xmltree.Node // simple/complexContent; the implicit-model parts
+	for _, ch := range el.Children {
+		if !isXSElement(ch) {
+			continue
+		}
+		switch ch.Name.Local {
+		case "simpleContent", "complexContent":
+			if model != nil {
+				return invalidAt(ch, errElementContent,
+					"xs:complexType may have only one of xs:simpleContent and xs:complexContent (a second, xs:%s, is not allowed)", ch.Name.Local)
+			}
+			model = ch
+		case "openContent":
+			if openContent != nil {
+				return invalidAt(ch, errElementContent, "xs:complexType may have at most one xs:openContent")
+			}
+			openContent = ch
+		case "group", "all", "choice", "sequence":
+			if particle != nil {
+				return invalidAt(ch, errElementContent, "xs:complexType may have at most one model group (a second, xs:%s, is not allowed)", ch.Name.Local)
+			}
+			particle = ch
+		}
+	}
+	if model == nil {
+		return nil
+	}
+	for _, ch := range el.Children {
+		if !isXSElement(ch) || ch == model || ch.Name.Local == "annotation" {
+			continue
+		}
+		return invalidAt(ch, errElementContent,
+			"xs:%s is not allowed in an xs:complexType with xs:%s (put it inside the xs:restriction or xs:extension)", ch.Name.Local, model.Name.Local)
+	}
+	return nil
+}
+
 // validateSchemaAttrs walks el and every descendant XSD element, rejecting an
 // unqualified attribute that the element's grammar does not allow, a child the
 // grammar does not allow, and the content arrangements checked by
@@ -790,6 +871,9 @@ func checkSchemaElement(el *xmltree.Node, v Version) error {
 					seenOther = true
 				}
 			}
+		}
+		if err := checkContentGrammar(el); err != nil {
+			return err
 		}
 		if err := checkOccurs(el); err != nil {
 			return err

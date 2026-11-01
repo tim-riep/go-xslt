@@ -312,58 +312,6 @@ func typeSignature(t Type) string {
 	return "?"
 }
 
-// checkComplexTypeStructure enforces the element grammar of xs:complexType: at
-// most one leading annotation, and exactly one content model (simpleContent XOR
-// complexContent XOR a shorthand model group), not several or mixed.
-func checkComplexTypeStructure(node *xmltree.Node) error {
-	var nAnnot, nSimple, nComplex, nGroup, nAttr int
-	sawContent := false
-	for _, ch := range node.Children {
-		if ch.Kind != xmltree.KindElement || ch.Name.Space != xsNS {
-			continue
-		}
-		switch ch.Name.Local {
-		case "annotation":
-			nAnnot++
-			if sawContent {
-				return invalidf("", "xs:annotation must be the first child of xs:complexType")
-			}
-		case "simpleContent":
-			nSimple++
-			sawContent = true
-		case "complexContent":
-			nComplex++
-			sawContent = true
-		case "sequence", "choice", "all", "group":
-			nGroup++
-			sawContent = true
-		case "attribute", "attributeGroup", "anyAttribute":
-			nAttr++
-			sawContent = true
-		case "element", "any":
-			return invalidf("", "particle xs:%s cannot appear directly in xs:complexType", ch.Name.Local)
-		default:
-			sawContent = true
-		}
-	}
-	if nSimple+nComplex > 0 && nAttr > 0 {
-		return invalidf("", "attributes must be inside the extension/restriction when simple/complexContent is used")
-	}
-	if nAnnot > 1 {
-		return invalidf("", "xs:complexType has more than one annotation")
-	}
-	if nSimple+nComplex > 1 {
-		return invalidf("", "xs:complexType has more than one content model")
-	}
-	if nSimple+nComplex > 0 && nGroup > 0 {
-		return invalidf("", "xs:complexType mixes simple/complexContent with a model group")
-	}
-	if nGroup > 1 {
-		return invalidf("", "xs:complexType has more than one model group")
-	}
-	return nil
-}
-
 // checkAttrGroupCycles rejects a schema whose named attribute groups reference
 // one another (or themselves) cyclically — an attributeGroup ref must resolve to
 // a group that does not, directly or transitively, reference back. XSD 1.1
@@ -469,9 +417,6 @@ func (c *compiler) checkFinalDerivation() error {
 
 // parseComplexTypeInto fills ct from an <xs:complexType> node.
 func (c *compiler) parseComplexTypeInto(ct *ComplexType, node *xmltree.Node) error {
-	if err := checkComplexTypeStructure(node); err != nil {
-		return err
-	}
 	c.allCTs = append(c.allCTs, ct) // named and anonymous alike (whole-schema checks)
 	ct.docs = c.docsOf(node)
 	ct.abstract = attrIs(node, "abstract", "true")
