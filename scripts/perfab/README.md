@@ -48,14 +48,18 @@ and compiled once).
 ## Reading the output
 
 One table row per workload: the medians of A and B, and B/A, for the wall
-time of the whole process, the peak RSS (`rusage`), the bytes allocated and
-the number of allocations during the work (from `runtime.MemStats`). The
-runs alternate A, B, B, A, A, B, … so a drift of the machine hits both alike.
+time of the whole process, its CPU time (user + system), the peak RSS
+(`rusage`), the bytes allocated and the number of allocations during the
+work (from `runtime.MemStats`). The runs alternate A, B, B, A, A, B, … so a
+drift of the machine hits both alike.
 
 The verdict is PASS only if
 
-- no workload's median wall time is above A's by more than `-tolerance`
-  (default 2 %),
+- no workload's median time is above A's by more than `-tolerance`
+  (default 2 %) — the wall time by default, the CPU time with
+  `-metric cpu`, which is the steadier of the two on a shared or virtual
+  machine (on a 4-core VM, identical builds differed by up to 9 % in wall
+  time and 2–3 % in CPU time over 5 runs),
 - no workload's peak RSS is above A's by more than `-rss-tolerance` (3 %),
 - no workload allocates more bytes than under A by more than
   `-alloc-tolerance` (3 %), and

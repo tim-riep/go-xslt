@@ -52,6 +52,7 @@ var (
 	benchOnly = flag.Bool("bench-only", false, "run only the Go benchmarks")
 	benchRe   = flag.String("bench-filter", ".", "-bench pattern for -bench")
 	records   = flag.Int("records", 200000, "records in the large generated document")
+	metric    = flag.String("metric", "wall", "the time the verdict judges: wall (whole process) or cpu (user+system time, steadier on a shared machine)")
 )
 
 type workload struct {
@@ -92,6 +93,7 @@ const docbook = "test/conformance/xslt30-test/tests/misc/docbook/docbook-xsl-1.7
 
 type sample struct {
 	wall  time.Duration // whole process
+	cpu   time.Duration // user + system time of the process
 	rss   int64         // peak resident set, bytes
 	alloc uint64        // bytes allocated by the work
 	count uint64        // allocations by the work
@@ -220,8 +222,8 @@ func compareWorkloads(root, binA, binB string) bool {
 		onlyRe = regexp.MustCompile(*only)
 	}
 	fmt.Printf("compile workload: %s\n%d runs per build, alternating; medians\n\n", compileSheet, *runs)
-	fmt.Println("| workload | A wall | B wall | B/A | A RSS | B RSS | B/A | A alloc | B alloc | B/A | A mallocs | B mallocs | B/A |")
-	fmt.Println("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+	fmt.Println("| workload | A wall | B wall | B/A | A cpu | B cpu | B/A | A RSS | B RSS | B/A | A alloc | B alloc | B/A | A mallocs | B mallocs | B/A |")
+	fmt.Println("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 	var offenders []string
 	for _, w := range workloads {
 		if onlyRe != nil && !onlyRe.MatchString(w.name) {
@@ -267,13 +269,18 @@ func compareWorkloads(root, binA, binB string) bool {
 		}
 		ma, mb := median(sa), median(sb)
 		wr := ratio(float64(mb.wall), float64(ma.wall))
+		pr := ratio(float64(mb.cpu), float64(ma.cpu))
 		rr := ratio(float64(mb.rss), float64(ma.rss))
 		ar := ratio(float64(mb.alloc), float64(ma.alloc))
 		cr := ratio(float64(mb.count), float64(ma.count))
-		fmt.Printf("| %s | %s | %s | %.3f | %d MB | %d MB | %.3f | %d MB | %d MB | %.3f | %s | %s | %.3f |\n",
-			w.name, ms(ma.wall), ms(mb.wall), wr, ma.rss>>20, mb.rss>>20, rr, ma.alloc>>20, mb.alloc>>20, ar, thousands(ma.count), thousands(mb.count), cr)
-		if wr > 1+*tol {
-			offenders = append(offenders, fmt.Sprintf("%s: wall %.3f (%s -> %s)", w.name, wr, ms(ma.wall), ms(mb.wall)))
+		fmt.Printf("| %s | %s | %s | %.3f | %s | %s | %.3f | %d MB | %d MB | %.3f | %d MB | %d MB | %.3f | %s | %s | %.3f |\n",
+			w.name, ms(ma.wall), ms(mb.wall), wr, ms(ma.cpu), ms(mb.cpu), pr, ma.rss>>20, mb.rss>>20, rr, ma.alloc>>20, mb.alloc>>20, ar, thousands(ma.count), thousands(mb.count), cr)
+		tr, ta, tb, tn := wr, ma.wall, mb.wall, "wall"
+		if *metric == "cpu" {
+			tr, ta, tb, tn = pr, ma.cpu, mb.cpu, "cpu"
+		}
+		if tr > 1+*tol {
+			offenders = append(offenders, fmt.Sprintf("%s: %s %.3f (%s -> %s)", w.name, tn, tr, ms(ta), ms(tb)))
 		}
 		if rr > 1+*rssTol {
 			offenders = append(offenders, fmt.Sprintf("%s: peak RSS %.3f (%d MB -> %d MB)", w.name, rr, ma.rss>>20, mb.rss>>20))
@@ -290,7 +297,7 @@ func compareWorkloads(root, binA, binB string) bool {
 		}
 		return false
 	}
-	fmt.Printf("verdict: PASS (no workload slower than A by more than %.0f%%, no peak RSS or allocation above A by more than %.0f%%/%.0f%%, all outputs identical)\n", *tol*100, *rssTol*100, *allocTol*100)
+	fmt.Printf("verdict: PASS (no workload's %s time above A by more than %.0f%%, no peak RSS or allocation above A by more than %.0f%%/%.0f%%, all outputs identical)\n", *metric, *tol*100, *rssTol*100, *allocTol*100)
 	return true
 }
 
@@ -314,6 +321,7 @@ func run(bin string, args []string) (sample, error) {
 		return sample{}, fmt.Errorf("%s: unreadable measurement %q: %v", bin, stdout.String(), err)
 	}
 	s := sample{wall: wall, alloc: m.Alloc, count: m.Count}
+	s.cpu = cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()
 	if ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
 		s.rss = int64(ru.Maxrss) * 1024 // kilobytes on Linux
 	}
@@ -325,17 +333,19 @@ func run(bin string, args []string) (sample, error) {
 func median(s []sample) sample {
 	n := len(s)
 	walls := make([]time.Duration, n)
+	cpus := make([]time.Duration, n)
 	rss := make([]int64, n)
 	alloc := make([]uint64, n)
 	count := make([]uint64, n)
 	for i, x := range s {
-		walls[i], rss[i], alloc[i], count[i] = x.wall, x.rss, x.alloc, x.count
+		walls[i], cpus[i], rss[i], alloc[i], count[i] = x.wall, x.cpu, x.rss, x.alloc, x.count
 	}
 	sort.Slice(walls, func(i, j int) bool { return walls[i] < walls[j] })
+	sort.Slice(cpus, func(i, j int) bool { return cpus[i] < cpus[j] })
 	sort.Slice(rss, func(i, j int) bool { return rss[i] < rss[j] })
 	sort.Slice(alloc, func(i, j int) bool { return alloc[i] < alloc[j] })
 	sort.Slice(count, func(i, j int) bool { return count[i] < count[j] })
-	return sample{walls[n/2], rss[n/2], alloc[n/2], count[n/2]}
+	return sample{walls[n/2], cpus[n/2], rss[n/2], alloc[n/2], count[n/2]}
 }
 
 func ratio(b, a float64) float64 {
