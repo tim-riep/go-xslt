@@ -471,13 +471,13 @@ var coreFuncs = func() map[string]coreFunc {
 			if err != nil {
 				return nil, err
 			}
-			re, err := compileRegex(ToString(a[1]), flags)
+			re, matchesEmpty, err := compileRegexEmpty(ToString(a[1]), flags)
 			if err != nil {
 				return nil, err
 			}
 			// A pattern that can match a zero-length string is an error for
 			// fn:tokenize (fn-tokenize-1/36/37/38 — '.?', '^'/'$'/'^[\s]*$' m).
-			if re.MatchString("") {
+			if matchesEmpty {
 				return nil, fmt.Errorf("err:FORX0003: the pattern matches a zero-length string")
 			}
 			return stringsToSeq(re.Split(input, -1)), nil
@@ -1349,13 +1349,13 @@ func fnReplace(c *Context, a []Object) (Object, error) {
 		}
 		return strings.ReplaceAll(in, pat, replStr), nil
 	}
-	re, err := compileRegex(ToString(arg(a, 1)), flags)
+	re, matchesEmpty, err := compileRegexEmpty(ToString(arg(a, 1)), flags)
 	if err != nil {
 		return nil, err
 	}
 	// A pattern that matches a zero-length string is FORX0003 for fn:replace,
 	// exactly as for fn:tokenize (fn-replace-6 '.*?', cbcl-fn-replace-002 '').
-	if re.MatchString("") {
+	if matchesEmpty {
 		return nil, fmt.Errorf("err:FORX0003: the pattern matches a zero-length string")
 	}
 	repl := xpathReplToGo(replStr, re.NumSubexp())
@@ -1560,10 +1560,34 @@ func checkRegexBraces(p string) error {
 // (multiline), x (whitespace-insensitive), q (literal). strictBraces applies
 // checkRegexBraces.
 func compileRegexOpts(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) (Regex, error) {
+	r := compileRegexCached(pattern, flags, strictBraces, allowBackref, grammar)
+	return r.re, r.err
+}
+
+// compileRegexEmpty is compileRegex also reporting whether the pattern
+// matches a zero-length string (FORX0003 for fn:tokenize, fn:replace and
+// fn:analyze-string), which is decided once per cached pattern rather than
+// by a match per call.
+func compileRegexEmpty(pattern, flags string) (Regex, bool, error) {
+	r := compileRegexCached(pattern, flags, true, true, GrammarXPath)
+	if r.err != nil {
+		return nil, false, r.err
+	}
+	e := r.empty.Load()
+	if e == 0 {
+		e = 1
+		if r.re.MatchString("") {
+			e = 2
+		}
+		r.empty.Store(e)
+	}
+	return r.re, e == 2, nil
+}
+
+func compileRegexCached(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) regexResult {
 	k := regexKey{pattern, flags, strictBraces, allowBackref, grammar}
 	if v, ok := regexCache.Load(k); ok {
-		r := v.(regexResult)
-		return r.re, r.err
+		return v.(regexResult)
 	}
 	re, err := compileRegexUncached(pattern, flags, strictBraces, allowBackref, grammar)
 	if regexCacheSize.Add(1) > regexCacheMax {
@@ -1572,8 +1596,9 @@ func compileRegexOpts(pattern, flags string, strictBraces, allowBackref bool, gr
 		regexCache.Clear()
 		regexCacheSize.Store(1)
 	}
-	regexCache.Store(k, regexResult{re, err})
-	return re, err
+	r := regexResult{re: re, err: err, empty: new(atomic.Int32)}
+	regexCache.Store(k, r)
+	return r
 }
 
 // regexCache keeps compiled regular expressions, so fn:matches and friends
@@ -1598,6 +1623,9 @@ type regexKey struct {
 type regexResult struct {
 	re  Regex
 	err error
+	// empty records, once asked, whether re matches a zero-length string:
+	// 0 not yet known, 1 no, 2 yes (see compileRegexEmpty).
+	empty *atomic.Int32
 }
 
 func compileRegexUncached(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) (Regex, error) {
