@@ -503,6 +503,14 @@ func MatchesSeqTypeCtx(st *SeqType, o Object, ctx *Context) bool {
 }
 
 func matchesSeqType(st *SeqType, o Object, ctx *Context) bool {
+	switch o.(type) {
+	case nil, Sequence, NodeSet:
+	default:
+		// One item, held directly: every occurrence indicator admits it,
+		// and boxing it into a one-item slice was an allocation per typed
+		// binding of a single value.
+		return !st.Empty && matchesItemType(st.Item, o, ctx)
+	}
 	items := Items(o)
 	if st.Empty {
 		return len(items) == 0
