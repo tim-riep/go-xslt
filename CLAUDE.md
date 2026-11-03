@@ -180,14 +180,31 @@ dragging in the GUI's Wails/CGo dependencies:
   `prefs.ts` to `data-theme` on <html>; `tokens.css` has a light palette under
   `:root[data-theme="light"]`, so colors belong in tokens, never literal —
   and the update-check switch, and the language (`go-xslt.language` =
-  system|en|de|fr|it). UI text lives in `frontend/src/i18n/messages/<area>.ts`
-  (settings, shell, runs, views, actions), declared with `defineMessages`:
-  English is the reference and tsc fails when de/fr/it lack a key or have an
-  extra one. Components use `useT(messages)`, non-React code
-  `translate(messages, key, params)`; placeholders are `{name}`, one key per
-  whole sentence. A new visible string goes into a messages file in all four
-  languages, never as a literal. Engine diagnostics stay English; Validate
-  passes the language on for `msg:message`. The build's version comes from
+  system|en|de|fr|it|id|cs|da|es|hu|nl|nb|pl|pt|ro|fi|sv|vi|tr|el|ru|uk|he|
+  ar|hi|ja|zh-Hans|zh-Hant|ko — 28 languages, `LANGUAGES` in `i18n/index.ts`
+  is the list and the settings dialog's order; "system" maps the OS's BCP 47
+  tag by `languageForTag` in `prefs.ts`: exact code, then zh-TW/HK/MO and
+  zh-Hant* → zh-Hant, other zh* → zh-Hans, no/nn → nb, then the base
+  language, else en). `prefs.ts` sets `lang` and `dir` on <html> (`rtl` for
+  ar and he; `editor.css` keeps CodeMirror, the XPath field and the output
+  LTR), and the layout CSS uses logical properties (`padding-inline-start`,
+  `border-inline-end`, `inset-inline-end`, `text-align: start`) with the
+  carets mirrored under `[dir="rtl"]`. UI text: English is the reference,
+  in `frontend/src/i18n/messages/<area>.ts` (settings, shell, runs, views,
+  actions), each `defineMessages("<area>", {…})`, which also defines the
+  area's keys; every other language is ONE file `i18n/locales/<code>.ts`
+  exporting a `Locale` (one catalog per area, typed from the English ones,
+  so tsc fails on a missing or an extra key). Only the language in effect
+  is in memory: `i18n/index.ts` has a loader map of dynamic imports (Vite
+  emits one chunk per language); `prefs.ts` awaits the chunk before the
+  first render (`languageReady`, in `main.tsx`) and before switching
+  (`setLanguageSetting` returns that promise), then `activateLocale`.
+  Components use `useT(messages)`, non-React code
+  `translate(messages, key, params)` — both read the active locale with
+  English as fallback; placeholders are `{name}`, one key per whole
+  sentence. A new visible string goes into the English messages file AND
+  every locale file, never as a literal. Engine diagnostics stay English;
+  Validate passes the language on for `msg:message`. The build's version comes from
   `desktop/version.go` (`appVersion`, "dev" by default), set by the gitignored
   `version_stamp.go` the Makefile writes before every build (`stamp-version`).
   A transform run's optional-feature switches are saved in the run
