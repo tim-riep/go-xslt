@@ -681,6 +681,11 @@ func matchesItemType(it ItemType, item Item, ctx *Context) bool {
 		if it.Wild || it.ArrayItem == nil {
 			return true
 		}
+		if mt := it.ArrayItem; !mt.Empty && mt.Occur == 0 && mt.Item.Kind == itAtomic && mt.Item.SchemaType == nil && !mt.Item.BareAtom {
+			// One built-in atomic item per member, a test that reads no
+			// context: what the loop below would decide, remembered.
+			return a.membersAreAtomic(mt.Item.Atom, ctx)
+		}
 		for _, mem := range a.Members() {
 			if !MatchesSeqTypeCtx(it.ArrayItem, mem, ctx) {
 				return false

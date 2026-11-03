@@ -230,6 +230,64 @@ func (a *Array) Append(m Object) *Array {
 	return &Array{members: ms, claim: &mapLog{n: n + 1}}
 }
 
+// membersAreAtomic reports whether every member is exactly one atomic item
+// of type at (or a type derived from it): array(xs:string) and the like,
+// the member test of such an array type. An array built by Append shares
+// its backing array and claim with the arrays it grew from, and a slot once
+// written never changes, so the claim remembers how many leading members
+// already passed this test for which type: the next test of a longer array
+// of the same lineage checks only the new members. An accumulating
+// array(T) parameter is checked on every xsl:iterate step, which made a
+// run of n steps test n*n/2 members.
+func (a *Array) membersAreAtomic(at AtomType, ctx *Context) bool {
+	n := len(a.members)
+	from := 0
+	c := a.claim
+	if c != nil {
+		c.mu.Lock()
+		if c.typedN > 0 && c.typedAtom == at && c.typedN <= n {
+			from = c.typedN
+		}
+		c.mu.Unlock()
+	}
+	for i := from; i < n; i++ {
+		if !memberIsAtomic(a.members[i], at, ctx) {
+			return false
+		}
+	}
+	if c != nil && n > 0 {
+		c.mu.Lock()
+		if c.typedAtom != at || c.typedN < n {
+			c.typedAtom, c.typedN = at, n
+		}
+		c.mu.Unlock()
+	}
+	return true
+}
+
+// memberIsAtomic reports whether o is exactly one atomic item of type at.
+func memberIsAtomic(o Object, at AtomType, ctx *Context) bool {
+	var item Item
+	switch v := o.(type) {
+	case nil:
+		return false
+	case Sequence:
+		if len(v) != 1 {
+			return false
+		}
+		item = v[0]
+	case NodeSet:
+		if len(v) != 1 {
+			return false
+		}
+		item = Items(v)[0]
+	default:
+		item = v
+	}
+	t, ok := itemAtomType(item)
+	return ok && (at == XSanyAtomicType || atomDerivesFrom(t, at))
+}
+
 // Flatten replaces arrays in an item sequence by their members, recursively
 // (XDM flattening, used by atomization and XSLT content construction).
 func Flatten(items []Item) []Item {

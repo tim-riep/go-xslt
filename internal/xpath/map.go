@@ -56,6 +56,12 @@ type mapSlot struct {
 type mapLog struct {
 	mu sync.Mutex
 	n  int
+	// An array's log also remembers that its backing array's first typedN
+	// slots were each found to hold one atomic item of type typedAtom (see
+	// Array.membersAreAtomic). A slot below n is never written again, so the
+	// finding stays true for every array sharing the log.
+	typedN    int
+	typedAtom AtomType
 }
 
 // hentry is one entry. It is never changed after it is made.
