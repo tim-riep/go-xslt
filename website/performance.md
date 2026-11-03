@@ -75,8 +75,9 @@ libxslt's time to where it is now:
   for a transform made of function calls).
 
 - a seventh round, with a committed A/B harness (`scripts/perfab`) that
-  runs 23 workloads on two builds and passes a change only if no workload
-  gets slower, bigger or different: `xsl:number` builds one evaluation
+  runs 23 workloads on two builds — timed, and counted in instructions
+  under cachegrind where the machine is too noisy to time — and passes a
+  change only if no workload gets slower, bigger or different: `xsl:number` builds one evaluation
   context per numbering instead of one per candidate node (numbering 2,000
   records with `count="order|item"`: 3.3 s and 3.5 GB allocated before,
   0.55 s and 8 MB now); an `array(xs:string)` parameter accumulated with
