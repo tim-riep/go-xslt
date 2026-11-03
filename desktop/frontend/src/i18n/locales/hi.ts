@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go निर्भरता",
     kindNpm: "फ़्रंटएंड निर्भरता",
     kindFont: "साथ दिया गया फ़ॉन्ट",
+    kindData: "बंडल किया गया डेटा",
     updateButtonTitle: "आपके पास {current} है। {latest} में क्या नया है, देखें।",
     updateButton: "अपडेट: v{latest}",
     updateTitle: "go-xslt {version} उपलब्ध है",

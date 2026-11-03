@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go-függőség",
     kindNpm: "Frontend-függőség",
     kindFont: "Mellékelt betűtípus",
+    kindData: "Mellékelt adatok",
     updateButtonTitle: "A(z) {current} verziót használod. Újdonságok a(z) {latest} verzióban.",
     updateButton: "Frissítés: v{latest}",
     updateTitle: "Elérhető a go-xslt {version}",

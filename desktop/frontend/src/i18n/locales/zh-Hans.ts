@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go 依赖",
     kindNpm: "前端依赖",
     kindFont: "内置字体",
+    kindData: "内置数据",
     updateButtonTitle: "当前版本为 {current}。查看 {latest} 的新内容。",
     updateButton: "更新：v{latest}",
     updateTitle: "go-xslt {version} 已可用",

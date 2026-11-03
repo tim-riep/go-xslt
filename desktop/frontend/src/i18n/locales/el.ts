@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Εξάρτηση Go",
     kindNpm: "Εξάρτηση frontend",
     kindFont: "Ενσωματωμένη γραμματοσειρά",
+    kindData: "Ενσωματωμένα δεδομένα",
     updateButtonTitle: "Έχετε την έκδοση {current}. Δείτε τι νέο υπάρχει στην {latest}.",
     updateButton: "Ενημέρωση: v{latest}",
     updateTitle: "Το go-xslt {version} είναι διαθέσιμο",

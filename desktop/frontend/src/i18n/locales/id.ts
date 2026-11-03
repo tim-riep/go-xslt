@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Dependensi Go",
     kindNpm: "Dependensi frontend",
     kindFont: "Font yang disertakan",
+    kindData: "Data yang disertakan",
     updateButtonTitle: "Anda memakai {current}. Lihat apa yang baru di {latest}.",
     updateButton: "Pembaruan: v{latest}",
     updateTitle: "go-xslt {version} tersedia",

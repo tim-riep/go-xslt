@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Залежність Go",
     kindNpm: "Залежність фронтенду",
     kindFont: "Вбудований шрифт",
+    kindData: "Вбудовані дані",
     updateButtonTitle: "У вас версія {current}. Показати, що нового в {latest}.",
     updateButton: "Оновлення: v{latest}",
     updateTitle: "Доступний go-xslt {version}",

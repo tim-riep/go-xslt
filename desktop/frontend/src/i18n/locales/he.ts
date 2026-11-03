@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "תלות Go",
     kindNpm: "תלות של הממשק",
     kindFont: "גופן מצורף",
+    kindData: "נתונים מצורפים",
     updateButtonTitle: "הגרסה שלך היא {current}. הצגת החידושים ב-{latest}.",
     updateButton: "עדכון: v{latest}",
     updateTitle: "‏go-xslt {version} זמין",
