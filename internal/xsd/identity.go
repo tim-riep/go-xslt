@@ -269,6 +269,23 @@ func (ic *identityConstraint) evalNodes(p *xpath.Parsed, ctx *xmltree.Node, defN
 	if err != nil {
 		return nil, err
 	}
+	if ns, ok := obj.(xpath.NodeSet); ok {
+		// The usual result of a selector or field path, taken as it is:
+		// Items would copy it into a []Item first. A carrier node unwraps to
+		// the item it stands for, exactly as Items does, and only a node
+		// counts.
+		nodes := make([]*xmltree.Node, 0, len(ns))
+		for _, n := range ns {
+			if n != nil && n.RealItem() != nil {
+				if nd, ok := n.RealItem().(*xmltree.Node); ok {
+					nodes = append(nodes, nd)
+				}
+				continue
+			}
+			nodes = append(nodes, n)
+		}
+		return nodes, nil
+	}
 	var nodes []*xmltree.Node
 	for _, it := range xpath.Items(obj) {
 		if n, ok := it.(*xmltree.Node); ok {
@@ -283,7 +300,8 @@ const tupleSep = "\x00"
 // tupleFor evaluates the fields against a target node, returning the serialized
 // key tuple and whether every field selected exactly one node (complete).
 func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string, bool, error) {
-	vals := make([]string, 0, len(ic.fields))
+	var buf [4]string // the fields of most constraints fit without a heap allocation
+	vals := buf[:0]
 	for fi, f := range ic.fields {
 		nodes, err := ic.evalNodes(f, target, ic.fieldNS[fi])
 		if err != nil {
@@ -551,6 +569,14 @@ func nodeStringValue(n *xmltree.Node) string {
 	if n.Kind == xmltree.KindAttribute {
 		return n.Value
 	}
+	switch len(n.Children) {
+	case 0:
+		return ""
+	case 1:
+		if c := n.Children[0]; c.Kind == xmltree.KindText {
+			return c.Value // the common leaf element: no copy needed
+		}
+	}
 	var b strings.Builder
 	var walk func(*xmltree.Node)
 	walk = func(x *xmltree.Node) {
@@ -614,9 +640,7 @@ func (s *Schema) elementTypeOf(el *xmltree.Node) Type {
 	var decl *ElementDecl
 	if parent := el.Parent; parent != nil && parent.Kind == xmltree.KindElement {
 		if pt, ok := s.elementTypeOf(parent).(*ComplexType); ok {
-			decls := map[xname]*ElementDecl{}
-			s.contentDecls(s.effectiveParticle(pt), decls)
-			decl = decls[nn]
+			decl = s.childModelOf(pt).decls[nn]
 		}
 	}
 	if decl == nil {
