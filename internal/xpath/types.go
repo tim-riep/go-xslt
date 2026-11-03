@@ -245,8 +245,10 @@ func (a *Array) membersAreAtomic(at AtomType, ctx *Context) bool {
 	c := a.claim
 	if c != nil {
 		c.mu.Lock()
-		if c.typedN > 0 && c.typedAtom == at && c.typedN <= n {
-			from = c.typedN
+		if c.typedAtom == at {
+			// A shorter array of the lineage is a prefix of the verified
+			// members too.
+			from = min(c.typedN, n)
 		}
 		c.mu.Unlock()
 	}
