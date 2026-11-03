@@ -53,6 +53,8 @@ var (
 	benchRe   = flag.String("bench-filter", ".", "-bench pattern for -bench")
 	records   = flag.Int("records", 200000, "records in the large generated document")
 	metric    = flag.String("metric", "wall", "the time the verdict judges: wall (whole process) or cpu (user+system time, steadier on a shared machine)")
+	stat      = flag.String("stat", "median", "the statistic of the runs the table shows and the verdict judges: median, or min (the least disturbed run of a deterministic workload)")
+	procs     = flag.Int("gomaxprocs", 0, "GOMAXPROCS for the measured processes (0: the default); 1 takes the parallel garbage collector's scheduling out of the comparison")
 )
 
 type workload struct {
@@ -221,7 +223,7 @@ func compareWorkloads(root, binA, binB string) bool {
 	if *only != "" {
 		onlyRe = regexp.MustCompile(*only)
 	}
-	fmt.Printf("compile workload: %s\n%d runs per build, alternating; medians\n\n", compileSheet, *runs)
+	fmt.Printf("compile workload: %s\n%d runs per build, alternating; %s of the runs; GOMAXPROCS %s\n\n", compileSheet, *runs, *stat, procsText())
 	fmt.Println("| workload | A wall | B wall | B/A | A cpu | B cpu | B/A | A RSS | B RSS | B/A | A alloc | B alloc | B/A | A mallocs | B mallocs | B/A |")
 	fmt.Println("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 	var offenders []string
@@ -304,6 +306,9 @@ func compareWorkloads(root, binA, binB string) bool {
 // run executes the runner once and returns its measurements.
 func run(bin string, args []string) (sample, error) {
 	cmd := exec.Command(bin, args...)
+	if *procs > 0 {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("GOMAXPROCS=%d", *procs))
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	start := time.Now()
@@ -328,8 +333,15 @@ func run(bin string, args []string) (sample, error) {
 	return s, nil
 }
 
-// median takes the median of each measure separately (the wall median's run
-// need not be the RSS median's).
+func procsText() string {
+	if *procs > 0 {
+		return strconv.Itoa(*procs)
+	}
+	return "default"
+}
+
+// median takes the chosen statistic (-stat) of each measure separately
+// (the wall median's run need not be the RSS median's).
 func median(s []sample) sample {
 	n := len(s)
 	walls := make([]time.Duration, n)
@@ -345,7 +357,11 @@ func median(s []sample) sample {
 	sort.Slice(rss, func(i, j int) bool { return rss[i] < rss[j] })
 	sort.Slice(alloc, func(i, j int) bool { return alloc[i] < alloc[j] })
 	sort.Slice(count, func(i, j int) bool { return count[i] < count[j] })
-	return sample{walls[n/2], cpus[n/2], rss[n/2], alloc[n/2], count[n/2]}
+	i := n / 2
+	if *stat == "min" {
+		i = 0
+	}
+	return sample{walls[i], cpus[i], rss[i], alloc[i], count[i]}
 }
 
 func ratio(b, a float64) float64 {

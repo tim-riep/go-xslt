@@ -65,6 +65,13 @@ The verdict is PASS only if
   `-alloc-tolerance` (3 %), and
 - every run's output is byte-identical to the first run's under A.
 
+`-stat min` judges the fastest run of each side instead of the median:
+every workload is deterministic, so noise from other tenants of the machine
+only ever adds time, and the minimum is the least disturbed run.
+`-gomaxprocs 1` runs the measured processes on one core, which takes the
+parallel garbage collector's scheduling out of the comparison (the absolute
+times are then higher).
+
 A FAIL names each offender. A 1–3 % loss on one workload is often noise on a
 busy machine: re-run the offenders with `-only` and `-runs 9` before
 believing either way, and run nothing else meanwhile. Allocation totals are
