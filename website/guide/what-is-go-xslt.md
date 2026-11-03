@@ -45,4 +45,7 @@ between releases. Pin a version in your `go.mod`.
 
 ## License
 
-Apache License 2.0.
+Apache License 2.0. The third-party components the library, the CLI and the
+desktop app build on, with their license texts, are listed in
+[`THIRD-PARTY-LICENSES.md`](https://github.com/tim-riep/go-xslt/blob/main/THIRD-PARTY-LICENSES.md)
+(attached to every release; the desktop app shows them under Licenses).

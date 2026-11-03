@@ -358,6 +358,21 @@ Desktop GUI (**run from `desktop/`**):
   `xsl:include`/`xsl:import-schema`/`xs:import` locations and static
   (use-when) evaluation stay local-only. The harnesses go online only with
   `XSLT30_NETWORK=1` / `QT3_NETWORK=1`; the floors are measured offline.
+- **Third-party licenses have ONE source**: the dependency manifests
+  (`go list -deps` per release target for both modules, the production tree of
+  `desktop/frontend/package-lock.json`) plus the hand-kept
+  `desktop/licenses/extra.json` for what no manifest knows (the project, the Go
+  standard library, embedded data such as the Unicode UCD behind
+  `regex_blocks_ucd.go`, copied code such as the Sun notice on `exp.go`'s
+  `math.Exp`, the Inter font). `go run ./scripts/licenses` regenerates
+  `desktop/licenses/{go,npm,project}`, `licenses_gen.go` (the Licenses view's
+  list), `NOTICE`, `THIRD-PARTY-LICENSES.md` (a release attachment),
+  `desktop/LICENSE` and the license beside the font; never edit those by hand.
+  CI's `licenses` job (`-check`) fails on an undocumented dependency, an
+  unrecognised or unlisted license, or stale outputs. After any dependency
+  change run it and commit the result; a new data source or bundled asset
+  goes into `extra.json` (README in `desktop/licenses/`).
+
 - `exsl:node-set` is deliberately NOT implemented: EXSLT is not a W3C spec,
   its definition is informal (behaviour for node-sets/numbers/booleans is
   unstated), and XSLT 3.0 does not require it — `docbook-001/002` (combined
