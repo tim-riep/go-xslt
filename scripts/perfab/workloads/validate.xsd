@@ -1,0 +1,16 @@
+<!-- XSD 1.0 validation of the 37 MB document: content models, xs:date, xs:decimal, xs:ID -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="orders"><xs:complexType><xs:sequence>
+    <xs:element name="order" maxOccurs="unbounded"><xs:complexType><xs:sequence>
+      <xs:element name="customer" type="xs:string"/>
+      <xs:element name="date" type="xs:date"/>
+      <xs:element name="price" type="xs:decimal"/>
+      <xs:element name="items"><xs:complexType><xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded"><xs:complexType>
+          <xs:attribute name="sku" type="xs:string" use="required"/>
+          <xs:attribute name="qty" type="xs:positiveInteger" use="required"/>
+        </xs:complexType></xs:element>
+      </xs:sequence></xs:complexType></xs:element>
+    </xs:sequence><xs:attribute name="id" type="xs:ID" use="required"/></xs:complexType></xs:element>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>
