@@ -11,7 +11,7 @@
   cursor: pointer;
   font-size: var(--text-sm);
   user-select: none;
-  padding-right: var(--sp-2);
+  padding-inline-end: var(--sp-2);
   gap: 4px;
   white-space: nowrap;
   border: 1px solid transparent;
@@ -36,6 +36,13 @@
 }
 .tree-row-caret.collapsed {
   transform: rotate(-90deg);
+}
+/* right to left: the mirror image of each state */
+[dir="rtl"] .tree-row-caret {
+  transform: scaleX(-1);
+}
+[dir="rtl"] .tree-row-caret.collapsed {
+  transform: rotate(90deg) scaleX(-1);
 }
 .tree-row-caret.leaf {
   visibility: hidden;
