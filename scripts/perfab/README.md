@@ -77,6 +77,16 @@ busy machine: re-run the offenders with `-only` and `-runs 9` before
 believing either way, and run nothing else meanwhile. Allocation totals are
 nearly deterministic, so a change there is real.
 
+`-ir` measures work instead of time: each workload runs once per build
+under `valgrind --tool=cachegrind` (on one core, with the garbage
+collector off, and with a tenth of the records and repetitions, since
+cachegrind is 20–50 times slower than native), and the table compares the
+instructions executed. Two builds doing the same work then count the same
+to within 0.1 %, whatever the machine is doing meanwhile, so this is the
+verdict to trust on a noisy machine; the collector's share of the time is
+proportional to the allocation totals of the timed table, which are
+deterministic too. The timed run then shows what the saved work is worth.
+
 `-bench` additionally runs `go test -bench . -benchmem` for the engine
 packages in both trees, alternating, and tabulates the medians of ns/op,
 B/op and allocs/op with the same tolerance.

@@ -55,6 +55,7 @@ var (
 	metric    = flag.String("metric", "wall", "the time the verdict judges: wall (whole process) or cpu (user+system time, steadier on a shared machine)")
 	stat      = flag.String("stat", "median", "the statistic of the runs the table shows and the verdict judges: median, or min (the least disturbed run of a deterministic workload)")
 	procs     = flag.Int("gomaxprocs", 0, "GOMAXPROCS for the measured processes (0: the default); 1 takes the parallel garbage collector's scheduling out of the comparison")
+	ir        = flag.Bool("ir", false, "count the instructions each workload executes (valgrind --tool=cachegrind, one run per build on reduced inputs): a deterministic measure of work, immune to the machine's noise")
 )
 
 type workload struct {
@@ -123,7 +124,9 @@ func main() {
 	fmt.Printf("A: %s\nB: %s\n", describe(*revA, *binA, srcA), describe(*revB, *binB, srcB))
 
 	ok := true
-	if !*benchOnly {
+	if *ir {
+		ok = compareInstructions(root, a, b)
+	} else if !*benchOnly {
 		ok = compareWorkloads(root, a, b)
 	}
 	if *bench || *benchOnly {
@@ -301,6 +304,123 @@ func compareWorkloads(root, binA, binB string) bool {
 	}
 	fmt.Printf("verdict: PASS (no workload's %s time above A by more than %.0f%%, no peak RSS or allocation above A by more than %.0f%%/%.0f%%, all outputs identical)\n", *metric, *tol*100, *rssTol*100, *allocTol*100)
 	return true
+}
+
+// irReduce maps a workload's arguments to the reduced inputs of -ir (a tenth
+// of the records, a tenth of the repetitions): cachegrind runs 20-50 times
+// slower than native, and the instruction count of a tenth of the work
+// compares the builds just as well.
+var irReduce = strings.NewReplacer("orders-200k.xml", "orders-20k.xml", "orders-20k.xml", "orders-2k.xml")
+
+// compareInstructions runs every workload once per build under cachegrind
+// and tabulates the instructions executed. Two builds doing the same work
+// count the same to within a few thousand instructions (the runtime's own
+// variance), whatever the machine is doing meanwhile.
+func compareInstructions(root, binA, binB string) bool {
+	if _, err := exec.LookPath("valgrind"); err != nil {
+		fmt.Println("-ir needs valgrind on the PATH")
+		return false
+	}
+	data, compileSheet := inputs(root)
+	wl := filepath.Join(root, "scripts", "perfab", "workloads")
+	outDir := filepath.Join(*cache, "out")
+	check(os.MkdirAll(outDir, 0o755))
+	var onlyRe *regexp.Regexp
+	if *only != "" {
+		onlyRe = regexp.MustCompile(*only)
+	}
+	fmt.Printf("instructions executed (cachegrind, GOGC=off, one core), one run per build, reduced inputs\n\n")
+	fmt.Println("| workload | A instructions | B instructions | B/A | A mallocs | B mallocs | B/A |")
+	fmt.Println("|---|---|---|---|---|---|---|")
+	var offenders []string
+	for _, w := range workloads {
+		if onlyRe != nil && !onlyRe.MatchString(w.name) {
+			continue
+		}
+		args := make([]string, 0, len(w.args)+4)
+		for i, a := range w.args {
+			a = strings.NewReplacer("{data}", data, "{workloads}", wl, "{root}", root, "{compile}", compileSheet).Replace(a)
+			a = irReduce.Replace(a)
+			if i > 0 && w.args[i-1] == "-n" {
+				if n, err := strconv.Atoi(a); err == nil && n >= 10 {
+					a = strconv.Itoa(n / 10)
+				}
+			}
+			args = append(args, a)
+		}
+		var counts [2]uint64
+		var mallocs [2]uint64
+		var outs [2][]byte
+		for i, bin := range []string{binA, binB} {
+			out := filepath.Join(outDir, w.name+".ir"+string("ab"[i])+".out")
+			full := append(append([]string{}, args...), "-o", out)
+			if w.source != "" {
+				full = append(full, filepath.Join(data, irReduce.Replace(w.source)))
+			}
+			n, m, err := runCachegrind(bin, full)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", w.name, err)
+				os.Exit(1)
+			}
+			counts[i], mallocs[i] = n, m
+			outs[i], err = os.ReadFile(out)
+			check(err)
+		}
+		r := ratio(float64(counts[1]), float64(counts[0]))
+		fmt.Printf("| %s | %s | %s | %.4f | %s | %s | %.3f |\n", w.name, thousands(counts[0]), thousands(counts[1]), r,
+			thousands(mallocs[0]), thousands(mallocs[1]), ratio(float64(mallocs[1]), float64(mallocs[0])))
+		if r > 1+*tol {
+			offenders = append(offenders, fmt.Sprintf("%s: instructions %.4f", w.name, r))
+		}
+		if !bytes.Equal(outs[0], outs[1]) {
+			offenders = append(offenders, w.name+": output differs between A and B")
+		}
+	}
+	fmt.Println()
+	if len(offenders) > 0 {
+		fmt.Println("verdict: FAIL")
+		for _, o := range offenders {
+			fmt.Println("  " + o)
+		}
+		return false
+	}
+	fmt.Printf("verdict: PASS (no workload executes more instructions than under A by more than %.0f%%, all outputs identical)\n", *tol*100)
+	return true
+}
+
+// runCachegrind runs bin under cachegrind on one core with the garbage
+// collector off and returns the instructions executed and the runner's
+// allocation count. With the collector on, its cycles land at times that
+// vary from run to run (the same binary counted 1.96 and 2.10 billion
+// instructions on one workload); without it the count of the same binary
+// repeats to within 0.1 %. What the collector would cost is proportional to
+// the allocation totals, which the timed table reports.
+func runCachegrind(bin string, args []string) (uint64, uint64, error) {
+	full := append([]string{"--tool=cachegrind", "--cache-sim=no", "--cachegrind-out-file=/dev/null", bin}, args...)
+	cmd := exec.Command("valgrind", full...)
+	cmd.Env = append(os.Environ(), "GOMAXPROCS=1", "GOGC=off")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, 0, fmt.Errorf("valgrind %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+	var n uint64
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		if i := strings.Index(line, "I refs:"); i >= 0 {
+			v := strings.ReplaceAll(strings.TrimSpace(line[i+len("I refs:"):]), ",", "")
+			n, _ = strconv.ParseUint(v, 10, 64)
+		}
+	}
+	if n == 0 {
+		return 0, 0, fmt.Errorf("no instruction count in valgrind's output:\n%s", stderr.String())
+	}
+	var m struct {
+		Count uint64 `json:"mallocs"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &m); err != nil {
+		return 0, 0, fmt.Errorf("unreadable measurement %q: %v", stdout.String(), err)
+	}
+	return n, m.Count, nil
 }
 
 // run executes the runner once and returns its measurements.
