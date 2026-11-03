@@ -12,9 +12,10 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 6px 0 10px;
+  padding-block: 0;
+  padding-inline: 10px 6px;
   height: 100%;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   background: var(--bg-2);
   cursor: pointer;
   font-size: var(--text-sm);

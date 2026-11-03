@@ -5,6 +5,15 @@
 .cm-editor {
   user-select: text;
 }
+/* Code, the XPath expression and the output are always left to right, also
+   in a right-to-left language (CodeMirror takes its direction from here). */
+.cm-editor,
+.xpath-editor,
+.output-body,
+.output-text,
+.xpath-items {
+  direction: ltr;
+}
 
 .output-text {
   margin: 0;

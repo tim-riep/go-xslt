@@ -1,6 +1,6 @@
 /* ---- XSD structure view ---- */
 .struct { display: flex; height: 100%; min-height: 0; background: var(--bg); }
-.struct-side { width: 240px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-2); min-height: 0; }
+.struct-side { width: 240px; flex-shrink: 0; display: flex; flex-direction: column; border-inline-end: 1px solid var(--border); background: var(--bg-2); min-height: 0; }
 .struct-tabs { display: flex; border-bottom: 1px solid var(--border); }
 .struct-tabs button { flex: 1; padding: 6px 4px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--fg-dim); font-size: var(--text-sm); cursor: pointer; }
 .struct-tabs button.on { color: var(--fg); border-bottom-color: var(--accent-hover); }
@@ -18,22 +18,22 @@
 .struct-tree { flex: 1; overflow: auto; padding: 12px 14px; user-select: text; }
 .struct-empty { padding: 20px; color: var(--fg-dim); }
 
-.struct .tree { list-style: none; margin: 0; padding: 0 0 0 22px; position: relative; }
+.struct .tree { list-style: none; margin: 0; padding: 0; padding-inline-start: 22px; position: relative; }
 .struct .tree > li { position: relative; padding-top: 3px; }
 /* connector lines: a vertical guide per level and a tick into each row */
-.struct .tree > li::before { content: ""; position: absolute; left: -12px; top: 0; bottom: 0; border-left: 1px solid var(--border); }
+.struct .tree > li::before { content: ""; position: absolute; inset-inline-start: -12px; top: 0; bottom: 0; border-inline-start: 1px solid var(--border); }
 .struct .tree > li:last-child::before { bottom: auto; height: 15px; }
-.struct .tree > li::after { content: ""; position: absolute; left: -12px; top: 15px; width: 10px; border-top: 1px solid var(--border); }
-.struct .tree.body { margin-left: 4px; }
+.struct .tree > li::after { content: ""; position: absolute; inset-inline-start: -12px; top: 15px; width: 10px; border-top: 1px solid var(--border); }
+.struct .tree.body { margin-inline-start: 4px; }
 .struct li.root::before, .struct li.root::after { display: none; }
-.struct .struct-tree > .tree { padding-left: 0; }
+.struct .struct-tree > .tree { padding-inline-start: 0; }
 
-.struct .row { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px 2px 4px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-3); font-size: var(--text-sm); cursor: default; max-width: 100%; }
+.struct .row { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding-block: 2px; padding-inline: 4px 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-3); font-size: var(--text-sm); cursor: default; max-width: 100%; }
 .struct .row.element, .struct .row.group { cursor: pointer; }
 .struct .row.element:hover, .struct .row.group:hover { border-color: var(--accent-hover); }
 .struct .row.optional-box { border-style: dashed; }
 .struct .row.abstract .name { font-style: italic; }
-.struct .row.attr { background: transparent; border-color: transparent; padding-left: 4px; }
+.struct .row.attr { background: transparent; border-color: transparent; padding-inline-start: 4px; }
 .struct .row.note { background: transparent; border-color: transparent; }
 .struct .row.any { color: var(--fg-dim); }
 .struct .row.group { background: var(--bg-2); }
@@ -48,6 +48,9 @@
 .struct .name { font-weight: 600; }
 .struct .chev { display: inline-block; width: 12px; color: var(--fg-dim); transition: transform 0.1s; text-align: center; }
 .struct .chev.open { transform: rotate(90deg); }
+/* right to left: the mirror image of each state of the ▸ glyph */
+[dir="rtl"] .struct .chev { transform: scaleX(-1); }
+[dir="rtl"] .struct .chev.open { transform: rotate(-90deg) scaleX(-1); }
 .struct .chev.none { visibility: hidden; }
 
 .struct .glyph { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 3px; font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0; }

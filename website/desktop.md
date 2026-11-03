@@ -82,11 +82,19 @@ The settings button at the right end of the toolbar opens three settings:
 
 - **Appearance**: *System* follows the light or dark mode of your computer,
   also when it changes while the app runs; *Light* and *Dark* fix one.
-- **Language**: English, German, French or Italian. *System* uses the first
-  of your computer's preferred languages the app offers, and English otherwise.
-  Messages from the engine itself (errors with W3C codes) stay in English;
-  failed XSD assertions show their `msg:message` in the chosen language when
-  the schema has one.
+- **Language**: one of twenty-eight — English, German, French, Italian,
+  Indonesian, Czech, Danish, Spanish, Hungarian, Dutch, Norwegian (Bokmål),
+  Polish, Portuguese (Brazil), Romanian, Finnish, Swedish, Vietnamese,
+  Turkish, Greek, Russian, Ukrainian, Hebrew, Arabic, Hindi, Japanese,
+  Chinese (Simplified and Traditional) and Korean, each listed in its own
+  name. *System* uses the first of your computer's preferred languages the
+  app offers (a regional variant counts for its language; Chinese for
+  Taiwan, Hong Kong or Macau is Traditional, any other Chinese Simplified;
+  Nynorsk falls back to Bokmål), and English otherwise. Arabic and Hebrew
+  lay the app out right to left; code editors and the output stay left to
+  right. Only the language in use is loaded. Messages from the engine
+  itself (errors with W3C codes) stay in English; failed XSD assertions
+  show their `msg:message` in the chosen language when the schema has one.
 - **Check for updates**: on by default, see below.
 
 ## Update check

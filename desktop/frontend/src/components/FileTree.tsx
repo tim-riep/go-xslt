@@ -96,7 +96,7 @@ export function FileTree({ project }: { project: ProjectState }) {
         <div
           key={row.path}
           className={`tree-row${selectedPath === row.path ? " selected" : ""}${row.dir ? "" : ""}`}
-          style={{ paddingLeft: 6 + row.depth * 14 }}
+          style={{ paddingInlineStart: 6 + row.depth * 14 }}
           onClick={() => (row.dir ? actions.toggleNode(project.id, row.path) : void actions.openFile(project.id, row.path, { preview: true }))}
           onDoubleClick={() => !row.dir && void actions.openFile(project.id, row.path)}
           onContextMenu={(e) => openMenu(e, menuForRow(row))}

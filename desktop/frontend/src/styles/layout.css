@@ -14,7 +14,9 @@
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
-  padding-left: 96px; /* room for macOS traffic lights, plus a gap before .brand */
+  /* room for macOS traffic lights, plus a gap before .brand — physical left:
+     macOS keeps the window controls at the left in right-to-left languages */
+  padding-left: 96px;
   flex-shrink: 0;
 }
 .toolbar button,
@@ -71,8 +73,8 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
-  padding-left: var(--sp-2);
-  border-left: 1px solid var(--border);
+  padding-inline-start: var(--sp-2);
+  border-inline-start: 1px solid var(--border);
 }
 .params-bar {
   display: flex;

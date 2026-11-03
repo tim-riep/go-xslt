@@ -3,7 +3,7 @@
 // Stored in localStorage; every access is guarded, since a locked-down webview
 // may refuse it, and the app has to work without.
 import { useSyncExternalStore } from "react";
-import type { Language } from "../i18n";
+import { activateLocale, LANGUAGES, loadLocale, RTL_LANGUAGES, type Language, type Locale } from "../i18n";
 
 const WRAP_KEY = "go-xslt.wrapLines";
 
@@ -153,42 +153,100 @@ const LANGUAGE_KEY = "go-xslt.language";
 /** The language setting: follow the operating system, or a fixed language. */
 export type LanguageSetting = "system" | Language;
 
-const SUPPORTED: Language[] = ["en", "de", "fr", "it"];
+const SUPPORTED: readonly Language[] = LANGUAGES.map((l) => l.value);
+
+function isSupported(v: string): v is Language {
+  return (SUPPORTED as readonly string[]).includes(v);
+}
 
 function readLanguage(): LanguageSetting {
   try {
     const v = window.localStorage.getItem(LANGUAGE_KEY);
-    return v && (SUPPORTED as string[]).includes(v) ? (v as Language) : "system";
+    return v && isSupported(v) ? v : "system";
   } catch {
     return "system";
   }
+}
+
+// The language the app offers for one BCP 47 tag of the system's list, or
+// undefined when it offers none: the tag itself ("zh-Hant", "pt"), else the
+// script or region rules — Chinese is Traditional for Taiwan, Hong Kong and
+// Macau or an explicit Hant script and Simplified otherwise, both Norwegian
+// forms land on Bokmål — else the base language ("de-AT" → "de").
+export function languageForTag(tag: string): Language | undefined {
+  const lower = tag.toLowerCase();
+  const parts = lower.split("-");
+  const base = parts[0];
+  if (base === "zh") {
+    const rest = parts.slice(1);
+    const traditional = rest.includes("hant") || (!rest.includes("hans") && rest.some((p) => p === "tw" || p === "hk" || p === "mo"));
+    return traditional ? "zh-Hant" : "zh-Hans";
+  }
+  if (base === "no" || base === "nn" || base === "nb") return "nb";
+  if (isSupported(base)) return base;
+  return undefined;
 }
 
 // The first of the system's preferred languages the app offers; English
 // when none is.
 function systemLanguage(): Language {
   for (const tag of navigator.languages ?? [navigator.language]) {
-    const base = tag.toLowerCase().split("-")[0] as Language;
-    if (SUPPORTED.includes(base)) return base;
+    const l = languageForTag(tag);
+    if (l) return l;
   }
   return "en";
 }
 
-let languageSetting = readLanguage();
-let language: Language = languageSetting === "system" ? systemLanguage() : languageSetting;
-const languageListeners = new Set<() => void>();
-document.documentElement.lang = language;
-
-export function setLanguageSetting(l: LanguageSetting) {
-  languageSetting = l;
-  language = l === "system" ? systemLanguage() : l;
+// Like the theme, the language in effect lives on <html>: lang for fonts,
+// hyphenation and screen readers, dir for the two right-to-left languages
+// (editor.css keeps the code editors and the output left to right).
+function applyLanguage() {
   document.documentElement.lang = language;
+  document.documentElement.dir = RTL_LANGUAGES.includes(language) ? "rtl" : "ltr";
+}
+
+let languageSetting = readLanguage();
+let language: Language = "en";
+const languageListeners = new Set<() => void>();
+
+// Loads the texts of lang (one chunk per language, see i18n/index.ts), then
+// makes it the language in effect, all at once: the locale, <html>'s lang
+// and dir, and the listeners. A chunk that cannot be loaded (which an
+// embedded frontend should never see) leaves the app in English rather
+// than half-switched, and is reported on the console.
+let switches = 0;
+async function switchTo(lang: Language) {
+  const mine = ++switches;
+  let locale: Locale | null = null;
+  try {
+    locale = await loadLocale(lang);
+  } catch (e) {
+    console.error(`go-xslt: could not load the texts for ${lang}, staying in English`, e);
+    lang = "en";
+  }
+  // A later switch has been asked for meanwhile: it is the one that counts.
+  if (mine !== switches) return;
+  language = lang;
+  activateLocale(locale);
+  applyLanguage();
+  languageListeners.forEach((fn) => fn());
+}
+
+/** Resolves once the texts of the language in effect at startup are loaded;
+ * main.tsx renders the app after it. */
+export const languageReady: Promise<void> = switchTo(languageSetting === "system" ? systemLanguage() : languageSetting);
+
+/** Sets the language setting; the switch happens once the new language's
+ * texts are loaded, and the returned promise resolves then. */
+export function setLanguageSetting(l: LanguageSetting): Promise<void> {
+  languageSetting = l;
   try {
     window.localStorage.setItem(LANGUAGE_KEY, l);
   } catch {
     /* not persisted; the choice still holds for this session */
   }
   languageListeners.forEach((fn) => fn());
+  return switchTo(l === "system" ? systemLanguage() : l);
 }
 
 function subscribeLanguage(cb: () => void) {

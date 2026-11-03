@@ -41,7 +41,7 @@
 }
 .msg-item {
   padding: 2px 10px;
-  border-left: 2px solid var(--accent);
+  border-inline-start: 2px solid var(--accent);
   user-select: text;
 }
 .secondary-doc {
@@ -78,16 +78,16 @@
   padding: 3px 10px;
   font-size: var(--text-sm);
   cursor: pointer;
-  border-left: 2px solid transparent;
+  border-inline-start: 2px solid transparent;
 }
 .diag:hover {
   background: var(--bg-3);
 }
 .diag-error {
-  border-left-color: var(--error);
+  border-inline-start-color: var(--error);
 }
 .diag-warning {
-  border-left-color: var(--warning);
+  border-inline-start-color: var(--warning);
 }
 .diag-loc {
   color: var(--fg-dim);
@@ -137,7 +137,7 @@ table.xpath-items {
 }
 table.xpath-items th,
 table.xpath-items td {
-  text-align: left;
+  text-align: start;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
@@ -153,7 +153,7 @@ table.xpath-items td.idx,
 table.xpath-items th.idx {
   width: 32px;
   color: var(--fg-dim);
-  text-align: right;
+  text-align: end;
 }
 table.xpath-items td.ty,
 table.xpath-items th.ty {
