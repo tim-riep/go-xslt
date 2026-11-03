@@ -55,6 +55,5 @@ regenerate. If its text must travel in full, set `"notice": true`.
   `CGO_ENABLED=1` it keeps the cgo files, so the Linux-only D-Bus dependency
   is seen). A missing `frontend/dist` (go:embed) is a reported package error,
   tolerated by `-e`. CI needs only Go and, for the npm side, `npm ci`.
-- The Unicode License v3 text in `data/unicode/LICENSE` was written from the
-  published license (unicode.org/license.txt was not reachable when it was
-  added); compare it with the live text when convenient.
+- `data/unicode/LICENSE` is the Unicode License v3 as published at
+  unicode.org/license.txt (maintainer-verified wording).
