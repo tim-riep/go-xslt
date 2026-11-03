@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go-riippuvuus",
     kindNpm: "Frontend-riippuvuus",
     kindFont: "Mukana toimitettu fontti",
+    kindData: "Mukana toimitettu data",
     updateButtonTitle: "Sinulla on versio {current}. Näytä, mitä uutta versiossa {latest} on.",
     updateButton: "Päivitys: v{latest}",
     updateTitle: "go-xslt {version} on saatavilla",

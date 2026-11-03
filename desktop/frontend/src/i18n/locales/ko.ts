@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go 의존성",
     kindNpm: "프런트엔드 의존성",
     kindFont: "포함된 글꼴",
+    kindData: "포함된 데이터",
     updateButtonTitle: "현재 버전은 {current}입니다. {latest}의 새로운 기능을 봅니다.",
     updateButton: "업데이트: v{latest}",
     updateTitle: "go-xslt {version}을(를) 사용할 수 있습니다",

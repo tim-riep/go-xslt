@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Dépendance Go",
     kindNpm: "Dépendance frontend",
     kindFont: "Police intégrée",
+    kindData: "Données intégrées",
     updateButtonTitle: "Vous avez la version {current}. Voir les nouveautés de {latest}.",
     updateButton: "Mise à jour : v{latest}",
     updateTitle: "go-xslt {version} est disponible",

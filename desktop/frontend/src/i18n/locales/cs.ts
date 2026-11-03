@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Závislost Go",
     kindNpm: "Závislost frontendu",
     kindFont: "Přibalené písmo",
+    kindData: "Přibalená data",
     updateButtonTitle: "Máte verzi {current}. Zobrazit, co je nového ve verzi {latest}.",
     updateButton: "Aktualizace: v{latest}",
     updateTitle: "go-xslt {version} je k dispozici",

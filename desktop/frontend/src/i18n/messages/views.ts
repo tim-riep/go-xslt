@@ -53,6 +53,7 @@ export const viewsMessages = defineMessages("views", {
   kindGo: "Go dependency",
   kindNpm: "Frontend dependency",
   kindFont: "Bundled font",
+  kindData: "Bundled data",
   // UpdateNotice
   updateButtonTitle: "You have {current}. Show what is new in {latest}.",
   updateButton: "Update: v{latest}",

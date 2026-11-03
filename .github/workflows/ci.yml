@@ -80,6 +80,45 @@ jobs:
         working-directory: desktop/frontend
         run: npm run build
 
+  licenses:
+    # One source of truth for third-party licenses (scripts/licenses): fails
+    # when a dependency that ships is not documented, has no recognisable or
+    # an unlisted license, or when NOTICE, THIRD-PARTY-LICENSES.md and
+    # desktop/licenses are stale. The Go side only needs `go list` (no cgo,
+    # GTK or pkg-config); the npm side reads the license files in node_modules.
+    name: Licenses (documented and up to date)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the Go version from the toolchain line
+        id: gover
+        shell: bash
+        run: |
+          v=$(sed -n 's/^toolchain go//p' go.mod)
+          test -n "$v" || { echo "no toolchain line in go.mod" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.gover.outputs.version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: npm ci
+        working-directory: desktop/frontend
+        run: npm ci
+
+      - name: go test (matcher, lockfile parser)
+        run: go test ./scripts/licenses
+
+      - name: Licenses are documented and up to date
+        run: go run ./scripts/licenses -check
+
   windows:
     # Filesystem-relative resolution (BaseDir, file: URIs) is OS-specific, so the
     # Linux job cannot see regressions in it (issue #1). Run the targeted tests

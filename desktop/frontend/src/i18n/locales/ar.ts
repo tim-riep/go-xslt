@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "اعتمادية Go",
     kindNpm: "اعتمادية الواجهة الأمامية",
     kindFont: "خط مرفق",
+    kindData: "بيانات مرفقة",
     updateButtonTitle: "لديك الإصدار {current}. عرض الجديد في {latest}.",
     updateButton: "تحديث: v{latest}",
     updateTitle: "‏go-xslt {version} متوفر",

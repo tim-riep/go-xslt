@@ -22,11 +22,12 @@ export function LicensesButton() {
   );
 }
 
-const KIND_LABEL: Record<string, "kindProject" | "kindGo" | "kindNpm" | "kindFont"> = {
+const KIND_LABEL: Record<string, "kindProject" | "kindGo" | "kindNpm" | "kindFont" | "kindData"> = {
   project: "kindProject",
   go: "kindGo",
   npm: "kindNpm",
   font: "kindFont",
+  data: "kindData",
 };
 
 function LicensesModal({ onDismiss }: { onDismiss: () => void }) {

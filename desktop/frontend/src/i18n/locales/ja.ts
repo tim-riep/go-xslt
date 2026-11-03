@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Goの依存パッケージ",
     kindNpm: "フロントエンドの依存パッケージ",
     kindFont: "同梱フォント",
+    kindData: "同梱データ",
     updateButtonTitle: "現在のバージョンは{current}です。{latest}の新機能を表示します。",
     updateButton: "アップデート：v{latest}",
     updateTitle: "go-xslt {version} が利用可能です",

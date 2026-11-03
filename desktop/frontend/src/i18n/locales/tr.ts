@@ -189,6 +189,7 @@ export const locale: Locale = {
     kindGo: "Go bağımlılığı",
     kindNpm: "Ön yüz bağımlılığı",
     kindFont: "Paketlenmiş yazı tipi",
+    kindData: "Paketlenmiş veri",
     updateButtonTitle: "{current} sürümündesiniz. {latest} sürümündeki yenilikleri göster.",
     updateButton: "Güncelleme: v{latest}",
     updateTitle: "go-xslt {version} kullanılabilir",
