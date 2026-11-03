@@ -7,6 +7,7 @@ import (
 	"time"
 	_ "time/tzdata" // the Olson database, embedded: $place must not depend on the host having zoneinfo
 	"unicode"
+	"unicode/utf8"
 )
 
 func init() {
@@ -170,22 +171,22 @@ func formatDateTimePicture(at *Atomic, picture string, opts *dtOptions) (Object,
 	tm := at.tmv()
 	var b strings.Builder
 	b.WriteString(opts.calPrefix)
-	rs := []rune(picture)
-	for i := 0; i < len(rs); i++ {
-		r := rs[i]
-		switch r {
+	// The brackets are ASCII, so the picture is scanned by byte; the text
+	// between markers is copied as it is.
+	for i := 0; i < len(picture); i++ {
+		switch picture[i] {
 		case '[':
-			if i+1 < len(rs) && rs[i+1] == '[' { // escaped "[["
+			if i+1 < len(picture) && picture[i+1] == '[' { // escaped "[["
 				b.WriteByte('[')
 				i++
 				continue
 			}
 			// read marker up to ']'
 			j := i + 1
-			for j < len(rs) && rs[j] != ']' {
+			for j < len(picture) && picture[j] != ']' {
 				j++
 			}
-			if j >= len(rs) {
+			if j >= len(picture) {
 				return nil, fmt.Errorf("err:FOFD1340: unclosed '[' in date/time picture %q", picture)
 			}
 			// Whitespace inside a variable marker is ignored (§9.8.4.1:
@@ -195,7 +196,7 @@ func formatDateTimePicture(at *Atomic, picture string, opts *dtOptions) (Object,
 					return -1
 				}
 				return r
-			}, string(rs[i+1:j]))
+			}, picture[i+1:j])
 			out, err := formatComponent(at, tm, marker, opts)
 			if err != nil {
 				return nil, err
@@ -203,14 +204,14 @@ func formatDateTimePicture(at *Atomic, picture string, opts *dtOptions) (Object,
 			b.WriteString(out)
 			i = j
 		case ']':
-			if i+1 < len(rs) && rs[i+1] == ']' { // escaped "]]"
+			if i+1 < len(picture) && picture[i+1] == ']' { // escaped "]]"
 				b.WriteByte(']')
 				i++
 				continue
 			}
 			b.WriteByte(']')
 		default:
-			b.WriteRune(r)
+			b.WriteByte(picture[i])
 		}
 	}
 	if opts.langFallback && opts.usedLang {
@@ -226,11 +227,11 @@ func formatComponent(at *Atomic, tm time.Time, marker string, opts *dtOptions) (
 	if marker == "" {
 		return "", fmt.Errorf("err:FOFD1340: empty variable marker in date/time picture")
 	}
-	mr := []rune(marker)
-	comp := mr[0]
+	comp, _ := utf8.DecodeRuneInString(marker)
 	if comp > 0x7F || !strings.ContainsRune(dtComponentLetters, comp) {
 		return "", fmt.Errorf("err:FOFD1340: unknown component specifier [%c] in date/time picture", comp)
 	}
+	rest := marker[1:] // the specifier is one ASCII byte
 	// A date carries no time-of-day components and a time no calendar
 	// components: FOFD1350 (format-date-802err…807err, format-time-809err…816err).
 	switch at.T {
@@ -243,7 +244,7 @@ func formatComponent(at *Atomic, tm time.Time, marker string, opts *dtOptions) (
 			return "", fmt.Errorf("err:FOFD1350: component [%c] is not available in an xs:time", comp)
 		}
 	}
-	mod, wmin, wmax, err := splitWidthModifier(string(mr[1:]))
+	mod, wmin, wmax, err := splitWidthModifier(rest)
 	if err != nil {
 		return "", fmt.Errorf("%v in [%s]", err, marker)
 	}
