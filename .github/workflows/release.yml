@@ -370,15 +370,27 @@ jobs:
       contents: write # creates the draft release and uploads its files
     steps:
       # Only for the release notes: docs/release-notes/<tag>.md, when present.
+      # Also the license files that go next to the binaries.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: docs/release-notes
+          sparse-checkout: |
+            docs/release-notes
+            LICENSE
+            NOTICE
+            THIRD-PARTY-LICENSES.md
+          sparse-checkout-cone-mode: false
 
-      - name: Release notes for this tag
+      # The hand-written notes (when present) followed by the license line,
+      # in one file: body_path wins over body, so the line cannot be a second
+      # input. GitHub's generated list comes after both.
+      - name: Release body
         id: notes
         run: |
           f="docs/release-notes/${GITHUB_REF_NAME}.md"
-          if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; else echo "no $f; GitHub's generated notes only"; fi
+          : > release-body.md
+          if [ -f "$f" ]; then cat "$f" >> release-body.md; printf '\n' >> release-body.md; else echo "no $f; GitHub's generated notes only"; fi
+          printf 'Licensed under the Apache License 2.0 (`LICENSE`). Third-party licenses: `THIRD-PARTY-LICENSES.md` (`NOTICE` summarises them); both are attached.\n' >> release-body.md
+          echo "path=release-body.md" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -393,6 +405,8 @@ jobs:
             b="$(basename "$f")"
             mv "$f" "release/go-xslt-${GITHUB_REF_NAME}-${b#go-xslt-}"
           done
+          # Not go-xslt-*, so the renaming loop above leaves them alone.
+          cp LICENSE NOTICE THIRD-PARTY-LICENSES.md release/
           ls -la release
 
       # A DRAFT: the Windows executables are signed afterwards on a maintainer's
@@ -404,7 +418,8 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           files: release/*
-          # The hand-written notes come first, GitHub's generated list after.
+          # The hand-written notes and the license line come first (one file,
+          # see "Release body"), GitHub's generated list after.
           body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
           draft: true
