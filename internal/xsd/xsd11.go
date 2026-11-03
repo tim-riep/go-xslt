@@ -221,23 +221,39 @@ func (s *Schema) effectiveAsserts(ct *ComplexType) []*assertion {
 // (§3.13.4.2): a DETACHED copy of the element — '/', '//' and ancestor axes
 // cannot escape it (d4_3_15ii14i/ii15i) — with comment and PI nodes filtered
 // out (assert023: empty(.//comment()) must hold).
+//
+// The copy is used by the assertions of this one element and then dropped,
+// so its nodes and pointer slices come from one slab each (xmltree.TreeAlloc),
+// sized by a first walk over the subtree, instead of an allocation per node.
 func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
+	nodes, ptrs := 0, 0
+	var count func(n *xmltree.Node)
+	count = func(n *xmltree.Node) {
+		attrs := len(n.Attrs)
+		if len(s.nodeDefaults) > 0 {
+			attrs += len(s.nodeDefaults[n])
+		}
+		nodes += 1 + attrs
+		ptrs += attrs
+		kids := 0
+		for _, ch := range n.Children {
+			if ch.Kind == xmltree.KindComment || ch.Kind == xmltree.KindPI {
+				continue
+			}
+			kids++
+			count(ch)
+		}
+		ptrs += kids
+	}
+	count(el)
+	var alloc xmltree.TreeAlloc
+	alloc.Init(nodes, ptrs)
 	var clone func(n *xmltree.Node) *xmltree.Node
 	clone = func(n *xmltree.Node) *xmltree.Node {
-		cp := *n
+		cp := alloc.Node()
+		*cp = *n
 		cp.CloneExt()
 		cp.Parent = nil
-		// Attributes are VALUE-cloned so their typed-XDM annotation lives
-		// only on the assertion tree (assert_002/018, d4_3_15v02/v11: a
-		// validated @length atomizes as its declared type, not untyped).
-		cp.Attrs = make([]*xmltree.Node, 0, len(n.Attrs)+len(s.nodeDefaults[n]))
-		for _, at := range n.Attrs {
-			ac := *at
-			ac.CloneExt()
-			ac.Parent = &cp
-			s.annotateAssertNode(&ac, at)
-			cp.Attrs = append(cp.Attrs, &ac)
-		}
 		// Attributes the element OMITTED but whose use carries a default or
 		// fixed value constraint (cvc-complex-type.4) are part of the
 		// post-schema-validation element the assertion is evaluated against —
@@ -251,16 +267,31 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 		// plain <xsl:number value="$x"/> — legal XSLT, and used three times in
 		// the Recommendation's OWN examples — can satisfy that assertion only
 		// if the default is visible to it.
-		for _, d := range s.nodeDefaults[n] {
+		var defaults []defaultAttr
+		if len(s.nodeDefaults) > 0 {
+			defaults = s.nodeDefaults[n]
+		}
+		// Attributes are VALUE-cloned so their typed-XDM annotation lives
+		// only on the assertion tree (assert_002/018, d4_3_15v02/v11: a
+		// validated @length atomizes as its declared type, not untyped).
+		cp.Attrs = alloc.Ptrs(len(n.Attrs) + len(defaults))
+		for _, at := range n.Attrs {
+			ac := alloc.Node()
+			*ac = *at
+			ac.CloneExt()
+			ac.Parent = cp
+			s.annotateAssertNode(ac, at)
+			cp.Attrs = append(cp.Attrs, ac)
+		}
+		for _, d := range defaults {
 			if _, exists := n.Attr(d.name.Space, d.name.Local); exists {
 				continue
 			}
-			ac := &xmltree.Node{
-				Kind:   xmltree.KindAttribute,
-				Name:   xmltree.Name{Space: d.name.Space, Local: d.name.Local},
-				Value:  d.value,
-				Parent: &cp,
-			}
+			ac := alloc.Node()
+			ac.Kind = xmltree.KindAttribute
+			ac.Name = xmltree.Name{Space: d.name.Space, Local: d.name.Local}
+			ac.Value = d.value
+			ac.Parent = cp
 			ac.SetTypeAnno(int32(typeAnnoForNode(d.typ, ac)))
 			ac.SetListTyped(listTypedFor(d.typ))
 			ac.SetListItemType(s.listItemTypeName(d.typ))
@@ -271,59 +302,88 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 		// DESCENDANT atomizes to its typed value (assert018 data(d),
 		// assert022 data(event/d)); the assertion ROOT itself stays untyped —
 		// its own type is exactly what is being validated (assert022's base
-		// assert demands xs:untypedAtomic there).
-		if n != el {
-			s.annotateAssertNode(&cp, n)
+		// assert demands xs:untypedAtomic there). Only elements and
+		// attributes are ever annotated (annotateAssertType), so a text
+		// node's lookup is skipped.
+		if n != el && n.Kind == xmltree.KindElement {
+			s.annotateAssertNode(cp, n)
 		}
+		kids := 0
 		for _, ch := range n.Children {
-			if ch.Kind == xmltree.KindComment || ch.Kind == xmltree.KindPI {
-				continue
+			if ch.Kind != xmltree.KindComment && ch.Kind != xmltree.KindPI {
+				kids++
 			}
-			c2 := clone(ch)
-			c2.Parent = &cp
-			cp.Children = append(cp.Children, c2)
 		}
-		return &cp
+		if kids > 0 {
+			cp.Children = alloc.Ptrs(kids)
+			for _, ch := range n.Children {
+				if ch.Kind == xmltree.KindComment || ch.Kind == xmltree.KindPI {
+					continue
+				}
+				c2 := clone(ch)
+				c2.Parent = cp
+				cp.Children = append(cp.Children, c2)
+			}
+		}
+		return cp
 	}
 	root := clone(el)
 	// The tree is DETACHED, so namespace bindings declared on ANCESTORS of
 	// the assertion root would be lost: materialize the root's in-scope
 	// bindings (QName-typed content — assert024's @name — resolves against
-	// them).
-	have := map[string]bool{}
-	for _, ns := range root.NSDecls() {
-		have[ns.Name.Local] = true
-	}
-	for pfx, uri := range el.InScopeNamespaces() {
-		if !have[pfx] {
-			root.AddNS(&xmltree.Node{Kind: xmltree.KindNamespace,
-				Name: xmltree.Name{Local: pfx}, Value: uri, Parent: root})
+	// them). When no ancestor declares any, the root's own declarations
+	// already are its in-scope bindings and there is nothing to add.
+	if ancestorsDeclareNS(el) {
+		have := map[string]bool{}
+		for _, ns := range root.NSDecls() {
+			have[ns.Name.Local] = true
+		}
+		for pfx, uri := range el.InScopeNamespaces() {
+			if !have[pfx] {
+				root.AddNS(&xmltree.Node{Kind: xmltree.KindNamespace,
+					Name: xmltree.Name{Local: pfx}, Value: uri, Parent: root})
+			}
 		}
 	}
 	return root
 }
 
-// annotateAssertNode copies the typed-XDM annotation recorded for src onto its
-// assertion-tree clone dst: one primitive for an atomic type, or the
-// item-primitive + list marks for a list, whose typed value is a sequence.
-func (s *Schema) annotateAssertNode(dst, src *xmltree.Node) {
-	if t, ok := s.assertTypes[src]; ok {
-		dst.SetTypeAnno(int32(t))
-		return
+// ancestorsDeclareNS reports whether an ancestor of el within the scope
+// Node.InScopeNamespaces walks (up to an element that inherits none)
+// declares a namespace.
+func ancestorsDeclareNS(el *xmltree.Node) bool {
+	if el.NSBarrier() {
+		return false
 	}
-	if l, ok := s.assertLists[src]; ok {
-		dst.SetTypeAnno(int32(l.prim))
-		dst.SetListTyped(true)
-		dst.SetListItemType(l.item)
+	for p := el.Parent; p != nil; p = p.Parent {
+		if len(p.NSDecls()) > 0 {
+			return true
+		}
+		if p.NSBarrier() {
+			break
+		}
+	}
+	return false
+}
+
+// annotateAssertNode copies the typed-XDM annotation recorded for src onto its
+// assertion-tree clone dst.
+func (s *Schema) annotateAssertNode(dst, src *xmltree.Node) {
+	if a, ok := s.assertAnnos[src]; ok {
+		dst.SetTypeAnno(a.prim)
+		if a.list {
+			dst.SetListTyped(true)
+			dst.SetListItemType(s.assertListItems[src])
+		}
 	}
 }
 
 // checkAsserts evaluates a complex type's assertions against el (1.1 only).
 func (s *Schema) checkAsserts(ct *ComplexType, el *xmltree.Node) error {
-	if s.version != Version11 {
+	if s.version != Version11 || !s.hasAsserts {
 		return nil
 	}
-	asserts := s.effectiveAsserts(ct)
+	asserts := s.childModelOf(ct).asserts
 	if len(asserts) == 0 {
 		return nil
 	}

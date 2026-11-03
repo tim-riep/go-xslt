@@ -179,6 +179,49 @@ func (a *NodeAlloc) New() *Node {
 	return n
 }
 
+// TreeAlloc carves one tree whose size is known before it is built from
+// two slabs, its nodes and the pointer slices of their children and
+// attributes: one allocation each instead of one per node and one per
+// slice. It is for a copy that is used and discarded as a whole, such as the
+// detached tree a schema assertion is evaluated against, so unlike NodeAlloc
+// it keeps no slab small — every node of such a tree lives exactly as long
+// as the tree. A count that turns out too small only costs an ordinary
+// allocation for what is over, never a wrong tree.
+type TreeAlloc struct {
+	nodes []Node
+	ptrs  []*Node
+}
+
+// Init sizes the slabs for nodes nodes and ptrs pointer slots in all.
+func (a *TreeAlloc) Init(nodes, ptrs int) {
+	a.nodes = make([]Node, nodes)
+	a.ptrs = make([]*Node, ptrs)
+}
+
+// Node returns a zeroed node.
+func (a *TreeAlloc) Node() *Node {
+	if len(a.nodes) == 0 {
+		return new(Node)
+	}
+	n := &a.nodes[0]
+	a.nodes = a.nodes[1:]
+	return n
+}
+
+// Ptrs returns an empty slice with room for exactly n pointers (an append
+// past n reallocates, as it would from a make of that size).
+func (a *TreeAlloc) Ptrs(n int) []*Node {
+	if n == 0 {
+		return nil
+	}
+	if len(a.ptrs) < n {
+		return make([]*Node, 0, n)
+	}
+	s := a.ptrs[:0:n]
+	a.ptrs = a.ptrs[n:]
+	return s
+}
+
 // SetAttrFrom is SetAttr with a new attribute node taken from a.
 func (n *Node) SetAttrFrom(a *NodeAlloc, name Name, value string) *Node {
 	for _, at := range n.Attrs {

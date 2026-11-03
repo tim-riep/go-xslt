@@ -353,26 +353,26 @@ type Schema struct {
 	// wild101/102/103; per-call, like ids).
 	unassessed map[*xmltree.Node]bool
 	// hasAsserts is set at compile time when any xs:assert was parsed. The
-	// only reader of assertTypes/assertLists is assertTree, reached through
+	// only reader of assertAnnos is assertTree, reached through
 	// checkAsserts solely for a complex type with effective assertions — and
 	// solely under XSD 1.1 — so a Validate call under 1.0, or over a schema
-	// without a single xs:assert, leaves both maps nil and records nothing
+	// without a single xs:assert, leaves the map nil and records nothing
 	// (recording cost a map entry per simple-typed element).
 	hasAsserts bool
-	// assertTypes: per-Validate-call typed-XDM annotations (element -> the
-	// primitive its simple content validated against); consumed by assertTree.
-	assertTypes map[*xmltree.Node]xpath.AtomType
+	// assertAnnos: per-Validate-call typed-XDM annotations (element or
+	// attribute -> what its simple content validated against); consumed by
+	// assertTree, which copies them onto the assertion tree. One entry per
+	// simple-typed node of the instance, so the value is kept to a word
+	// (see assertAnno); a list's item type name lives in assertListItems.
+	assertAnnos map[*xmltree.Node]assertAnno
+	// assertListItems: the item type's own name for the nodes assertAnnos
+	// marks as lists, when it has one. Same lifetime as assertAnnos.
+	assertListItems map[*xmltree.Node]*xmltree.SchemaTypeName
 	// coll collects every error of a Validate call (nil on ValidateNode).
 	coll *collector
 	// interrupt, set for one ValidateOptsCtx call, is polled for every
 	// element validated; a non-nil error cancels the validation.
 	interrupt func() error
-	// assertLists is assertTypes for a LIST-varietied simple type, whose typed
-	// value is a SEQUENCE and so cannot be described by one primitive alone —
-	// the same {item primitive, item type name} pair xmltree.Node.TypeAnno +
-	// ListTyped + ListItemType already carry everywhere else. Consumed by
-	// assertTree; same per-call lifetime as assertTypes.
-	assertLists map[*xmltree.Node]assertList
 	// nodeTypes records the schema type each validated node was assessed
 	// against, for ValidateNode's in-place annotation (bridge.go). nil on the
 	// Validate path, which annotates nothing — see noteNodeType.
@@ -394,11 +394,20 @@ type Schema struct {
 	nodeDefaults map[*xmltree.Node][]defaultAttr
 }
 
-// assertList is the typed-XDM description of a LIST-varietied node for
-// assertion evaluation — see Schema.assertLists.
-type assertList struct {
-	prim xpath.AtomType          // the ITEM type's primitive
-	item *xmltree.SchemaTypeName // the item type's own name, when it has one
+// assertAnno is the typed-XDM description of a validated node for assertion
+// evaluation — see Schema.assertAnnos: the primitive an atomic value
+// validated against, or, for a LIST-varietied simple type whose typed value
+// is a SEQUENCE and so cannot be described by one primitive alone, the ITEM
+// type's primitive and name — the same {item primitive, item type name}
+// pair xmltree.Node.TypeAnno + ListTyped + ListItemType carry everywhere
+// else.
+//
+// It is one word: an xpath.AtomType is an int, but every value fits an
+// int32 (Node.TypeAnno is one), and a wider value here would cost a few
+// bytes per simple-typed node of a large instance.
+type assertAnno struct {
+	prim int32 // the type's primitive (a list's: the ITEM type's), an xpath.AtomType
+	list bool  // a list: the typed value is a sequence
 }
 
 // defaultAttr is one attribute a value constraint supplied for an element that
