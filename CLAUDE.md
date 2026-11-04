@@ -446,6 +446,13 @@ Desktop GUI (**run from `desktop/`**):
   `.github/workflows/conformance.yml` runs `scripts/conformance.sh --strict`
   nightly (fails on any number differing from the published one). `scripts/bench/main.go` benchmarks it
   against xsltproc/xmllint (`go run scripts/bench/main.go`).
+  `go run ./scripts/perfab -a origin/main -b .` is the global A/B check every
+  performance change must pass: 23 workloads (`scripts/perfab/workloads/`,
+  inputs from `scripts/internal/gendata`) on two builds, alternating, with a
+  PASS only if no workload is slower, bigger or different (README there).
+  On a noisy machine `-ir` judges instructions executed (cachegrind,
+  deterministic to 0.1 %) instead of time; the allocation columns are
+  deterministic in every mode.
 - **Tests are deterministic — no verdict may depend on wall-clock time or on how
   busy the machine is.** No per-case timeouts in the harnesses (a case that
   cannot finish is stopped by the engine's counted budgets — instruction steps,

@@ -503,6 +503,14 @@ func MatchesSeqTypeCtx(st *SeqType, o Object, ctx *Context) bool {
 }
 
 func matchesSeqType(st *SeqType, o Object, ctx *Context) bool {
+	switch o.(type) {
+	case nil, Sequence, NodeSet:
+	default:
+		// One item, held directly: every occurrence indicator admits it,
+		// and boxing it into a one-item slice was an allocation per typed
+		// binding of a single value.
+		return !st.Empty && matchesItemType(st.Item, o, ctx)
+	}
 	items := Items(o)
 	if st.Empty {
 		return len(items) == 0
@@ -680,6 +688,11 @@ func matchesItemType(it ItemType, item Item, ctx *Context) bool {
 		}
 		if it.Wild || it.ArrayItem == nil {
 			return true
+		}
+		if mt := it.ArrayItem; !mt.Empty && mt.Occur == 0 && mt.Item.Kind == itAtomic && mt.Item.SchemaType == nil && !mt.Item.BareAtom {
+			// One built-in atomic item per member, a test that reads no
+			// context: what the loop below would decide, remembered.
+			return a.membersAreAtomic(mt.Item.Atom, ctx)
 		}
 		for _, mem := range a.Members() {
 			if !MatchesSeqTypeCtx(it.ArrayItem, mem, ctx) {

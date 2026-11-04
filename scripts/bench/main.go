@@ -16,7 +16,6 @@ import (
 	"flag"
 	"fmt"
 	"math"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +25,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tim-riep/go-xslt/scripts/internal/gendata"
 )
 
 var (
@@ -106,7 +107,7 @@ func main() {
 	check(build.Run())
 
 	doc := filepath.Join(dir, "orders.xml")
-	check(os.WriteFile(doc, []byte(generate(*records)), 0o644))
+	check(os.WriteFile(doc, []byte(gendata.Orders(*records)), 0o644))
 	xsd := filepath.Join(dir, "orders.xsd")
 	check(os.WriteFile(xsd, []byte(schema), 0o644))
 	fi, err := os.Stat(doc)
@@ -202,22 +203,6 @@ func sameText(a, b string) bool {
 		}
 	}
 	return true
-}
-
-func generate(n int) string {
-	r := rand.New(rand.NewSource(1))
-	var b strings.Builder
-	b.WriteString("<?xml version=\"1.0\"?>\n<orders>\n")
-	for i := 0; i < n; i++ {
-		fmt.Fprintf(&b, `  <order id="o%d"><customer>customer %d</customer><date>2024-%02d-%02d</date><price>%d.%02d</price><items>`,
-			i, r.Intn(5000), 1+r.Intn(12), 1+r.Intn(28), r.Intn(1000), r.Intn(100))
-		for j := 0; j < 1+r.Intn(4); j++ {
-			fmt.Fprintf(&b, `<item sku="s%d" qty="%d"/>`, r.Intn(100000), 1+r.Intn(9))
-		}
-		b.WriteString("</items></order>\n")
-	}
-	b.WriteString("</orders>\n")
-	return b.String()
 }
 
 func cpuName() string {

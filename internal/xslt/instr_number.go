@@ -348,11 +348,11 @@ func (n *num2Number) compute(eng *engine, r rt) ([]num2Val, bool, error) {
 		// evalEnv/for-each), is XTTE0990 (number-0823/0824/1004).
 		return nil, false, errAt(n.el, "err:XTTE0990: xsl:number: the context item is absent or is not a node")
 	}
-	env := &evalEnv{eng: eng, el: n.el, current: node}
+	m := newNum2matcher(eng, n.el)
 
 	switch n.level {
 	case "any":
-		c, err := n.countAny(eng, env, node)
+		c, err := n.countAny(m, node)
 		if err != nil {
 			return nil, false, err
 		}
@@ -364,10 +364,10 @@ func (n *num2Number) compute(eng *engine, r rt) ([]num2Val, bool, error) {
 		}
 		return []num2Val{{small: c}}, false, nil
 	case "multiple":
-		nums, err := n.countMultiple(eng, env, node)
+		nums, err := n.countMultiple(m, node)
 		return nums, false, err
 	default: // single
-		c, err := n.countSingle(eng, env, node)
+		c, err := n.countSingle(m, node)
 		if err != nil {
 			return nil, false, err
 		}
@@ -378,41 +378,74 @@ func (n *num2Number) compute(eng *engine, r rt) ([]num2Val, bool, error) {
 	}
 }
 
-// num2matchEnv builds the context used to evaluate count/from patterns. As
-// with template-rule matching, current() while testing a candidate node
-// against the pattern is that candidate itself, not the node being numbered
+// num2matcher tests candidate nodes against @count and @from. As with
+// template-rule matching, current() while testing a candidate node against
+// the pattern is that candidate itself, not the node being numbered
 // (number-1701/1702/1901: current() in a compound step predicate, or as a
 // self-reference in a from/count test, must vary with the node under test).
-func num2matchCtx(env *evalEnv, node *xmltree.Node) *xpath.Context {
-	nenv := &evalEnv{eng: env.eng, el: env.el, current: node}
-	return &xpath.Context{Node: node, CtxItem: realItemOf(node), Pos: 1, Size: 1, Vars: nenv, NS: nenv, Funcs: nenv, Resolver: env.eng.resolver, NoOutputURI: true, DefaultElemNS: xpathDefaultNS(env.el), Now: env.eng.now, SchemaTypes: schemaTypesFor(env.el)}
+//
+// One evalEnv and one Context serve every candidate of one xsl:number
+// evaluation (the reuse of the xsl:key walk and matchingTemplates): Match
+// keeps no reference to either unless an evaluation captured the context,
+// and then a fresh pair is taken. They used to be allocated per candidate,
+// which for level="single" is every preceding sibling of the numbered node.
+type num2matcher struct {
+	eng *engine
+	el  *xmltree.Node
+	sc  *matchScratch
+	dns string
+	st  xpath.SchemaTypeResolver
+}
+
+func newNum2matcher(eng *engine, el *xmltree.Node) *num2matcher {
+	return &num2matcher{eng: eng, el: el, dns: xpathDefaultNS(el), st: schemaTypesFor(el)}
+}
+
+// match reports whether node matches p.
+func (m *num2matcher) match(p *xpath.Pattern, node *xmltree.Node) (bool, error) {
+	eng := m.eng
+	var ctx *xpath.Context
+	if p.NeedsOnlyDefaultNS() {
+		// A pattern that reads no more of a context than its default
+		// element namespace is matched against just that (staticMatchCtx).
+		ctx = eng.staticMatchCtx(m.dns)
+	} else {
+		if m.sc == nil || m.sc.captured() {
+			// The context points at env, so both are replaced.
+			m.sc = new(matchScratch)
+		}
+		env := &m.sc.env
+		ctx = &m.sc.ctx
+		*env = evalEnv{eng: eng, el: m.el, current: node}
+		*ctx = xpath.Context{Node: node, CtxItem: realItemOf(node), Pos: 1, Size: 1, Vars: env, NS: env, Funcs: env, Resolver: eng.resolver, NoOutputURI: true, DefaultElemNS: m.dns, Now: eng.now, SchemaTypes: m.st}
+	}
+	eng.patternDepth++
+	ok, err := p.Match(node, ctx)
+	eng.patternDepth--
+	return ok, err
 }
 
 // matchesCount reports whether node satisfies @count. When @count is absent the
 // default is "same node kind and name as the node being numbered".
-func (n *num2Number) matchesCount(env *evalEnv, node, target *xmltree.Node) (bool, error) {
+func (n *num2Number) matchesCount(m *num2matcher, node, target *xmltree.Node) (bool, error) {
 	if n.count == nil {
 		return num2SameName(node, target), nil
 	}
-	env.eng.patternDepth++
-	defer func() { env.eng.patternDepth-- }()
-	return n.count.Match(node, num2matchCtx(env, node))
+	return m.match(n.count, node)
 }
 
 // matchesFrom reports whether node satisfies @from (false when @from absent).
-func (n *num2Number) matchesFrom(env *evalEnv, node *xmltree.Node) (bool, error) {
+func (n *num2Number) matchesFrom(m *num2matcher, node *xmltree.Node) (bool, error) {
 	if n.from == nil {
 		return false, nil
 	}
-	env.eng.patternDepth++
-	defer func() { env.eng.patternDepth-- }()
-	return n.from.Match(node, num2matchCtx(env, node))
+	return m.match(n.from, node)
 }
 
 // countSingle counts preceding siblings of node (plus self) that match @count,
 // walking up to the nearest ancestor-or-self that does match if the node itself
 // does not. Returns 0 when no matching node is found.
-func (n *num2Number) countSingle(eng *engine, env *evalEnv, node *xmltree.Node) (int64, error) {
+func (n *num2Number) countSingle(m *num2matcher, node *xmltree.Node) (int64, error) {
 	// Find the nearest ancestor-or-self matching @count. @count is tested
 	// BEFORE @from at each node: a node that matches both (e.g. count="a",
 	// from="a" — number-3227/3229) is still a valid target, it just also
@@ -422,14 +455,14 @@ func (n *num2Number) countSingle(eng *engine, env *evalEnv, node *xmltree.Node) 
 	target := node
 	cur := node
 	for cur != nil {
-		ok, err := n.matchesCount(env, cur, target)
+		ok, err := n.matchesCount(m, cur, target)
 		if err != nil {
 			return 0, err
 		}
 		if ok {
-			return n.siblingIndex(env, cur, target)
+			return n.siblingIndex(m, cur, target)
 		}
-		if from, err := n.matchesFrom(env, cur); err != nil {
+		if from, err := n.matchesFrom(m, cur); err != nil {
 			return 0, err
 		} else if from {
 			return 0, nil
@@ -441,7 +474,7 @@ func (n *num2Number) countSingle(eng *engine, env *evalEnv, node *xmltree.Node) 
 
 // siblingIndex returns 1 + the number of preceding siblings of node that match
 // @count relative to target.
-func (n *num2Number) siblingIndex(env *evalEnv, node, target *xmltree.Node) (int64, error) {
+func (n *num2Number) siblingIndex(m *num2matcher, node, target *xmltree.Node) (int64, error) {
 	if node.Parent == nil || node.Kind == xmltree.KindAttribute || node.Kind == xmltree.KindNamespace {
 		// An attribute or namespace node is not among its parent's children:
 		// its preceding-sibling axis is empty, so it is number 1 (§12.2).
@@ -449,7 +482,7 @@ func (n *num2Number) siblingIndex(env *evalEnv, node, target *xmltree.Node) (int
 	}
 	var idx int64
 	for _, sib := range node.Parent.Children {
-		ok, err := n.matchesCount(env, sib, target)
+		ok, err := n.matchesCount(m, sib, target)
 		if err != nil {
 			return 0, err
 		}
@@ -465,7 +498,7 @@ func (n *num2Number) siblingIndex(env *evalEnv, node, target *xmltree.Node) (int
 
 // countMultiple builds the ancestor-or-self chain (root-first) of nodes matching
 // @count, each numbered by its sibling index, stopping at any @from boundary.
-func (n *num2Number) countMultiple(eng *engine, env *evalEnv, node *xmltree.Node) ([]num2Val, error) {
+func (n *num2Number) countMultiple(m *num2matcher, node *xmltree.Node) ([]num2Val, error) {
 	var chain []*xmltree.Node
 	// The walk includes the document node as a candidate (e.g. count="."
 	// matches it too — number-0110); num2SameName and any real name/kind
@@ -476,14 +509,14 @@ func (n *num2Number) countMultiple(eng *engine, env *evalEnv, node *xmltree.Node
 		// both still joins the chain (number-3229's from="doc|b" with
 		// count="a|b|c|d|e" needs the matching "b" ancestor counted), and the
 		// walk only stops going further up once a @from boundary is crossed.
-		ok, err := n.matchesCount(env, cur, node)
+		ok, err := n.matchesCount(m, cur, node)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
 			chain = append(chain, cur)
 		}
-		if from, err := n.matchesFrom(env, cur); err != nil {
+		if from, err := n.matchesFrom(m, cur); err != nil {
 			return nil, err
 		} else if from {
 			break
@@ -492,7 +525,7 @@ func (n *num2Number) countMultiple(eng *engine, env *evalEnv, node *xmltree.Node
 	// chain is leaf-first; reverse to root-first.
 	nums := make([]num2Val, 0, len(chain))
 	for i := len(chain) - 1; i >= 0; i-- {
-		idx, err := n.siblingIndex(env, chain[i], node)
+		idx, err := n.siblingIndex(m, chain[i], node)
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +536,7 @@ func (n *num2Number) countMultiple(eng *engine, env *evalEnv, node *xmltree.Node
 
 // countAny counts, in document order, every node up to and including node that
 // matches @count, restarting the count after the most recent @from match.
-func (n *num2Number) countAny(eng *engine, env *evalEnv, node *xmltree.Node) (int64, error) {
+func (n *num2Number) countAny(m *num2matcher, node *xmltree.Node) (int64, error) {
 	root := node
 	for root.Parent != nil {
 		root = root.Parent
@@ -520,12 +553,12 @@ func (n *num2Number) countAny(eng *engine, env *evalEnv, node *xmltree.Node) (in
 			// as an attribute (number-1501).
 			continue
 		}
-		if from, err := n.matchesFrom(env, nd); err != nil {
+		if from, err := n.matchesFrom(m, nd); err != nil {
 			return 0, err
 		} else if from {
 			count = 0
 		}
-		ok, err := n.matchesCount(env, nd, node)
+		ok, err := n.matchesCount(m, nd, node)
 		if err != nil {
 			return 0, err
 		}

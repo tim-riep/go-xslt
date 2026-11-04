@@ -74,7 +74,20 @@ libxslt's time to where it is now:
   functions convert their arguments with fewer allocations (12 % less time
   for a transform made of function calls).
 
-The sixth round was measured on Linux (a 4-core x86-64 virtual machine)
+- a seventh round, with a committed A/B harness (`scripts/perfab`) that
+  runs 23 workloads on two builds — timed, and counted in instructions
+  under cachegrind where the machine is too noisy to time — and passes a
+  change only if no workload gets slower, bigger or different: `xsl:number` builds one evaluation
+  context per numbering instead of one per candidate node (numbering 2,000
+  records with `count="order|item"`: 3.3 s and 3.5 GB allocated before,
+  0.55 s and 8 MB now); an `array(xs:string)` parameter accumulated with
+  `array:append` in `xsl:iterate` was re-checked member by member on every
+  step — the shared array now remembers the verified prefix, so 20,000
+  records take 0.2 s instead of 8.5 s; and matching a single item against a
+  declared type no longer boxes it into a slice (one allocation less per
+  typed parameter, variable or result binding).
+
+The sixth and seventh rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
