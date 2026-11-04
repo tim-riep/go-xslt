@@ -28,7 +28,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/tim-riep/go-xslt/scripts/internal/gendata"
@@ -287,7 +286,7 @@ func compareWorkloads(root, binA, binB string) bool {
 		if tr > 1+*tol {
 			offenders = append(offenders, fmt.Sprintf("%s: %s %.3f (%s -> %s)", w.name, tn, tr, ms(ta), ms(tb)))
 		}
-		if rr > 1+*rssTol {
+		if rr > 1+*rssTol && ma.rss > 0 {
 			offenders = append(offenders, fmt.Sprintf("%s: peak RSS %.3f (%d MB -> %d MB)", w.name, rr, ma.rss>>20, mb.rss>>20))
 		}
 		if ar > 1+*allocTol {
@@ -447,9 +446,7 @@ func run(bin string, args []string) (sample, error) {
 	}
 	s := sample{wall: wall, alloc: m.Alloc, count: m.Count}
 	s.cpu = cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()
-	if ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-		s.rss = int64(ru.Maxrss) * 1024 // kilobytes on Linux
-	}
+	s.rss = peakRSS(cmd.ProcessState)
 	return s, nil
 }
 

@@ -77,6 +77,10 @@ busy machine: re-run the offenders with `-only` and `-runs 9` before
 believing either way, and run nothing else meanwhile. Allocation totals are
 nearly deterministic, so a change there is real.
 
+Peak RSS comes from the process's rusage and is reported on Unix only
+(0 on Windows, where it takes no part in the verdict). `-ir` needs
+valgrind, so it is Unix only too.
+
 `-ir` measures work instead of time: each workload runs once per build
 under `valgrind --tool=cachegrind` (on one core, with the garbage
 collector off, and with a tenth of the records and repetitions, since
