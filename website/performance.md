@@ -110,7 +110,24 @@ libxslt's time to where it is now:
   written from a constant instead of a string per element. No workload
   executes more instructions than before, and every output is byte-identical.
 
-The sixth to eighth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a ninth round, on the evaluation context and the value model: the static
+  base URI of an expression (the `xml:base` chain above its element in the
+  stylesheet, which `doc()`, `document()`, `unparsed-text()`,
+  `static-base-uri()` and a few others read) was walked before every
+  evaluation of every expression in a stylesheet loaded from a file; it is
+  now computed when one of those functions asks for it (HTML output
+  workload: 4 % fewer instructions); and four places that turned a node
+  set into a boxed sequence of items — `fn:subsequence`, matching a node
+  set against a declared type, the string of a one-item `xsl:value-of` or
+  attribute value template, and `current-group()` — now work on the node
+  set itself (deep named-template recursion: 9 % fewer instructions, 5 %
+  fewer allocations; 200 transforms in one process: 5 % fewer
+  instructions, 9 % fewer allocations; the function-call workload: 3 %
+  fewer allocations; the regular-expression workload: 4 % fewer). No
+  workload executes more instructions than before, and every output is
+  byte-identical.
+
+The sixth to ninth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
