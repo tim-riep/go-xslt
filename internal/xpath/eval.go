@@ -79,25 +79,14 @@ type Context struct {
 	// calls counts the inline-function invocations in progress along this
 	// evaluation, shared by every context derived from it (see
 	// evalInlineFunc); nil until the first inline function is created.
-	calls *callDepth
-	// captured is set when a function item retained a POINTER to this
-	// context (an inline function, a function-lookup result): such a
-	// context may be read again later and so must never be overwritten in
-	// place. The per-item loops (applyPredicateOrdered) reuse one scratch
-	// context across items only while it is not captured.
-	captured bool
-	Node     *xmltree.Node // context node
-	Pos      int           // context position (1-based)
-	Size     int           // context size
-	CtxItem  Item          // context item (non-node atomic, for simple map / "." over atomics)
-	// NoOutputURI suppresses fn:current-output-uri(): it marks an evaluation
-	// that is NOT writing a result document — a match/grouping PATTERN, or a
-	// function item called dynamically — where XSLT 3.0 leaves the current
-	// output URI absent (current-output-uri-008/016/017).
-	NoOutputURI bool
-	Vars        VarResolver
-	NS          NamespaceResolver
-	Funcs       FuncResolver
+	calls   *callDepth
+	Node    *xmltree.Node // context node
+	Pos     int           // context position (1-based)
+	Size    int           // context size
+	CtxItem Item          // context item (non-node atomic, for simple map / "." over atomics)
+	Vars    VarResolver
+	NS      NamespaceResolver
+	Funcs   FuncResolver
 	// ResolveNamedFunction is an OPTIONAL host hook (set by the XSLT engine;
 	// nil for every other caller, including plain XPath/XQuery use of this
 	// package) that resolves a named function reference to a callable
@@ -118,6 +107,41 @@ type Context struct {
 	// instead of ResolveNamedFunction (it may see fewer functions: see the XSLT
 	// engine's resolveLookupFunction).
 	ResolveLookupFunction func(ns, local string, arity int) (*Function, bool)
+	Resolver              ResourceResolver // resolves URIs for unparsed-text/doc/collection (may be nil)
+	BaseURI               string           // static base URI of the context document (may be ""); read it through StaticBase, see BaseNode
+	HomeDoc               *xmltree.Node    // document root of the module containing the expression (XSLT only; nil otherwise) — doc('')/document('') return this directly rather than re-resolving through Resolver
+	// BaseNode, when set, is the node whose base URI (NodeBaseURI, its
+	// xml:base chain down from its module's retrieval location) is the
+	// static base URI: StaticBase computes it on first use and stores it in
+	// BaseURI. The XSLT engine sets it to the stylesheet element an
+	// expression is written on, instead of walking that element's ancestors
+	// before every evaluation; the few functions that need the static base
+	// pay for the walk, once per context. Copied along with BaseURI into
+	// every derived context, so a derived context computes the same value.
+	BaseNode         *xmltree.Node
+	DecimalFormats   map[string]DecimalFormat // named xsl:decimal-format symbols for format-number (may be nil)
+	DefaultElemNS    string                   // xpath-default-namespace: namespace for unprefixed element name tests
+	DefaultCollation func(a, b string) int    // [xsl:]default-collation in scope (nil = codepoint collation)
+	// The bool fields are kept together (one word of the struct): a bool
+	// between two words costs eight bytes, and a Context is allocated per
+	// predicate, per path step and per simple-map item.
+	RootlessTree bool // '/' errors unless the tree root is a document node (XSD assertion trees)
+	NoFocus      bool // no focus at all: '.', position(), last() raise XPDY0002 (XSD simple-type assertions)
+	// HostPrefixesOnly says the host (XSLT) predeclares no function-namespace
+	// prefix: a "fn:" call must find fn bound in NS or it is XPST0081
+	// (namespace-6202). Standalone XPath keeps fn predeclared.
+	HostPrefixesOnly bool
+	// captured is set when a function item retained a POINTER to this
+	// context (an inline function, a function-lookup result): such a
+	// context may be read again later and so must never be overwritten in
+	// place. The per-item loops (applyPredicateOrdered) reuse one scratch
+	// context across items only while it is not captured.
+	captured bool
+	// NoOutputURI suppresses fn:current-output-uri(): it marks an evaluation
+	// that is NOT writing a result document — a match/grouping PATTERN, or a
+	// function item called dynamically — where XSLT 3.0 leaves the current
+	// output URI absent (current-output-uri-008/016/017).
+	NoOutputURI bool
 	// ViaFunctionItem marks a context that was CAPTURED into a function item
 	// by a named function reference, rather than one a direct call sees.
 	// XSLT 3.0 §10.3.6 draws exactly this line for a context-dependent
@@ -127,19 +151,16 @@ type Context struct {
 	// In this case, therefore, the context is saved with an absent focus".
 	// Only the host (the XSLT layer) knows which documents are streamed, so
 	// the flag records the capture and the host decides what follows from it.
-	ViaFunctionItem  bool
-	Resolver         ResourceResolver         // resolves URIs for unparsed-text/doc/collection (may be nil)
-	BaseURI          string                   // static base URI of the context document (may be "")
-	HomeDoc          *xmltree.Node            // document root of the module containing the expression (XSLT only; nil otherwise) — doc('')/document('') return this directly rather than re-resolving through Resolver
-	DecimalFormats   map[string]DecimalFormat // named xsl:decimal-format symbols for format-number (may be nil)
-	DefaultElemNS    string                   // xpath-default-namespace: namespace for unprefixed element name tests
-	DefaultCollation func(a, b string) int    // [xsl:]default-collation in scope (nil = codepoint collation)
-	RootlessTree     bool                     // '/' errors unless the tree root is a document node (XSD assertion trees)
-	NoFocus          bool                     // no focus at all: '.', position(), last() raise XPDY0002 (XSD simple-type assertions)
-	// HostPrefixesOnly says the host (XSLT) predeclares no function-namespace
-	// prefix: a "fn:" call must find fn bound in NS or it is XPST0081
-	// (namespace-6202). Standalone XPath keeps fn predeclared.
-	HostPrefixesOnly bool
+	ViaFunctionItem bool
+	// BC10 marks XPath 1.0 backward-compatibility mode (XSLT's own
+	// [xsl:]version="1.0", or the QT3 catalog's "xpath-1.0-compatibility"
+	// feature). Currently consulted only by fn:generate-id: XPath 1.0's
+	// conversion rules take the node-set's FIRST node in document order
+	// where 2.0+ requires a true singleton, so generate-id(//*) — a
+	// multi-node argument — succeeds instead of XPTY0004
+	// (generate-id-018: it then equals generate-id(/*), the root element,
+	// which sorts first).
+	BC10 bool
 	// PatternTop, when non-nil, switches the child and attribute axes to the
 	// XSLT 3.0 PATTERN axes child-or-top / attribute-or-top: on the node named
 	// here — the top of the tree the pattern is being matched against — those
@@ -173,15 +194,6 @@ type Context struct {
 	// which enforces its own version-specific facets separately); only
 	// castInContext (the XPath cast-expression path) checks this.
 	XSDVersion string
-	// BC10 marks XPath 1.0 backward-compatibility mode (XSLT's own
-	// [xsl:]version="1.0", or the QT3 catalog's "xpath-1.0-compatibility"
-	// feature). Currently consulted only by fn:generate-id: XPath 1.0's
-	// conversion rules take the node-set's FIRST node in document order
-	// where 2.0+ requires a true singleton, so generate-id(//*) — a
-	// multi-node argument — succeeds instead of XPTY0004
-	// (generate-id-018: it then equals generate-id(/*), the root element,
-	// which sorts first).
-	BC10 bool
 	// DefaultLanguage is the host's declared default language (an
 	// xs:language lexical value, e.g. "fr-CA") for fn:default-language().
 	// Empty (the default) falls back to "en" — the QT3 catalog's own
@@ -1015,6 +1027,16 @@ func evalArray(n *ArrayExpr, ctx *Context) (Object, error) {
 // take a fresh one once this is set.
 func (c *Context) Captured() bool { return c.captured }
 
+// StaticBase returns the static base URI (BaseURI), computing it from
+// BaseNode first when the host left that to be done on demand.
+func (c *Context) StaticBase() string {
+	if c.BaseNode != nil {
+		c.BaseURI = NodeBaseURI(c.BaseNode, "")
+		c.BaseNode = nil
+	}
+	return c.BaseURI
+}
+
 // CaptureListener is the optional interface a host's VarResolver implements to
 // learn that a function item retained a Context — this one or a copy or a
 // derivative of it — that resolves variables through that resolver. Such a
@@ -1235,7 +1257,7 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 			return nil, err
 		}
 		pos := i + 1
-		sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 		switch it.(type) {
 		case *xmltree.Node:
 			sub.Node = it.(*xmltree.Node)
@@ -1392,7 +1414,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 			var items []Item
 			size := len(current)
 			for idx, cn := range current {
-				sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+				sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 				v, err := evalExpr(step.Postfix, sub)
 				if err != nil {
 					return nil, err
@@ -1689,7 +1711,7 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 		if sub.captured {
 			sub = new(Context)
 		}
-		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 		v, err := evalExpr(pred, sub)
 		if err != nil {
 			return nil, err
@@ -2059,7 +2081,7 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 			if err := ctx.poll(); err != nil {
 				return nil, err
 			}
-			sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+			sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 			if nd, ok := it.(*xmltree.Node); ok {
 				sub.Node = nd
 			}

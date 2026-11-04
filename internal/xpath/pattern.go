@@ -510,7 +510,7 @@ func matchExprPattern(ex Expr, n *xmltree.Node, ctx *Context) (bool, error) {
 	top := effectiveRoot(n)
 	for a := n; a != nil; a = a.Parent {
 		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: a, CtxItem: a.RealItem(), Pos: 1, Size: 1, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs,
-			Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals,
+			Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals,
 			PatternTop: top}
 		v, err := evalExpr(ex, sub)
 		if err != nil {

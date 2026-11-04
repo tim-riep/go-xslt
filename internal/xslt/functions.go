@@ -295,11 +295,11 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 		if len(args) == 0 {
 			return xpath.NodeSet{}, true, nil
 		}
-		atomicBase := ctx.BaseURI
+		atomicBase := ctx.StaticBase()
 		haveBaseNode := false
 		if len(args) > 1 {
 			if ns, ok := xpath.ToNodeSet(args[1]); ok && len(ns) > 0 {
-				atomicBase = xpath.NodeBaseURI(ns[0], ctx.BaseURI)
+				atomicBase = xpath.NodeBaseURI(ns[0], ctx.StaticBase())
 				haveBaseNode = true
 			}
 		}
@@ -324,7 +324,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// that would otherwise resolve against their own base-uri
 			// (XSLT 1.0 §12.1 — resolve-uri-010).
 			if nd, ok := it.(*xmltree.Node); ok && !haveBaseNode {
-				base = xpath.NodeBaseURI(nd, ctx.BaseURI)
+				base = xpath.NodeBaseURI(nd, ctx.StaticBase())
 			}
 			if frag != "" && uri == "" && len(args) > 1 {
 				// document('#id', $node): the empty URI reference denotes the
@@ -589,7 +589,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 		// document in which the entity was declared, and the result is typed
 		// xs:anyURI (unparsed-entity-11).
 		uri := ent.SystemID
-		if abs, err := xpath.ResolveURIRef(uri, xpath.NodeBaseURI(root, ctx.BaseURI)); err == nil && abs != "" {
+		if abs, err := xpath.ResolveURIRef(uri, xpath.NodeBaseURI(root, ctx.StaticBase())); err == nil && abs != "" {
 			uri = abs
 		}
 		return xpath.NewAnyURI(uri), true, nil

@@ -178,7 +178,8 @@ func fnReverse(c *Context, a []Object) (Object, error) {
 // bound selects nothing and an INF length runs to the end (cbcl-subsequence-
 // 003/005/017/024) — only the final slice indices are integers.
 func fnSubsequence(c *Context, a []Object) (Object, error) {
-	items := Items(arg(a, 0))
+	src := arg(a, 0)
+	n := itemCount(src)
 	start, err := doubleArg(c, arg(a, 1))
 	if err != nil {
 		return nil, err
@@ -196,11 +197,26 @@ func fnSubsequence(c *Context, a []Object) (Object, error) {
 		return Sequence{}, nil
 	}
 	first := math.Max(lo, 1)
-	last := math.Min(hi-1, float64(len(items)))
+	last := math.Min(hi-1, float64(n))
 	if first > last {
 		return Sequence{}, nil
 	}
-	return FromItems(items[int(first)-1 : int(last)]), nil
+	if ns, ok := src.(NodeSet); ok {
+		// A node set is cut without boxing every node into an item and
+		// unboxing the kept ones again (Items/FromItems), unless a carrier
+		// node is among the kept ones: those unwrap to the items they stand
+		// for, which is what the general path below does.
+		part := ns[int(first)-1 : int(last)]
+		for _, nd := range part {
+			if nd != nil && nd.RealItem() != nil {
+				return FromItems(Items(src)[int(first)-1 : int(last)]), nil
+			}
+		}
+		out := make(NodeSet, len(part))
+		copy(out, part)
+		return out, nil
+	}
+	return FromItems(Items(src)[int(first)-1 : int(last)]), nil
 }
 
 // fnIndexOf implements fn:index-of under eq semantics: untypedAtomic compares

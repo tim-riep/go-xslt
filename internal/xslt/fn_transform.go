@@ -74,7 +74,7 @@ func init() {
 	// access) and falls back to this hook only when there is no ctx.Funcs at
 	// all — see internal/xpath/fn_transform.go.
 	xpath.TransformFunc = func(ctx *xpath.Context, opts *xpath.Map) (xpath.Object, error) {
-		host := xfHost{baseURI: ctx.BaseURI, resolver: ctx.Resolver}
+		host := xfHost{baseURI: ctx.StaticBase(), resolver: ctx.Resolver}
 		if hint, ok := ctx.Resolver.(xfBaseDirHint); ok {
 			host.baseDir = hint.TransformBaseDir()
 		}

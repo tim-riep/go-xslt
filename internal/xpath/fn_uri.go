@@ -144,7 +144,7 @@ func fnURIResolveURI(c *Context, args []Object) (Object, error) {
 		baseStr = ToString(arg(args, 1))
 	} else {
 		// Single-argument form: resolve against the static base URI.
-		baseStr = c.BaseURI
+		baseStr = c.StaticBase()
 	}
 	if baseStr == "" {
 		// An absolute $relative needs no base; otherwise none is available.

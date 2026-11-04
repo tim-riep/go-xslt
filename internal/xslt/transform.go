@@ -1466,7 +1466,7 @@ type engine struct {
 	rdOutput            *Output                  // serialization override from an empty-href xsl:result-document
 	principalRoot       *xmltree.Node            // the true top-level result tree (a nested/empty-href xsl:result-document always redirects here)
 	// grouping/merge runtime context (set during for-each-group / merge):
-	curGroup        xpath.NodeSet
+	curGroup        xpath.Object // the current group, a NodeSet boxed once per group rather than per current-group() call
 	curGroupOK      bool
 	curKey          xpath.Object
 	curKeyOK        bool // current-grouping-key() is only defined for group-by/group-adjacent (XTDE1071)
@@ -2223,14 +2223,25 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 	env := &sc.env
 	*env = evalEnv{eng: eng, el: el, current: r.node, snapScopes: true}
 	var dns, base string
+	var baseNode *xmltree.Node
 	if eng.sheet.hasXPathDefaultNS {
 		dns = xpathDefaultNSWalk(el)
 	}
 	if eng.sheet.hasXMLBase {
-		base = staticBaseFor(el)
+		if ov == (evalOverride{}) {
+			// The stylesheet never changes, so the static base of an
+			// expression written on el is the same whenever it is read:
+			// the context computes it when (and only if) a function asks
+			// for it (xpath.Context.StaticBase). A dynamically evaluated
+			// expression (xsl:evaluate) may be handed a node of a tree
+			// still being built, and keeps the eager walk.
+			baseNode = el
+		} else {
+			base = staticBaseFor(el)
+		}
 	}
 	if ov.hasBase {
-		base = ov.base
+		base, baseNode = ov.base, nil
 	}
 	if ov.hasDNS {
 		dns = ov.dns
@@ -2271,7 +2282,7 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 		}
 	}
 	ctx := &sc.ctx
-	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
+	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
 	v, err := p.Eval(ctx)
 	if err != nil && eng.errEl == nil {
 		eng.errEl = el
@@ -6066,7 +6077,42 @@ func elOrDoc(el, doc *xmltree.Node) *xmltree.Node {
 // @select form of xsl:value-of/xsl:attribute/xsl:comment/xsl:processing-
 // instruction and by attribute value template expansion.
 func joinSeq(o xpath.Object, sep string) string {
-	return simpleContentJoin(xpath.Flatten(xpath.Items(o)), sep, false)
+	// One item — most xsl:value-of and AVT results — is rendered without
+	// boxing it into a sequence, a parts slice and a one-node set, each an
+	// allocation in simpleContentJoin.
+	var it xpath.Item
+	switch v := o.(type) {
+	case nil:
+		return ""
+	case xpath.NodeSet:
+		if len(v) != 1 {
+			return simpleContentJoin(xpath.Flatten(xpath.Items(o)), sep, false)
+		}
+		it = v[0]
+		if nd := v[0]; nd != nil && nd.RealItem() != nil {
+			it = nd.RealItem()
+		}
+	case xpath.Sequence:
+		if len(v) != 1 {
+			return simpleContentJoin(xpath.Flatten(xpath.Items(o)), sep, false)
+		}
+		it = v[0]
+	default:
+		it = v
+	}
+	if nd, ok := it.(*xmltree.Node); ok {
+		if nd.Kind == xmltree.KindText && !nd.Atomic() {
+			return nd.Value
+		}
+		if s, ok := xpath.TypedNodeLexical(nd); ok {
+			return s
+		}
+		return xpath.NodeString(nd)
+	}
+	if _, ok := it.(*xpath.Array); ok {
+		return simpleContentJoin(xpath.Flatten([]xpath.Item{it}), sep, false)
+	}
+	return xpath.ToString(it)
 }
 
 // firstIllegalXML10Char walks a result tree for the first character that no

@@ -196,6 +196,10 @@ func (ns NodeSet) Unique() NodeSet { return append(NodeSet{}, ns...).normalize()
 // out copies.
 func NormalizeNodes(ns []*xmltree.Node) []*xmltree.Node { return NodeSet(ns).normalize() }
 
+// NodeString is the string value of one node as ToString gives it for a node
+// set holding just that node (a typed node's value normalized by its type).
+func NodeString(n *xmltree.Node) string { return nodeStringValue(n) }
+
 // first returns the node first in document order.
 func (ns NodeSet) first() *xmltree.Node {
 	if len(ns) == 0 {

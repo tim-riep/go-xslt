@@ -313,7 +313,7 @@ func strMatcherArg(c *Context, a []Object, i int) (*strMatcher, error) {
 		return nil, fmt.Errorf("err:XPTY0004: the collation argument must be a single xs:string")
 	}
 	uri := strings.TrimSpace(itemString(items[0]))
-	if c != nil && c.BaseURI != "" && uri != "" {
+	if c != nil && uri != "" && c.StaticBase() != "" {
 		if u, err := url.Parse(uri); err == nil && !u.IsAbs() {
 			uri = resolveAgainstBase(c.BaseURI, uri)
 		}
