@@ -43,7 +43,8 @@ libxml2, CGo or a JVM:
 </p>
 
 An editor for XSLT, XSD and XPath with live results, errors marked in the
-code, project folders and saved runs. **[Download for macOS, Windows and
+code, project folders and saved runs, with its interface in 28 languages.
+**[Download for macOS, Windows and
 Linux](https://github.com/tim-riep/go-xslt/releases/latest)** (signed for macOS
 and Windows) · [Desktop app guide →](https://tim-riep.github.io/go-xslt/desktop)
 
@@ -193,7 +194,9 @@ So go-xslt is faster than the C libraries on every workload both can run,
 validation included. It uses somewhat more memory, with streaming available
 when memory matters. It implements XSLT 3.0, XPath 3.1 and XSD 1.1, which
 they do not.
-`go run scripts/bench/main.go` reproduces the table.
+`go run scripts/bench/main.go` reproduces the table; `go run ./scripts/perfab`
+is the A/B harness every performance change has to pass (23 workloads, no
+workload may get slower, bigger or different).
 [Performance details →](https://tim-riep.github.io/go-xslt/performance)
 
 ## Status
@@ -215,4 +218,6 @@ Everything the suites still fail is in
 From v0.3.0 on, bug reports are welcome as
 [issues](https://github.com/tim-riep/go-xslt/issues); pull requests are not
 accepted — see [CONTRIBUTING.md](CONTRIBUTING.md).
-Apache License 2.0, see [LICENSE](LICENSE).
+Apache License 2.0, see [LICENSE](LICENSE); the licenses of everything bundled
+are listed in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and in the
+desktop app's Licenses view.
