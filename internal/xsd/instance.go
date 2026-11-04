@@ -73,8 +73,7 @@ func (s *Schema) ValidateOptsCtx(ctx context.Context, instance, lang string, max
 	if local.version == Version11 && local.hasAsserts {
 		// Recorded only where assertTree can ever read them: see
 		// Schema.hasAsserts.
-		local.assertTypes = map[*xmltree.Node]xpath.AtomType{}
-		local.assertLists = map[*xmltree.Node]assertList{}
+		local.assertAnnos = map[*xmltree.Node]assertAnno{}
 	}
 	// Populated on THIS path too, although only ValidateNode writes the
 	// supplied attributes back to a caller's tree (supplyDefaults): assertion
@@ -360,20 +359,16 @@ func (s *Schema) icNodeVisible(n *xmltree.Node) bool {
 			continue
 		}
 		nn := nameOf(cur)
-		decls := map[xname]*ElementDecl{}
-		p := s.effectiveParticle(pt)
-		s.contentDecls(p, decls)
-		if _, declared := decls[nn]; declared {
+		// The parent type's declared children and skip wildcards (open
+		// content included), as validateChildren sees them — childModelOf
+		// keeps them for the call.
+		cm := s.childModelOf(pt)
+		if _, declared := cm.decls[nn]; declared {
 			continue
 		}
 		// Mirror validateChildren's attribution order: a skip wildcard absorbs
 		// the child BEFORE the global-declaration fallback is consulted.
-		var skips []*wildcard
-		collectWildcards(p, "skip", &skips)
-		if oc := s.effectiveOpenContent(pt); oc != nil && oc.wc != nil && oc.wc.process == "skip" {
-			skips = append(skips, oc.wc)
-		}
-		if matchesAnyWildcard(skips, nn) {
+		if matchesAnyWildcard(cm.skipWc, nn) {
 			return false
 		}
 	}
@@ -384,7 +379,7 @@ func (s *Schema) icNodeVisible(n *xmltree.Node) bool {
 // content validated against, feeding the typed-XDM view of later assertion
 // evaluations (assert018/assert022). Unions stay untyped.
 //
-// A LIST is recorded separately (assertLists): its typed value is a SEQUENCE
+// A LIST is recorded as such (assertAnno.list): its typed value is a SEQUENCE
 // of item-typed values, which one primitive cannot describe — the same reframe
 // Node.ListTyped applies everywhere else, and without it an assertion reading
 // a list-valued attribute sees ONE untyped string holding every token. The
@@ -398,7 +393,7 @@ func (s *Schema) annotateAssertType(el *xmltree.Node, st *SimpleType) {
 	if st == nil || el == nil {
 		return
 	}
-	if s.assertTypes == nil && s.assertLists == nil {
+	if s.assertAnnos == nil {
 		// Nothing records annotations on this path, so the union resolution
 		// below — which re-validates against each member — would be pure cost.
 		return
@@ -421,9 +416,6 @@ func (s *Schema) annotateAssertType(el *xmltree.Node, st *SimpleType) {
 		st = m
 	}
 	if st.variety == vList {
-		if s.assertLists == nil {
-			return
-		}
 		it := listItemSimpleType(st)
 		if it == nil {
 			return
@@ -432,14 +424,20 @@ func (s *Schema) annotateAssertType(el *xmltree.Node, st *SimpleType) {
 		if p == 0 {
 			return
 		}
-		s.assertLists[el] = assertList{prim: p, item: s.listItemTypeName(st)}
+		s.assertAnnos[el] = assertAnno{prim: int32(p), list: true}
+		if item := s.listItemTypeName(st); item != nil {
+			if s.assertListItems == nil {
+				s.assertListItems = map[*xmltree.Node]*xmltree.SchemaTypeName{}
+			}
+			s.assertListItems[el] = item
+		}
 		return
 	}
-	if s.assertTypes == nil || st.variety != vAtomic {
+	if st.variety != vAtomic {
 		return
 	}
 	if p := st.resolvePrim(); p != 0 {
-		s.assertTypes[el] = p
+		s.assertAnnos[el] = assertAnno{prim: int32(p)}
 	}
 }
 
@@ -1072,6 +1070,7 @@ type childModel struct {
 	decls                   map[xname]*ElementDecl
 	fixedsByName            map[xname][]string
 	skipWc, laxWc, strictWc []*wildcard
+	asserts                 []*assertion // the type's effective assertions (1.1)
 }
 
 // childModelOf returns ct's childModel, from the per-call cache when there is
@@ -1088,6 +1087,9 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 	collectWildcards(cm.p, "skip", &cm.skipWc)
 	collectWildcards(cm.p, "lax", &cm.laxWc)
 	collectWildcards(cm.p, "strict", &cm.strictWc)
+	if s.version == Version11 && s.hasAsserts {
+		cm.asserts = s.effectiveAsserts(ct)
+	}
 	if oc := cm.oc; oc != nil && oc.wc != nil {
 		// Children admitted by the open-content wildcard are assessed per its
 		// processContents, exactly like model wildcards.

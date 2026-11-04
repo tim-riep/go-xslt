@@ -2063,7 +2063,42 @@ func fnJSXMLToJSON(ctx *Context, args []Object) (Object, error) {
 // carries its key — possibly the empty string (json-to-xml-034) — in a "key"
 // attribute; key is nil for every other value.
 func jsBuildXMLNode(v any, key *string) *xmltree.Node {
-	return jsBuildXMLNodeEsc(v, key, false)
+	var a xmltree.NodeAlloc
+	a.Reserve(jsNodeCount(v, key, false))
+	return jsBuildXMLNodeEsc(&a, v, key, false)
+}
+
+// jsNodeCount is the number of nodes jsBuildXMLNodeEsc builds for v: an
+// element per value, a text node per scalar, an attribute per key and per
+// escaped mark. It sizes the node allocator's first slab, so a small
+// document takes no more than it needs.
+func jsNodeCount(v any, key *string, escape bool) int {
+	n := 1
+	if key != nil {
+		n++
+		if escape && strings.Contains(*key, `\`) {
+			n++
+		}
+	}
+	switch t := v.(type) {
+	case nil:
+	case string:
+		n++
+		if escape && strings.Contains(t, `\`) {
+			n++
+		}
+	case *jsObj:
+		for i := range t.keys {
+			n += jsNodeCount(t.vals[i], &t.keys[i], escape)
+		}
+	case []any:
+		for _, mv := range t {
+			n += jsNodeCount(mv, nil, escape)
+		}
+	default:
+		n++ // bool, number: a text node
+	}
+	return n
 }
 
 // jsBuildXMLNodeEsc is jsBuildXMLNode for the escape=true option, where the
@@ -2073,47 +2108,66 @@ func jsBuildXMLNode(v any, key *string) *xmltree.Node {
 // CONTAINS a backslash escape; a string that needed none is indistinguishable
 // from an unescaped one and carries no attribute (json-to-xml-escape-003 vs
 // -005/-006).
-func jsBuildXMLNodeEsc(v any, key *string, escape bool) *xmltree.Node {
+//
+// The nodes come from a, in slabs (the tree is built and kept as a whole),
+// and a map's or array's children slice is made to its size.
+func jsBuildXMLNodeEsc(a *xmltree.NodeAlloc, v any, key *string, escape bool) *xmltree.Node {
 	esc := func(s string) bool { return escape && strings.Contains(s, `\`) }
+	element := func(local string) *xmltree.Node {
+		el := a.New()
+		el.Kind, el.Name = xmltree.KindElement, xmltree.Name{Local: local, Space: jsXFNS}
+		return el
+	}
+	text := func(el *xmltree.Node, value string) {
+		tn := a.New()
+		tn.Kind, tn.Value = xmltree.KindText, value
+		el.Append(tn)
+	}
 	var el *xmltree.Node
 	switch t := v.(type) {
 	case nil:
-		el = xmltree.NewElement(xmltree.Name{Local: "null", Space: jsXFNS})
+		el = element("null")
 	case bool:
-		el = xmltree.NewElement(xmltree.Name{Local: "boolean", Space: jsXFNS})
-		el.Append(xmltree.NewText(strconv.FormatBool(t)))
+		el = element("boolean")
+		text(el, strconv.FormatBool(t))
 	case string:
-		el = xmltree.NewElement(xmltree.Name{Local: "string", Space: jsXFNS})
-		el.Append(xmltree.NewText(t))
+		el = element("string")
+		text(el, t)
 		if esc(t) {
-			el.SetAttr(xmltree.Name{Local: "escaped"}, "true")
+			el.SetAttrFrom(a, xmltree.Name{Local: "escaped"}, "true")
 		}
 	case json.RawMessage:
-		el = xmltree.NewElement(xmltree.Name{Local: "number", Space: jsXFNS})
-		el.Append(xmltree.NewText(string(t)))
+		el = element("number")
+		text(el, string(t))
 	case json.Number:
-		el = xmltree.NewElement(xmltree.Name{Local: "number", Space: jsXFNS})
-		el.Append(xmltree.NewText(string(t)))
+		el = element("number")
+		text(el, string(t))
 	case float64:
-		el = xmltree.NewElement(xmltree.Name{Local: "number", Space: jsXFNS})
-		el.Append(xmltree.NewText(strconv.FormatFloat(t, 'g', -1, 64)))
+		el = element("number")
+		text(el, strconv.FormatFloat(t, 'g', -1, 64))
 	case *jsObj:
-		el = xmltree.NewElement(xmltree.Name{Local: "map", Space: jsXFNS})
+		el = element("map")
+		if len(t.keys) > 0 {
+			el.Children = make([]*xmltree.Node, 0, len(t.keys))
+		}
 		for i, k := range t.keys {
-			el.Append(jsBuildXMLNodeEsc(t.vals[i], &k, escape))
+			el.Append(jsBuildXMLNodeEsc(a, t.vals[i], &k, escape))
 		}
 	case []any:
-		el = xmltree.NewElement(xmltree.Name{Local: "array", Space: jsXFNS})
+		el = element("array")
+		if len(t) > 0 {
+			el.Children = make([]*xmltree.Node, 0, len(t))
+		}
 		for _, mv := range t {
-			el.Append(jsBuildXMLNodeEsc(mv, nil, escape))
+			el.Append(jsBuildXMLNodeEsc(a, mv, nil, escape))
 		}
 	default:
-		el = xmltree.NewElement(xmltree.Name{Local: "null", Space: jsXFNS})
+		el = element("null")
 	}
 	if key != nil {
-		el.SetAttr(xmltree.Name{Local: "key"}, *key)
+		el.SetAttrFrom(a, xmltree.Name{Local: "key"}, *key)
 		if esc(*key) {
-			el.SetAttr(xmltree.Name{Local: "escaped-key"}, "true")
+			el.SetAttrFrom(a, xmltree.Name{Local: "escaped-key"}, "true")
 		}
 	}
 	return el
@@ -2209,7 +2263,9 @@ func fnJSJSONToXML(ctx *Context, args []Object) (Object, error) {
 	}
 	doc := &xmltree.Node{Kind: xmltree.KindDocument}
 	doc.SetEphemeral(true)
-	root := jsBuildXMLNodeEsc(v, nil, opts.escape)
+	var alloc xmltree.NodeAlloc
+	alloc.Reserve(jsNodeCount(v, nil, opts.escape))
+	root := jsBuildXMLNodeEsc(&alloc, v, nil, opts.escape)
 	// The elements are built with their expanded name only; the serializer
 	// synthesizes xmlns="…" from Name.Space at write time, so the output looks
 	// right, but the NAMESPACE AXIS is derived from Node.NS and would be empty

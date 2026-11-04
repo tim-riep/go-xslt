@@ -617,7 +617,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 
 	if s.opts.Indent && !s.suppress && depth > 0 && pos.parentMayIndent &&
 		!s.inlineElement(n) && !s.inlineElement(pos.prev) {
-		s.b.WriteString("\n" + strings.Repeat("  ", depth))
+		s.writeIndent(depth)
 	}
 	suppressed := false
 	if triggersSuppress {
@@ -849,10 +849,24 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	return elemOpen{qname: qname, meta: meta, saves: saves, indent: indent, suppress: suppressed}
 }
 
+// indentSpaces is the longest run of indentation written in one piece.
+const indentSpaces = "                                                                "
+
+// writeIndent writes a line break and two spaces per level, from a constant
+// instead of a string built for every element.
+func (s *serializer) writeIndent(depth int) {
+	s.b.WriteString("\n")
+	for n := 2 * depth; n > 0; {
+		k := min(n, len(indentSpaces))
+		s.b.WriteString(indentSpaces[:k])
+		n -= k
+	}
+}
+
 // closeTag writes an element's end tag and unwinds the scope startTag opened.
 func (s *serializer) closeTag(o elemOpen, depth int) {
 	if o.indent {
-		s.b.WriteString("\n" + strings.Repeat("  ", depth))
+		s.writeIndent(depth)
 	}
 	s.b.WriteString("</")
 	s.b.WriteString(o.qname)

@@ -456,8 +456,7 @@ func (s *Schema) ValidateNode(n *xmltree.Node, opts NodeValidateOptions) error {
 	if local.version == Version11 && local.hasAsserts {
 		// Recorded only where assertTree can ever read them: see
 		// Schema.hasAsserts.
-		local.assertTypes = map[*xmltree.Node]xpath.AtomType{}
-		local.assertLists = map[*xmltree.Node]assertList{}
+		local.assertAnnos = map[*xmltree.Node]assertAnno{}
 	}
 	local.nodeTypes = map[*xmltree.Node]Type{}
 	local.nodeNilled = map[*xmltree.Node]bool{}

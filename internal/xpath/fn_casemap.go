@@ -3,6 +3,7 @@ package xpath
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // fn:upper-case / fn:lower-case use the full (not simple) Unicode case
@@ -86,12 +87,27 @@ func init() {
 
 // upperCaseFull returns s in upper case using the full Unicode mappings.
 func upperCaseFull(s string) string {
+	if isASCII(s) {
+		return strings.ToUpper(s) // no special mapping below U+0080; unchanged input is not copied
+	}
 	return mapCase(s, specialUpper, unicode.ToUpper)
 }
 
 // lowerCaseFull returns s in lower case using the full Unicode mappings.
 func lowerCaseFull(s string) string {
+	if isASCII(s) {
+		return strings.ToLower(s)
+	}
 	return mapCase(s, specialLower, unicode.ToLower)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 func mapCase(s string, special map[rune]string, simple func(rune) rune) string {

@@ -415,7 +415,14 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 		frame[local] = a.Value
 		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: local}, Value: a.Value})
 	}
-	el := &Node{Kind: KindElement, Name: resolveRawName(frame, t.Name, false)}
+	// The element and its attribute nodes are one allocation: an attribute
+	// keeps its element alive through Parent anyway, so nothing is retained
+	// longer than before, and a record of a few attributes costs one
+	// allocation instead of one per node plus the regrowth of Attrs.
+	nAttrs := len(t.Attr) - len(decls)
+	slab := make([]Node, 1+nAttrs)
+	el := &slab[0]
+	el.Kind, el.Name = KindElement, resolveRawName(frame, t.Name, false)
 	el.SetNSDecls(decls)
 	// Stamping order is element, then its namespace nodes, then its
 	// attributes, then (as they arrive) its children — exactly assignOrder's
@@ -425,15 +432,18 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 		d.Parent = el
 		s.stamp(d)
 	}
+	if nAttrs > 0 {
+		el.Attrs = make([]*Node, 0, nAttrs)
+	}
 	for _, a := range t.Attr {
 		if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 			continue
 		}
-		an := &Node{
-			Kind:  KindAttribute,
-			Name:  resolveRawName(frame, a.Name, true),
-			Value: streamNormalizeAttrValue(a.Value),
-		}
+		slab = slab[1:]
+		an := &slab[0]
+		an.Kind = KindAttribute
+		an.Name = resolveRawName(frame, a.Name, true)
+		an.Value = streamNormalizeAttrValue(a.Value)
 		if m := s.idKinds[t.Name.Local]; m != nil {
 			if k := m[a.Name.Local]; k != 0 {
 				an.SetIDKind(k)

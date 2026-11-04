@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -469,13 +471,13 @@ var coreFuncs = func() map[string]coreFunc {
 			if err != nil {
 				return nil, err
 			}
-			re, err := compileRegex(ToString(a[1]), flags)
+			re, matchesEmpty, err := compileRegexEmpty(ToString(a[1]), flags)
 			if err != nil {
 				return nil, err
 			}
 			// A pattern that can match a zero-length string is an error for
 			// fn:tokenize (fn-tokenize-1/36/37/38 — '.?', '^'/'$'/'^[\s]*$' m).
-			if re.MatchString("") {
+			if matchesEmpty {
 				return nil, fmt.Errorf("err:FORX0003: the pattern matches a zero-length string")
 			}
 			return stringsToSeq(re.Split(input, -1)), nil
@@ -883,8 +885,80 @@ func fnNormalizeSpace(c *Context, a []Object) (Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	return strings.Join(strings.Fields(s), " "), nil
+	return normalizeSpace(s), nil
 }
+
+// normalizeSpace is strings.Join(strings.Fields(s), " ") — the same
+// whitespace, the same result — in one pass, returning s itself when it is
+// already normalized and otherwise building the result once.
+func normalizeSpace(s string) string {
+	// Already normalized: no space at either end, and every whitespace is a
+	// single ' ' between two non-space characters.
+	clean, prevSpace := true, true
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			if asciiSpace[c] {
+				if c != ' ' || prevSpace {
+					clean = false
+					break
+				}
+				prevSpace = true
+			} else {
+				prevSpace = false
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			clean = false
+			break
+		}
+		prevSpace = false
+		i += size
+	}
+	if clean && !prevSpace {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	pending := false // a word has been written and a separator is owed
+	start := -1      // the current word's start, -1 between words
+	flush := func(end int) {
+		if start < 0 {
+			return
+		}
+		if pending {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s[start:end])
+		pending, start = true, -1
+	}
+	for i := 0; i < len(s); {
+		c := s[i]
+		size := 1
+		var space bool
+		if c < utf8.RuneSelf {
+			space = asciiSpace[c]
+		} else {
+			var r rune
+			r, size = utf8.DecodeRuneInString(s[i:])
+			space = unicode.IsSpace(r)
+		}
+		if space {
+			flush(i)
+		} else if start < 0 {
+			start = i
+		}
+		i += size
+	}
+	flush(len(s))
+	return b.String()
+}
+
+// asciiSpace is the whitespace strings.Fields splits on below utf8.RuneSelf.
+var asciiSpace = [256]bool{'\t': true, '\n': true, '\v': true, '\f': true, '\r': true, ' ': true}
 
 func fnTranslate(c *Context, a []Object) (Object, error) {
 	s, err := stringArgStrict("translate", a, 0, true)
@@ -1275,13 +1349,13 @@ func fnReplace(c *Context, a []Object) (Object, error) {
 		}
 		return strings.ReplaceAll(in, pat, replStr), nil
 	}
-	re, err := compileRegex(ToString(arg(a, 1)), flags)
+	re, matchesEmpty, err := compileRegexEmpty(ToString(arg(a, 1)), flags)
 	if err != nil {
 		return nil, err
 	}
 	// A pattern that matches a zero-length string is FORX0003 for fn:replace,
 	// exactly as for fn:tokenize (fn-replace-6 '.*?', cbcl-fn-replace-002 '').
-	if re.MatchString("") {
+	if matchesEmpty {
 		return nil, fmt.Errorf("err:FORX0003: the pattern matches a zero-length string")
 	}
 	repl := xpathReplToGo(replStr, re.NumSubexp())
@@ -1314,11 +1388,55 @@ func fnStringJoin(c *Context, a []Object) (Object, error) {
 	// one item and one per token, which is what the separator then joins
 	// (import-schema-029/030: a list of four QNames joined with "," must give
 	// "red,green,hat:blue,hat:pink", not the raw space-separated text).
+	//
+	// The common arguments need no new sequence for that: a node set of
+	// ordinary nodes, each of which atomizes to the xs:untypedAtomic (a
+	// comment, PI or namespace node: the xs:string) of its string value, and
+	// a sequence that is atomic already.
+	switch v := arg(a, 0).(type) {
+	case NodeSet:
+		plain := true
+		for _, n := range v {
+			if !plainNode(n) {
+				plain = false
+				break
+			}
+		}
+		if plain {
+			return joinNodeStrings(v, sep), nil
+		}
+	case Sequence:
+		atomic := true
+		for _, it := range v {
+			if _, ok := it.(*Atomic); !ok {
+				atomic = false
+				break
+			}
+		}
+		if atomic {
+			return seqAsString(v, sep), nil
+		}
+	}
 	items, err := Atomize(arg(a, 0))
 	if err != nil {
 		return nil, err
 	}
 	return seqAsString(items, sep), nil
+}
+
+// joinNodeStrings joins the string values of ordinary (untyped) nodes.
+func joinNodeStrings(ns NodeSet, sep string) string {
+	if len(ns) == 1 {
+		return ns[0].StringValue()
+	}
+	var b strings.Builder
+	for i, n := range ns {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(n.StringValue())
+	}
+	return b.String()
 }
 
 // flagsArg returns the caller-supplied $flags value when the argument at
@@ -1442,10 +1560,34 @@ func checkRegexBraces(p string) error {
 // (multiline), x (whitespace-insensitive), q (literal). strictBraces applies
 // checkRegexBraces.
 func compileRegexOpts(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) (Regex, error) {
+	r := compileRegexCached(pattern, flags, strictBraces, allowBackref, grammar)
+	return r.re, r.err
+}
+
+// compileRegexEmpty is compileRegex also reporting whether the pattern
+// matches a zero-length string (FORX0003 for fn:tokenize, fn:replace and
+// fn:analyze-string), which is decided once per cached pattern rather than
+// by a match per call.
+func compileRegexEmpty(pattern, flags string) (Regex, bool, error) {
+	r := compileRegexCached(pattern, flags, true, true, GrammarXPath)
+	if r.err != nil {
+		return nil, false, r.err
+	}
+	e := r.empty.Load()
+	if e == 0 {
+		e = 1
+		if r.re.MatchString("") {
+			e = 2
+		}
+		r.empty.Store(e)
+	}
+	return r.re, e == 2, nil
+}
+
+func compileRegexCached(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) regexResult {
 	k := regexKey{pattern, flags, strictBraces, allowBackref, grammar}
 	if v, ok := regexCache.Load(k); ok {
-		r := v.(regexResult)
-		return r.re, r.err
+		return v.(regexResult)
 	}
 	re, err := compileRegexUncached(pattern, flags, strictBraces, allowBackref, grammar)
 	if regexCacheSize.Add(1) > regexCacheMax {
@@ -1454,8 +1596,9 @@ func compileRegexOpts(pattern, flags string, strictBraces, allowBackref bool, gr
 		regexCache.Clear()
 		regexCacheSize.Store(1)
 	}
-	regexCache.Store(k, regexResult{re, err})
-	return re, err
+	r := regexResult{re: re, err: err, empty: new(atomic.Int32)}
+	regexCache.Store(k, r)
+	return r
 }
 
 // regexCache keeps compiled regular expressions, so fn:matches and friends
@@ -1480,6 +1623,9 @@ type regexKey struct {
 type regexResult struct {
 	re  Regex
 	err error
+	// empty records, once asked, whether re matches a zero-length string:
+	// 0 not yet known, 1 no, 2 yes (see compileRegexEmpty).
+	empty *atomic.Int32
 }
 
 func compileRegexUncached(pattern, flags string, strictBraces, allowBackref bool, grammar RegexGrammar) (Regex, error) {

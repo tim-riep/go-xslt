@@ -87,7 +87,30 @@ libxslt's time to where it is now:
   declared type no longer boxes it into a slice (one allocation less per
   typed parameter, variable or result binding).
 
-The sixth and seventh rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- the eighth round, on the validator, the readers and the string functions,
+  judged by instructions executed under cachegrind and by allocations, since
+  the machine could not time the change (two runs of the same build differed
+  by up to 15 %): an XSD 1.1 assertion is evaluated against a detached copy
+  of its element, which is now carved from two slabs instead of one
+  allocation per node, with one annotation lookup per element or attribute
+  instead of two per node, and identity constraints no longer rebuild a
+  content-model map for every node a selector picks (XSD 1.1 validation of
+  the 200,000-order document: 20 % fewer allocations, 9 % fewer
+  instructions); the streaming reader allocates an element together with
+  its attributes (8 % fewer allocations in the streaming workload);
+  `fn:string-join` joins nodes without atomizing them into a new sequence,
+  `fn:normalize-space` returns an already-normalized string as it is,
+  `fn:upper-case`/`lower-case` take an ASCII path, `fn:tokenize`/`replace`/
+  `analyze-string` decide "matches the empty string" once per pattern and
+  `format-date` reads its picture by byte (the function-call workload: 7 %
+  fewer instructions and allocations; the string workload: 4 % fewer
+  instructions, 6 % fewer allocations, 40 MB less allocated);
+  `fn:json-to-xml` builds its tree from slabs with children slices made to
+  size (6 % fewer allocations in the JSON round trip); and indentation is
+  written from a constant instead of a string per element. No workload
+  executes more instructions than before, and every output is byte-identical.
+
+The sixth to eighth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 

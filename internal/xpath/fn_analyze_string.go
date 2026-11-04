@@ -39,11 +39,11 @@ func fnAnalyzeString(c *Context, a []Object) (Object, error) {
 	if len(a) > 2 {
 		flags = ToString(arg(a, 2))
 	}
-	re, err := compileRegex(ToString(arg(a, 1)), flags)
+	re, matchesEmpty, err := compileRegexEmpty(ToString(arg(a, 1)), flags)
 	if err != nil {
 		return nil, err
 	}
-	if re.MatchString("") {
+	if matchesEmpty {
 		return nil, fmt.Errorf("err:FORX0003: the pattern matches a zero-length string")
 	}
 	parents := asGroupParents(ToString(arg(a, 1)), flags)
