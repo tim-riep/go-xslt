@@ -2223,14 +2223,25 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 	env := &sc.env
 	*env = evalEnv{eng: eng, el: el, current: r.node, snapScopes: true}
 	var dns, base string
+	var baseNode *xmltree.Node
 	if eng.sheet.hasXPathDefaultNS {
 		dns = xpathDefaultNSWalk(el)
 	}
 	if eng.sheet.hasXMLBase {
-		base = staticBaseFor(el)
+		if ov == (evalOverride{}) {
+			// The stylesheet never changes, so the static base of an
+			// expression written on el is the same whenever it is read:
+			// the context computes it when (and only if) a function asks
+			// for it (xpath.Context.StaticBase). A dynamically evaluated
+			// expression (xsl:evaluate) may be handed a node of a tree
+			// still being built, and keeps the eager walk.
+			baseNode = el
+		} else {
+			base = staticBaseFor(el)
+		}
 	}
 	if ov.hasBase {
-		base = ov.base
+		base, baseNode = ov.base, nil
 	}
 	if ov.hasDNS {
 		dns = ov.dns
@@ -2271,7 +2282,7 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 		}
 	}
 	ctx := &sc.ctx
-	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
+	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
 	v, err := p.Eval(ctx)
 	if err != nil && eng.errEl == nil {
 		eng.errEl = el

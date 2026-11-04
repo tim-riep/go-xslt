@@ -141,7 +141,7 @@ func fnUnparsedText(c *Context, a []Object) (Object, error) {
 	if !ok {
 		return Sequence{}, nil
 	}
-	uri := resolveAgainstBase(c.BaseURI, href)
+	uri := resolveAgainstBase(c.StaticBase(), href)
 	s, err := retrieveText(c, uri)
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func fnUnparsedTextLines(c *Context, a []Object) (Object, error) {
 	if !ok {
 		return Sequence{}, nil
 	}
-	uri := resolveAgainstBase(c.BaseURI, href)
+	uri := resolveAgainstBase(c.StaticBase(), href)
 	s, err := retrieveText(c, uri)
 	if err != nil {
 		return nil, err
@@ -208,7 +208,7 @@ func fnUnparsedTextAvailable(c *Context, a []Object) (Object, error) {
 	if present && !validEncodingName(enc) {
 		return NewBool(false), nil
 	}
-	uri := resolveAgainstBase(c.BaseURI, href)
+	uri := resolveAgainstBase(c.StaticBase(), href)
 	if _, err := retrieveText(c, uri); err != nil {
 		return NewBool(false), nil
 	}
@@ -233,7 +233,7 @@ func fnDoc(c *Context, a []Object) (Object, error) {
 	if !ok {
 		return Sequence{}, nil
 	}
-	uri := resolveAgainstBase(c.BaseURI, href)
+	uri := resolveAgainstBase(c.StaticBase(), href)
 	if c.HomeDoc != nil && (uri == "" || uri == c.HomeDoc.Base()) {
 		// doc(''): the tree of the stylesheet module containing this call
 		// (document-0302), matching the legacy document('') special case —
@@ -259,7 +259,7 @@ func fnDocAvailable(c *Context, a []Object) (Object, error) {
 	if !ok {
 		return NewBool(false), nil
 	}
-	uri := resolveAgainstBase(c.BaseURI, href)
+	uri := resolveAgainstBase(c.StaticBase(), href)
 	if c.Resolver != nil {
 		if _, ok := c.Resolver.ResolveDoc(uri); ok {
 			return NewBool(true), nil
@@ -392,7 +392,7 @@ func collectionURI(c *Context, a []Object, fn string) (string, error) {
 	if err != nil || !ok {
 		return "", err
 	}
-	return resolveAgainstBase(c.BaseURI, href), nil
+	return resolveAgainstBase(c.StaticBase(), href), nil
 }
 
 // fnCollection implements fn:collection: the sequence of nodes in the

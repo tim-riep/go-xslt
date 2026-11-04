@@ -18,7 +18,7 @@ func init() {
 // fnStaticBaseURI implements fn:static-base-uri() as xs:anyURI?. It returns the
 // static base URI in scope (Context.BaseURI), or the empty sequence if unknown.
 func fnStaticBaseURI(c *Context, a []Object) (Object, error) {
-	if c.BaseURI == "" {
+	if c.StaticBase() == "" {
 		return Sequence{}, nil
 	}
 	return NewAnyURI(c.BaseURI), nil
@@ -149,7 +149,7 @@ func fnBaseURI(c *Context, a []Object) (Object, error) {
 		// sequence (XSLT base-uri-023).
 		return Sequence{}, nil
 	}
-	b := NodeBaseURI(node, c.BaseURI)
+	b := NodeBaseURI(node, c.StaticBase())
 	if b == "" {
 		return Sequence{}, nil
 	}
@@ -199,7 +199,7 @@ func fnDocumentURI(c *Context, a []Object) (Object, error) {
 	// harness's) that has no reason to populate xmltree.Node.Base itself.
 	base := n.Base()
 	if base == "" {
-		base = c.BaseURI
+		base = c.StaticBase()
 	}
 	if base == "" {
 		return Sequence{}, nil
