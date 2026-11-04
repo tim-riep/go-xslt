@@ -511,26 +511,42 @@ func matchesSeqType(st *SeqType, o Object, ctx *Context) bool {
 		// binding of a single value.
 		return !st.Empty && matchesItemType(st.Item, o, ctx)
 	}
-	items := Items(o)
+	n := itemCount(o)
 	if st.Empty {
-		return len(items) == 0
+		return n == 0
 	}
 	switch st.Occur {
 	case 0:
-		if len(items) != 1 {
+		if n != 1 {
 			return false
 		}
 	case '?':
-		if len(items) > 1 {
+		if n > 1 {
 			return false
 		}
 	case '+':
-		if len(items) < 1 {
+		if n < 1 {
 			return false
 		}
 	case '*':
 	}
-	for _, it := range items {
+	if ns, ok := o.(NodeSet); ok {
+		// The nodes are tested in place: boxing them into a slice of items
+		// (Items) was an allocation of the sequence's size per typed
+		// binding of a node set. A carrier node is tested as the item it
+		// stands for, as Items would have handed it out.
+		for _, nd := range ns {
+			var it Item = nd
+			if nd != nil && nd.RealItem() != nil {
+				it = nd.RealItem()
+			}
+			if !matchesItemType(st.Item, it, ctx) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, it := range Items(o) {
 		if !matchesItemType(st.Item, it, ctx) {
 			return false
 		}
