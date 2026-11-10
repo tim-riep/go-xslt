@@ -603,10 +603,10 @@ func matchesItemType(it ItemType, item Item, ctx *Context) bool {
 		if !ok {
 			return false
 		}
-		ok2, _ := matchTest(*it.Node, "child", n, ctx)
+		ok2, _ := matchTest(it.Node, "child", n, ctx)
 		// For attribute kind tests the axis matters; matchTest checks kind+name.
 		if it.Node.Kind == testAttribute || it.Node.Kind == testSchemaAttr {
-			ok2, _ = matchTest(*it.Node, "attribute", n, ctx)
+			ok2, _ = matchTest(it.Node, "attribute", n, ctx)
 		}
 		return ok2
 	case itFunction:

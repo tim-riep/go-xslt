@@ -1558,7 +1558,7 @@ func staticStepUnion(e Expr) (ls, rs *Step, ok bool) {
 		return nil, nil, false
 	}
 	ls, rs = unionStep(u.L), unionStep(u.R)
-	if ls == nil || rs == nil || !testNeedsOnlyDefaultNS(ls.Test) || !testNeedsOnlyDefaultNS(rs.Test) {
+	if ls == nil || rs == nil || !testNeedsOnlyDefaultNS(&ls.Test) || !testNeedsOnlyDefaultNS(&rs.Test) {
 		return nil, nil, false
 	}
 	return ls, rs, true
@@ -1603,7 +1603,7 @@ func appendMatches(dst, candidates NodeSet, step *Step, ctx *Context, pc *prefix
 	broad := t.Kind == testNode ||
 		(t.Kind == testName && t.AnyName && !t.WildNS && t.Prefix == "" && !t.Braced)
 	for i, c := range candidates {
-		ok, err := matchTestC(step.Test, step.Axis, c, ctx, pc)
+		ok, err := matchTestC(&step.Test, step.Axis, c, ctx, pc)
 		if err != nil {
 			return nil, err
 		}
@@ -1628,7 +1628,7 @@ func evalStep(step *Step, cn *xmltree.Node, ctx *Context, pc *prefixCache) (Node
 		// count grows with the WHOLE subtree, not with one node's immediate
 		// neighborhood the way child/attribute/sibling do.
 		if step.Axis == "descendant-or-self" {
-			ok, err := matchTestC(step.Test, step.Axis, cn, ctx, pc)
+			ok, err := matchTestC(&step.Test, step.Axis, cn, ctx, pc)
 			if err != nil {
 				return nil, err
 			}
@@ -1636,7 +1636,7 @@ func evalStep(step *Step, cn *xmltree.Node, ctx *Context, pc *prefixCache) (Node
 				matched = append(matched, cn)
 			}
 		}
-		if err := collectDescendantsFiltered(cn, step.Test, step.Axis, ctx, pc, &matched); err != nil {
+		if err := collectDescendantsFiltered(cn, &step.Test, step.Axis, ctx, pc, &matched); err != nil {
 			return nil, err
 		}
 	default:
