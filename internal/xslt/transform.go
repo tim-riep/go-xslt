@@ -5355,11 +5355,15 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 		env, mctx := &sc.env, &sc.ctx
 		dns, st := xpathDefaultNS(kd.el), schemaTypesFor(kd.el)
 		withNS := kd.match.MayMatchNamespaceNode()
+		// A pattern that can match elements only is tried on elements only:
+		// the attribute and text nodes of the tree, most of its nodes, were
+		// each handed to Match to be rejected by their kind.
+		elemOnly := kd.match.ElementsOnly()
 		// A pattern that reads no more of a context than its default element
 		// namespace is matched against just that (see staticMatchCtx), not a
 		// Context rebuilt for every node of the tree.
 		static := kd.match.NeedsOnlyDefaultNS()
-		eng.walkAllNS(root, func(node *xmltree.Node) {
+		visit := func(node *xmltree.Node) {
 			if walkErr != nil {
 				return
 			}
@@ -5431,7 +5435,12 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 					idx[k] = append(idx[k], node)
 				}
 			}
-		}, withNS)
+		}
+		if elemOnly {
+			walkElements(root, visit)
+		} else {
+			eng.walkAllNS(root, visit, withNS)
+		}
 	}
 	// Each entry is put in document order without duplicates once, here,
 	// rather than by every key() lookup that hands it out (see the fast path
@@ -5456,6 +5465,16 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 // select namespace nodes — key-087/090), then its children.
 func (eng *engine) walkAll(n *xmltree.Node, fn func(*xmltree.Node)) {
 	eng.walkAllNS(n, fn, true)
+}
+
+// walkElements visits every element of a tree in document order.
+func walkElements(n *xmltree.Node, fn func(*xmltree.Node)) {
+	if n.Kind == xmltree.KindElement {
+		fn(n)
+	}
+	for _, c := range n.Children {
+		walkElements(c, fn)
+	}
 }
 
 // walkAllNS is walkAll with the namespace nodes optional: a caller whose

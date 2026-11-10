@@ -49,6 +49,39 @@ func (p *Pattern) MayMatchNamespaceNode() bool {
 	return false
 }
 
+// ElementsOnly reports whether the pattern can match element nodes only: a
+// path pattern whose last step is on the child or descendant axis with a
+// name test or an element()/schema-element() test selects nothing else
+// (matchNameTestC and the kind tests reject every other node kind before a
+// predicate is looked at). Anything else — an attribute, self or namespace
+// axis, a text()/node() test, "/", a rooted or expression pattern — is
+// judged conservatively as "may match other kinds".
+func (p *Pattern) ElementsOnly() bool {
+	if len(p.exprAlts) > 0 || len(p.alts) == 0 {
+		return false
+	}
+	for _, alt := range p.alts {
+		if alt.Start != nil || len(alt.Steps) == 0 {
+			return false
+		}
+		last := alt.Steps[len(alt.Steps)-1]
+		if last.Postfix != nil {
+			return false
+		}
+		switch last.Axis {
+		case "child", "descendant":
+		default:
+			return false
+		}
+		switch last.Test.Kind {
+		case testName, testElement, testSchemaElement:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ParsePattern compiles an XSLT match pattern.
 func ParsePattern(src string) (*Pattern, error) { return parsePatternWithSchema(src, nil) }
 
