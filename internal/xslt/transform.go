@@ -1441,7 +1441,7 @@ type engine struct {
 	sheet          *Stylesheet
 	doc            *xmltree.Node
 	globals        map[string]xpath.Object
-	scopes         []map[string]xpath.Object
+	scopes         []*scopeFrame
 	funcMemo       map[string]memoResult                      // results of xsl:function new-each-time="no" / cache="yes" calls
 	keyIndex       map[keyCacheKey]map[string][]*xmltree.Node // lazily built key indexes (per key name and document root)
 	keyBuilding    map[string]bool                            // keys currently being indexed (circularity -> XTDE0640)
@@ -1889,15 +1889,84 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 func (eng *engine) pushScope() { eng.scopes = append(eng.scopes, nil) }
 func (eng *engine) popScope()  { eng.scopes = eng.scopes[:len(eng.scopes)-1] }
 
+// scopeFrame is one frame of local variable bindings, by Clark name. Most
+// frames hold one or two bindings (a template's or function's parameters),
+// so they are kept in a short slice, searched backwards, inside the frame's
+// own allocation; a frame that grows past scopeIndexAt bindings gets an
+// index. It used to be a map, which cost two allocations and ~300 bytes per
+// frame with one binding. A frame is shared by pointer with the snapshot an
+// evalEnv takes for a function item (ContextCaptured), exactly as the map
+// was.
+type scopeFrame struct {
+	vars  []scopeVar
+	idx   map[string]int // position in vars, once len(vars) > scopeIndexAt
+	first [2]scopeVar    // the backing array of vars while it holds at most two
+}
+
+type scopeVar struct {
+	key string
+	val xpath.Object
+}
+
+const scopeIndexAt = 8
+
+// bind sets key in the frame, replacing an earlier binding of the same key.
+func (f *scopeFrame) bind(key string, v xpath.Object) {
+	if f.idx != nil {
+		if i, ok := f.idx[key]; ok {
+			f.vars[i].val = v
+			return
+		}
+	} else {
+		for i := range f.vars {
+			if f.vars[i].key == key {
+				f.vars[i].val = v
+				return
+			}
+		}
+	}
+	if f.vars == nil {
+		f.vars = f.first[:0]
+	}
+	f.vars = append(f.vars, scopeVar{key, v})
+	if f.idx != nil {
+		f.idx[key] = len(f.vars) - 1
+	} else if len(f.vars) > scopeIndexAt {
+		f.idx = make(map[string]int, 2*len(f.vars))
+		for i, sv := range f.vars {
+			f.idx[sv.key] = i
+		}
+	}
+}
+
+// lookup finds key in the frame.
+func (f *scopeFrame) lookup(key string) (xpath.Object, bool) {
+	if f == nil {
+		return nil, false
+	}
+	if f.idx != nil {
+		if i, ok := f.idx[key]; ok {
+			return f.vars[i].val, true
+		}
+		return nil, false
+	}
+	for i := len(f.vars) - 1; i >= 0; i-- {
+		if f.vars[i].key == key {
+			return f.vars[i].val, true
+		}
+	}
+	return nil, false
+}
+
 func (eng *engine) bindVar(name xmltree.Name, v xpath.Object) {
 	if len(eng.scopes) == 0 {
 		eng.pushScope()
 	}
 	top := len(eng.scopes) - 1
 	if eng.scopes[top] == nil {
-		eng.scopes[top] = map[string]xpath.Object{}
+		eng.scopes[top] = new(scopeFrame)
 	}
-	eng.scopes[top][clark(name.Space, name.Local)] = v
+	eng.scopes[top].bind(clark(name.Space, name.Local), v)
 }
 
 func (eng *engine) lookupVar(key string) (xpath.Object, bool) {
@@ -1917,8 +1986,11 @@ func (eng *engine) varsResolvable(refs []string) bool {
 	for _, ref := range refs {
 		found := false
 		for i := len(eng.scopes) - 1; i >= 0 && !found; i-- {
-			for key := range eng.scopes[i] {
-				if localOf(key) == ref {
+			if eng.scopes[i] == nil {
+				continue
+			}
+			for _, sv := range eng.scopes[i].vars {
+				if localOf(sv.key) == ref {
 					found = true
 					break
 				}
@@ -1949,9 +2021,9 @@ func (eng *engine) varsResolvable(refs []string) bool {
 // param) — eng.eval snapshots eng.scopes into the evalEnv it builds, and the
 // closure created by evalInlineFunc captures that evalEnv by pointer, so the
 // frozen snapshot (not the live, by-then-popped stack) is what it sees.
-func (eng *engine) lookupVarIn(scopes []map[string]xpath.Object, key string) (xpath.Object, bool) {
+func (eng *engine) lookupVarIn(scopes []*scopeFrame, key string) (xpath.Object, bool) {
 	for i := len(scopes) - 1; i >= 0; i-- {
-		if v, ok := scopes[i][key]; ok {
+		if v, ok := scopes[i].lookup(key); ok {
 			return v, true
 		}
 	}
@@ -2006,7 +2078,7 @@ type evalEnv struct {
 	// for the duration of its body and restores it before control returns to
 	// this evaluation). Most evaluations create no function item, and were
 	// paying the copy for nothing.
-	scopes     []map[string]xpath.Object
+	scopes     []*scopeFrame
 	snapScopes bool
 	// captured is set by ContextCaptured: a function item holds a context
 	// that resolves through this env, so the env may be read again later and
@@ -2089,7 +2161,7 @@ func (e *evalEnv) ContextCaptured() {
 	}
 	e.captured = true
 	if e.snapScopes && e.scopes == nil {
-		e.scopes = append([]map[string]xpath.Object{}, e.eng.scopes...)
+		e.scopes = append([]*scopeFrame{}, e.eng.scopes...)
 	}
 }
 
