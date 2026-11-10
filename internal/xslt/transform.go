@@ -1553,6 +1553,9 @@ type engine struct {
 	// bcScopes memoizes inBackwardsCompatScope per stylesheet element (see
 	// bcScope).
 	bcScopes map[*xmltree.Node]bool
+	// userFuncs remembers the stylesheet function each (uri, local, arity)
+	// names, nil for none (engine.userFunc).
+	userFuncs map[funcRef]*FuncDef
 	// argStack is the run's one stack for built-in call arguments
 	// (xpath.Context.ArgStack), handed to every evaluation scratch.
 	argStack *xpath.ArgStack
