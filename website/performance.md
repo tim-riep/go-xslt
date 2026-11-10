@@ -127,6 +127,36 @@ libxslt's time to where it is now:
   workload executes more instructions than before, and every output is
   byte-identical.
 
+- a tenth round, in two parallel halves. The validator's half: an XSD 1.1
+  assertion is evaluated against a detached copy of its element, and that
+  copy was carved from two fresh slabs per element, every typed node in it
+  got a node extension of its own, and every assertion allocated an
+  evaluation context, a variable resolver and an empty `$value`; the copy now
+  comes from one arena the validation call keeps — reset for every element,
+  its slabs grow to the largest tree and then serve every later one, with a
+  third slab for the extensions, sized by the same walk that already counts
+  the nodes and now also looks each one's type annotation up once — and one
+  context and resolver are reused until a function item captures them.
+  Identity constraints reuse one context the same way, take the evaluator's
+  node set as it is instead of copying it, and build each key tuple field by
+  field in one buffer (a string-typed field appended directly, since its cast
+  hands the lexical back unchanged) instead of one string per field plus
+  one for the join; and the per-element count of children that XSD 1.1's
+  dynamic Element Declarations Consistent check needs is kept only where
+  the content model has a lax or strict wildcard, the only case that ever
+  reads it. XSD 1.1 validation of the 200,000-order document: a third
+  fewer allocations, 60 % fewer bytes allocated, 9 % fewer instructions,
+  11 % less peak memory. No workload executes more instructions than
+  before, and every output is byte-identical. Tried and dropped: carving
+  the streaming reader's nodes from shared slabs would have saved a fifth of
+  that workload's allocations, but a slab is one object to the collector,
+  so the dead records sharing a slab with a live one kept their own
+  children — and, slab by slab, the whole document — reachable; the
+  memory-bound tests caught it (1.2 GB peak for 82 MB of input where 0.1 MB
+  is the norm). Also dropped: a non-recursive walk for the XSD 1.0
+  schema-location-hint check, which saved 0.1 % of the instructions and
+  cost an 8 MB stack of child pointers.
+
 The sixth to ninth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
