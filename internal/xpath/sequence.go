@@ -86,6 +86,28 @@ func Items(o Object) []Item {
 	}
 }
 
+// appendItems appends the items of o to dst: Items(o) without the one-item
+// slice that a single non-node item would be boxed into first.
+func appendItems(dst []Item, o Object) []Item {
+	switch v := o.(type) {
+	case nil:
+		return dst
+	case Sequence:
+		return append(dst, v...)
+	case NodeSet:
+		for _, n := range v {
+			if n != nil && n.RealItem() != nil {
+				dst = append(dst, n.RealItem())
+				continue
+			}
+			dst = append(dst, n)
+		}
+		return dst
+	default:
+		return append(dst, v)
+	}
+}
+
 // FromItems builds an Object from items: empty -> empty Sequence, all-nodes ->
 // NodeSet, single item -> that item, otherwise a Sequence.
 func FromItems(items []Item) Object {

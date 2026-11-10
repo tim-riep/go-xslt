@@ -615,7 +615,7 @@ func fnForEach(c *Context, a []Object) (Object, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Items(r)...)
+		out = appendItems(out, r)
 	}
 	return FromItems(out), nil
 }
@@ -723,7 +723,7 @@ func fnForEachPair(c *Context, a []Object) (Object, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Items(r)...)
+		out = appendItems(out, r)
 	}
 	return FromItems(out), nil
 }
@@ -998,7 +998,7 @@ var mapFuncs = map[string]coreFunc{
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, Items(r)...)
+			out = appendItems(out, r)
 		}
 		return FromItems(out), nil
 	},
