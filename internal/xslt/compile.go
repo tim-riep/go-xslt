@@ -2613,12 +2613,24 @@ func instructionsUpTo(nodes []*xmltree.Node, i int) int {
 func (c *compiler) compileSequence(nodes []*xmltree.Node) ([]instruction, error) {
 	var out []instruction
 	nodes = mergeTextAcrossComments(nodes)
+	// Whether xml:space preserves whitespace is a property of the parent
+	// element's scope, the same for every text node under one parent: it is
+	// looked up once per parent (an ancestor walk), not once per
+	// whitespace-only text node — most text nodes of a pretty-printed
+	// stylesheet.
+	var spaceParent *xmltree.Node
+	preserved := false
 	for i, n := range nodes {
 		switch n.Kind {
 		case xmltree.KindText:
-			if isXMLSpaceOnly(n.Value) && (!xmlSpacePreserved(n) || stripDespiteXMLSpace(n)) {
-				// Strip whitespace-only text nodes from the stylesheet.
-				continue
+			if isXMLSpaceOnly(n.Value) {
+				if n.Parent != spaceParent || spaceParent == nil {
+					spaceParent, preserved = n.Parent, xmlSpacePreserved(n)
+				}
+				if !preserved || stripDespiteXMLSpace(n) {
+					// Strip whitespace-only text nodes from the stylesheet.
+					continue
+				}
 			}
 			if out == nil {
 				out = make([]instruction, 0, instructionsUpTo(nodes, i))
