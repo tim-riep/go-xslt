@@ -1157,8 +1157,13 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 	}
 	decls, fixedsByName := cm.decls, cm.fixedsByName
 	skipWc, laxWc, strictWc := cm.skipWc, cm.laxWc, cm.strictWc
-	var elemUsed map[xname]int // allocated on first use (1.1 EDC only)
-	pinned := kids             // lazily copied; wildcard-attributed children get probed out
+	// elemUsed counts the children attributed to each declared name, for the
+	// 1.1 dynamic EDC check below — which can only arise where the model
+	// has a lax or strict wildcard, so a model without one keeps no count
+	// (allocated on first use).
+	var elemUsed map[xname]int
+	edc := s.version == Version11 && (len(laxWc) > 0 || len(strictWc) > 0)
+	pinned := kids // lazily copied; wildcard-attributed children get probed out
 	for i, kid := range kids {
 		nn := nameOf(kid)
 		if d, ok := decls[nn]; ok {
@@ -1187,7 +1192,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 					continue
 				}
 			}
-			if s.version == Version11 {
+			if edc {
 				if elemUsed == nil {
 					elemUsed = map[xname]int{}
 				}
