@@ -394,9 +394,11 @@ type Schema struct {
 	nodeDefaults map[*xmltree.Node][]defaultAttr
 	// scratch is the per-call space the evaluation of assertions and
 	// identity constraints reuses from one element to the next (see
-	// checkAsserts). nil, as on a Schema not copied for a call, means
-	// allocate afresh each time.
-	scratch *validateScratch
+	// checkAsserts): scratchBuf of the per-call copy, so that it costs no
+	// allocation of its own. nil, as on a Schema not copied for a call,
+	// means allocate afresh each time.
+	scratch    *validateScratch
+	scratchBuf validateScratch
 }
 
 // validateScratch holds what checkAsserts and the identity-constraint
@@ -412,6 +414,10 @@ type validateScratch struct {
 	ctx   *xpath.Context
 	vars  *valueVar
 	busy  bool
+	// icCtx evaluates identity-constraint selectors and fields; tuple is the
+	// buffer a key tuple is built in (tupleFor).
+	icCtx *xpath.Context
+	tuple []byte
 }
 
 // assertAnno is the typed-XDM description of a validated node for assertion
