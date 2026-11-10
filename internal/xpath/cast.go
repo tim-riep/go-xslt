@@ -930,11 +930,10 @@ func CallConstructor(local string, arg Object) (Object, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	items := Items(arg)
-	if len(items) == 0 {
+	if itemCount(arg) == 0 {
 		return Sequence{}, true, nil
 	}
-	res, err := CastTo(items[0], t)
+	res, err := CastTo(itemAt(arg, 0), t)
 	if err != nil {
 		return nil, true, err
 	}

@@ -282,9 +282,9 @@ func dispatchFunc(prefix, local string, args []Object, ctx *Context) (Object, er
 			}
 		}
 		if len(args) == 1 {
-			if items := Items(args[0]); len(items) > 1 {
+			if n := itemCount(args[0]); n > 1 {
 				if _, isType := AtomTypeByName(local); isType || local == "QName" {
-					return nil, fmt.Errorf("err:XPTY0004: %s() requires a single atomic value, got %d items", local, len(items))
+					return nil, fmt.Errorf("err:XPTY0004: %s() requires a single atomic value, got %d items", local, n)
 				}
 			}
 		}
@@ -750,21 +750,22 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	if len(a) == 0 {
 		return ToString(o), nil
 	}
-	items, err := Atomize(o)
+	// The one atomic value without the sequence Atomize builds for it.
+	item, n, err := atomizeOperand(o)
 	if err != nil {
 		return "", err
 	}
-	switch len(items) {
+	switch n {
 	case 0:
 		return "", nil
 	case 1:
-		at, ok := items[0].(*Atomic)
+		at, ok := item.(*Atomic)
 		if !ok || !isComparableAsString(at) {
 			return "", fmt.Errorf("err:XPTY0004: a single xs:string is required")
 		}
 		return at.Lexical(), nil
 	}
-	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", len(items))
+	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", n)
 }
 
 // stringArgStrict returns the xs:string value of argument i under the function
@@ -773,6 +774,11 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
+	if s, ok := arg(a, i).(string); ok {
+		// A plain Go string (fn:tokenize's items, for one) is the single
+		// xs:string itself, without the Atomic toAtomic would build for it.
+		return s, nil
+	}
 	item, n, err := atomizeOperand(arg(a, i))
 	if err != nil {
 		return "", err
@@ -1627,10 +1633,17 @@ func fnStringJoin(c *Context, a []Object) (Object, error) {
 			return joinNodeStrings(v, sep), nil
 		}
 	case Sequence:
+		// Typed atomic values, and plain Go strings (fn:tokenize's items),
+		// whose string is the item itself: atomizing them built an Atomic
+		// per string only to read its lexical form back.
 		atomic := true
 		for _, it := range v {
-			if _, ok := it.(*Atomic); !ok {
+			switch it.(type) {
+			case *Atomic, string:
+			default:
 				atomic = false
+			}
+			if !atomic {
 				break
 			}
 		}
@@ -2260,7 +2273,7 @@ func fnString(c *Context, a []Object) (Object, error) {
 	}
 	// $arg is item()?: a sequence of two or more items is XPTY0004
 	// (K-StringFunc-6, fo-test-fn-string-004).
-	if n := len(Items(a[0])); n > 1 {
+	if n := itemCount(a[0]); n > 1 {
 		return nil, fmt.Errorf("err:XPTY0004: fn:string requires at most one item, got %d", n)
 	}
 	return ToString(a[0]), nil
