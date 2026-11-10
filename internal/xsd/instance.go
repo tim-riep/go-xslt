@@ -1149,10 +1149,13 @@ type childModel struct {
 	p     *particle
 	oc    *openContent
 	decls map[xname]*ElementDecl
-	// declList is decls as a list when it is small (smallDeclList): most
+	// declList holds decls as a list when it is small (smallDeclList): most
 	// content models declare a handful of names, which a comparison per
 	// entry finds faster than hashing the two strings of every child's name.
-	declList                []declEntry
+	// It lives in the childModel itself, so a model costs no allocation
+	// beyond the one it already is.
+	declList                [smallDeclList]declEntry
+	nDecls                  int // entries of declList in use; 0 when decls is larger (or empty)
 	fixedsByName            map[xname][]string
 	skipWc, laxWc, strictWc []*wildcard
 	asserts                 []*assertion // the type's effective assertions (1.1)
@@ -1168,8 +1171,8 @@ const smallDeclList = 8
 
 // decl is decls[nn] (see declList).
 func (cm *childModel) decl(nn xname) (*ElementDecl, bool) {
-	if cm.declList != nil {
-		for i := range cm.declList {
+	if cm.nDecls > 0 {
+		for i := range cm.declList[:cm.nDecls] {
 			if e := &cm.declList[i]; e.name == nn {
 				return e.decl, true
 			}
@@ -1190,9 +1193,9 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 	cm.decls = map[xname]*ElementDecl{}
 	s.contentDecls(cm.p, cm.decls)
 	if n := len(cm.decls); n > 0 && n <= smallDeclList {
-		cm.declList = make([]declEntry, 0, n)
 		for name, d := range cm.decls {
-			cm.declList = append(cm.declList, declEntry{name, d})
+			cm.declList[cm.nDecls] = declEntry{name, d}
+			cm.nDecls++
 		}
 	}
 	cm.fixedsByName = map[xname][]string{}
