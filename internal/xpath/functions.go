@@ -471,6 +471,12 @@ var coreFuncs = func() map[string]coreFunc {
 			if err != nil {
 				return nil, err
 			}
+			if pat := ToString(a[1]); flags == "" && literalPattern(pat) {
+				// A pattern of plain characters (",", "; ") matches only
+				// itself, so splitting on the string is splitting on the
+				// regular expression, without compiling or matching one.
+				return stringsToSeq(strings.Split(input, pat)), nil
+			}
 			re, matchesEmpty, err := compileRegexEmpty(ToString(a[1]), flags)
 			if err != nil {
 				return nil, err
@@ -717,6 +723,28 @@ func fnName(c *Context, a []Object) (Object, error) {
 		return n.Name.Prefix + ":" + n.Name.Local, nil
 	}
 	return n.Name.Local, nil
+}
+
+// literalPattern reports whether a regular expression is a non-empty string
+// of ASCII letters, digits, spaces and punctuation that are not
+// metacharacters (none of . [ ] ( ) { } * + ? ^ $ | \ and no '#' or '-'),
+// so that it matches exactly itself, never the empty string, and is valid
+// under every flag-free interpretation of the XSD regex grammar.
+func literalPattern(p string) bool {
+	if p == "" {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == ' ', c == ',', c == ';', c == ':', c == '_', c == '=', c == '/', c == '@', c == '!',
+			c == '%', c == '&', c == '\'', c == '"', c == '<', c == '>', c == '~', c == '`':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func fnConcat(c *Context, a []Object) (Object, error) {
