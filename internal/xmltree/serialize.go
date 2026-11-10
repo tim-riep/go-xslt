@@ -295,9 +295,15 @@ const chunkBufSize = 32 << 10
 const xmlNS = "http://www.w3.org/XML/1998/namespace"
 
 func newSerializer(out outWriter, opts SerializeOptions) *serializer {
-	return &serializer{b: out, opts: opts,
+	s := &serializer{b: out, opts: opts,
 		declared: map[string]string{xmlNS: "xml"},
 		prefixes: map[string]string{"xml": xmlNS}}
+	if opts.Method == "html" || opts.Method == "xhtml" {
+		// Decided once: startTag asked for every element, and parsing the
+		// (usually empty) version string allocated an error each time.
+		s.html5 = htmlVersion5(opts.HTMLVersion)
+	}
+	return s
 }
 
 // writeXMLDeclaration writes the XML declaration the xml/xhtml/adaptive
@@ -377,7 +383,7 @@ func writeDoc(out outWriter, n *Node, opts SerializeOptions) {
 	// doctype-system/-public takes priority over this. The keyword echoes the
 	// root element's own name/case (output-0208/0209/0210 use lower/upper/
 	// mixed-case <html> and expect the DOCTYPE to match).
-	needHTML5Doctype := !needDoctype && (opts.Method == "html" || opts.Method == "xhtml") && htmlVersion5(opts.HTMLVersion)
+	needHTML5Doctype := !needDoctype && (opts.Method == "html" || opts.Method == "xhtml") && s.html5
 	for ci, c := range children {
 		if opts.SeparateItems && ci > 0 {
 			out.WriteString(opts.ItemSeparator)
@@ -423,6 +429,9 @@ type serializer struct {
 	// the encoding name) was repeated for every text node and attribute.
 	limit   rune
 	limitOK bool
+	// html5 is htmlVersion5(opts.HTMLVersion) for the html and xhtml
+	// methods, computed in newSerializer.
+	html5 bool
 }
 
 // encLimit is encodingLimit(s.opts.Encoding), computed once.
@@ -663,7 +672,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	// The html output method at html-version 5 normalizes the same way: the
 	// suite treats its results as definitive where the spec's HTML wording is
 	// unclear (output-0602a's own description; 0602b/0603a likewise).
-	normalizePfx := htmlish && htmlVersion5(s.opts.HTMLVersion)
+	normalizePfx := htmlish && s.html5
 
 	// Explicitly-declared namespace nodes (e.g. from xsl:namespace or copied
 	// namespaces) own their prefixes; declare them first.
