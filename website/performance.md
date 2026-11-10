@@ -224,7 +224,38 @@ libxslt's time to where it is now:
   — ordinary output is full of newlines, each of which tripped the word
   test, so it executed more instructions than the byte loop it replaced.
 
-The sixth to tenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- an eleventh round, part B, on the readers, the compiler and the validator
+  (part A, in parallel, took the evaluator). The streaming reader read its
+  tokens through `encoding/xml`, which allocated for every one of them — the
+  boxed token, a copy of every name, attribute value and text run, the
+  attribute list — half of a streamed transformation's allocations; it now
+  runs the engine's own tokenizer over a window of the input (a token that
+  reaches the window's end is scanned again once more input is read, so
+  every token arrives whole), and a streamed record's strings are pieces of
+  that window (streaming the 200,000-record document: 65 % fewer
+  allocations, a fifth less allocated, 55 % fewer instructions, half the
+  time; the memory bound is unchanged, and the reader is checked against the
+  buffered parser at every window size from one byte). Compiling a
+  stylesheet parsed every included or imported module twice — once to
+  establish the static parameters across modules, once to compile it — and
+  now hands the first tree to the second pass; the compiler also stops
+  copying every element's attribute list and child list it does not change,
+  and sizes an instruction list once (compiling the DocBook stylesheets: 30
+  % fewer instructions, a fifth fewer allocations, 38 % less allocated). XSD
+  1.1 validation recorded the typed-value annotation of every simple-typed
+  node of the instance in one map for its assertions to read, 2.4 million
+  entries for the 200,000-record document; the map is now emptied whenever
+  no open element has assertions, so it stays the size of one record (6 %
+  less allocated, 2 % less peak memory, 2 % fewer instructions). The parser
+  resolves an unprefixed element name without a map lookup, and the
+  serializer decides the output version once, keeps the default namespace in
+  a field instead of a map entry, and checks whether a value needs escaping
+  with a table instead of building a character set per call (copying the
+  whole document: 11 % fewer instructions; rebuilding every node: 6 %; the
+  HTML output workload: 4 %). No workload executes more instructions than
+  before, and every output is byte-identical.
+
+The sixth to eleventh rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 

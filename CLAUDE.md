@@ -65,10 +65,17 @@ dragging in the GUI's Wails/CGo dependencies:
   reader has no such repair: a streamed source naming such a character fails
   with FODC0002 where the buffered path succeeds. Also a serializer for xml/html/text (`serialize.go`, plus an
   `io.Writer`-based `WriteTo`/`ChunkWriter` for bounded-memory output);
-  `stream.go` is the incremental pull-reader behind XSLT streaming (pull-style
-  over `xml.Decoder.RawToken()`, builds ordinary `*Node`s one record at a
-  time). `CopyTypeInfo(dst, src)` must be used at every node-rebuild/copy site
-  to carry `TypeAnno`/`SchemaType`/`Nilled`/`ListTyped`/etc. forward.
+  `stream.go` is the incremental pull-reader behind XSLT streaming (builds
+  ordinary `*Node`s one record at a time from the own tokenizer run over a
+  WINDOW of the input, `stream_tok.go`: a token that reaches the window's
+  end is scanned again after more input is read, a text run is always
+  complete; a node's strings are substrings of the window they were read
+  in, so anything the reader keeps for the whole document — interned names,
+  shared whitespace runs, namespace frames — must be `strings.Clone`d first
+  or it pins a window; `TestStreamReaderWindowBoundaries` runs every window
+  size from one byte). `CopyTypeInfo(dst, src)` must be used at every
+  node-rebuild/copy site to carry `TypeAnno`/`SchemaType`/`Nilled`/
+  `ListTyped`/etc. forward.
 - `internal/xpath` — `lexer.go`, `parser.go`/`ast.go`, `eval.go` + `axes.go` +
   `compare.go` + `functions.go` (core fn library), `pattern.go` (XSLT match
   patterns + default priorities), `value.go` (XPath-1.0 value model), the F&O
@@ -156,6 +163,10 @@ dragging in the GUI's Wails/CGo dependencies:
   `xs:attribute` (use, else declaration) and are all reported (`attributes.go`).
   **Gotcha**: `Compile` returns `ErrUnsupported` (not a verdict) for anything
   beyond what's implemented — keep that discipline so the pass rate stays honest.
+  `Schema.assertAnnos` (the typed-value annotations `assertTree` copies onto
+  an assertion's tree) is EMPTIED by `validateComplex` whenever no open
+  element's type has assertions (`assertOpen`): a new reader of it must run
+  while such an element is open, or it sees nothing.
   A compiled simple type never reaches itself: `visitST` rejects a named
   cycle through a restriction/list (and any cycle in 1.1), `compiler.open`
   catches an inline type naming the enclosing one, and `closeUnion` collapses
@@ -327,6 +338,14 @@ Desktop GUI (**run from `desktop/`**):
   `TestBuiltinCatalogComplete`; do not add ad-hoc argument-type checks to an
   implementation. Function-typed parameters are checked as `function(*)`;
   `Context.BC10` skips the check (the old lenient behaviour).
+- **A secondary stylesheet module is parsed once**: the static pass
+  (`loadStaticModule`, staticdecl.go) keeps each document it parsed in
+  `compiler.staticParsed` and `loadFile` takes it instead of parsing the file
+  again (one use per entry; a module reached twice gets its own tree from
+  the second parse). The static pass may therefore change a tree only the
+  way `applyStatic` does again anyway (shadow attributes are idempotent).
+  In the serializer, `defURI`/`defOK` mirror `prefixes[""]`: `declare` and
+  `undeclare` are the only writers of `prefixes` and keep the mirror.
 - **Optional features are per stylesheet** (`internal/xslt/features.go`,
   `engine.Features{SchemaAware, BackwardsCompatible, StrictStreaming}` on
   `Request`): `xslt.CompileWith(…, CompileOptions{Features})` stores them on
