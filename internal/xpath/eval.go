@@ -1511,12 +1511,20 @@ func unionStep(e Expr) *Step {
 // treat specially (no context node, an atomic one, a PatternTop, the
 // nesting limit its two nested evalExpr calls would reach).
 func evalStepUnion(ls, rs *Step, ctx *Context) (Object, error) {
-	return evalStepUnionInto(ls, rs, ctx, nil)
+	ns, err := evalStepUnionInto(ls, rs, ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return ns, nil
 }
 
 // evalStepUnionInto is evalStepUnion building its result in buf's array when
 // that has room for every candidate.
-func evalStepUnionInto(ls, rs *Step, ctx *Context, buf NodeSet) (Object, error) {
+//
+// It returns the node set itself: boxing it into an Object is one allocation
+// per call (the slice header), which only evalStepUnion's caller needs —
+// EvalStaticStepUnionInto, the apply-templates select path, does not.
+func evalStepUnionInto(ls, rs *Step, ctx *Context, buf NodeSet) (NodeSet, error) {
 	cn := ctx.Node
 	lc, rc := axisNodes(ls.Axis, cn), axisNodes(rs.Axis, cn)
 	u := buf[:0]
@@ -1575,13 +1583,12 @@ func (p *Parsed) EvalStaticStepUnionInto(n *xmltree.Node, scratch *Context, buf 
 		return nil, false
 	}
 	scratch.Node = n
-	v, err := evalStepUnionInto(ls, rs, scratch, buf)
+	ns, err := evalStepUnionInto(ls, rs, scratch, buf)
 	scratch.Node = nil
 	if err != nil {
 		return nil, false
 	}
-	ns, isNS := v.(NodeSet)
-	return ns, isNS
+	return ns, true
 }
 
 // appendMatches appends the candidates that satisfy step's node test to dst.
