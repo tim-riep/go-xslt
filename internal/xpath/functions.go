@@ -65,8 +65,45 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		}}, nil
 	}
 
+	// A built-in's argument written as a path expression is evaluated to its
+	// node set and converted to the declared atomic type here, without first
+	// boxing the set into an Object (the allocation every such argument
+	// cost); fn:count and the other node-set tests of one argument are
+	// answered from the set itself. Everything else is as before: the
+	// conversion is exactly argSpec.convert's, done before dispatchFunc
+	// repeats the check (which then finds the argument matching), and any
+	// value it does not handle is passed on for that check to decide.
+	var fuse uint32 // bit i: argument i is a path to convert here
+	if plan := n.plan.Load(); plan != planDecided {
+		// (A call that can do nothing of this is one load and one test.)
+		if plan == 0 {
+			plan = n.fnPlan(ctx)
+		}
+		if plan&planSetFunc != 0 {
+			return fusedSetFunc(n.Prefix, n.Local, n.Args[0], ctx)
+		}
+		if plan&planFuseArgs != 0 && (ctx == nil || !ctx.BC10) {
+			// (1.0 compatibility passes every argument as it is.)
+			fuse = plan >> planArgShift
+		}
+	}
 	args := make([]Object, len(n.Args))
 	for i, a := range n.Args {
+		if fuse&(1<<i) != 0 {
+			p := n.form.Load().spec(i)
+			ns, v, _, err := evalNodes(a, ctx)
+			if err != nil {
+				return nil, err
+			}
+			if v != nil {
+				args[i] = v
+			} else if c, ok := p.convertNodes(ns, ctx); ok {
+				args[i] = c
+			} else {
+				args[i] = ns
+			}
+			continue
+		}
 		v, err := evalExpr(a, ctx)
 		if err != nil {
 			return nil, err
@@ -74,6 +111,134 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		args[i] = v
 	}
 	return dispatchFunc(n.Prefix, n.Local, args, ctx)
+}
+
+// The bits of FuncCall.plan.
+const (
+	planDecided  uint32 = 1 << iota // the plan has been computed
+	planSetFunc                     // fusedSetFunc answers the call
+	planFuseArgs                    // some argument bit is set
+	// bit planArgShift+i: argument i is a path for an atomic parameter.
+	planArgShift = 8
+	planMaxArgs  = 32 - planArgShift
+)
+
+// fnPlan decides, once per call node, what evalFunc can do for a call of a
+// catalogued fn: built-in — one written with no prefix (the only kind the
+// plan is kept for: an fn prefix may be bound to the XML Schema namespace
+// by the context, so such a call is planned afresh each time) — without
+// boxing an argument: answer it as a node-set test (planSetFunc), or
+// evaluate the arguments that are paths written for atomic parameters to
+// their node sets (planFuseArgs, one bit per argument; the form is kept in
+// n.form). The plan is planDecided alone for a call that can do neither.
+func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
+	plan = planDecided
+	if n.Prefix != "" && n.Prefix != "fn" {
+		n.plan.Store(plan)
+		return plan
+	}
+	sig := n.fnSig(ctx)
+	if sig == nil {
+		if n.Prefix == "" {
+			n.plan.Store(plan)
+		}
+		return plan
+	}
+	if len(n.Args) == 1 && isSetFunc(n.Local) {
+		plan |= planSetFunc
+	} else if f := sig.form(len(n.Args)); f != nil && len(n.Args) <= planMaxArgs {
+		for i, a := range n.Args {
+			if _, isPath := a.(*PathExpr); isPath {
+				if p := f.spec(i); p != nil && p.kind == akAtomic {
+					plan |= planFuseArgs | 1<<(planArgShift+i)
+				}
+			}
+		}
+		if plan&planFuseArgs != 0 {
+			n.form.Store(f)
+		}
+	}
+	if n.Prefix == "" {
+		n.plan.Store(plan)
+	}
+	return plan
+}
+
+// noFnSig marks a FuncCall looked up in the fn: catalogue without result.
+var noFnSig builtinSig
+
+// fnSig returns the catalogued, implemented fn: signature of a call written
+// with no prefix or the fn prefix — dispatchFunc takes both to the fn:
+// catalogue unconditionally, except an fn prefix bound to the XML Schema
+// namespace, which names the constructors — or nil.
+func (n *FuncCall) fnSig(ctx *Context) *builtinSig {
+	if n.Prefix == "fn" && ctx != nil && ctx.NS != nil {
+		if uri, ok := ctx.NS.ResolveNS("fn"); ok && uri == "http://www.w3.org/2001/XMLSchema" {
+			return nil
+		}
+	}
+	if s := n.sig.Load(); s != nil {
+		if s == &noFnSig {
+			return nil
+		}
+		return s
+	}
+	ensureCatalog()
+	s := sigFn[n.Local]
+	if s == nil || s.fn == nil {
+		n.sig.Store(&noFnSig)
+		return nil
+	}
+	n.sig.Store(s)
+	return s
+}
+
+// isSetFunc reports whether local is one of the fn: functions of one
+// argument fusedSetFunc answers.
+func isSetFunc(local string) bool {
+	switch local {
+	case "count", "exists", "empty", "boolean", "not":
+		return true
+	}
+	return false
+}
+
+// fusedSetFunc answers fn:count, exists, empty, boolean and not of the
+// argument e when that evaluates to a node set — unboxed for a path, or as
+// a NodeSet value — as the implementations do (count counts the items of
+// the set, which it did through a copy of them as a slice; the others take
+// its effective boolean value). Any other value takes the ordinary call.
+func fusedSetFunc(prefix, local string, e Expr, ctx *Context) (Object, error) {
+	ns, v, isPath, err := evalNodes(e, ctx)
+	if !isPath {
+		v, err = evalExpr(e, ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !isPath || v != nil {
+		set, isSet := v.(NodeSet)
+		if !isSet {
+			return dispatchFunc(prefix, local, []Object{v}, ctx)
+		}
+		ns = set
+	}
+	switch local {
+	case "count":
+		return NewInteger(int64(len(ns))), nil
+	case "exists":
+		return len(ns) > 0, nil
+	case "empty":
+		return len(ns) == 0, nil
+	}
+	b, err := nodeSetEBV(ns)
+	if err != nil {
+		return nil, err
+	}
+	if local == "not" {
+		b = !b
+	}
+	return b, nil
 }
 
 // dispatchFunc resolves and invokes a function by (prefix, local) with already
