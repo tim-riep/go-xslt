@@ -1382,6 +1382,11 @@ func isDigitPatternPicture(p string) bool {
 // returning ok=false when it is malformed (empty, separator at an edge,
 // adjacent separators, '#' after a mandatory digit, or mixed digit families).
 func parseDigitPattern(p string) (digitPattern, bool) {
+	if asciiDigits(p) {
+		// The common pictures ("1", "01", "0001"): mandatory ASCII digits
+		// only, no separators, so nothing below would allocate for.
+		return digitPattern{mandatory: len(p), zero: '0'}, true
+	}
 	rs := []rune(p)
 	if len(rs) == 0 {
 		return digitPattern{}, false
@@ -1495,8 +1500,24 @@ func parseDigitPattern(p string) (digitPattern, bool) {
 	return dp, true
 }
 
+// asciiDigits reports whether p is one or more ASCII digits and nothing else.
+func asciiDigits(p string) bool {
+	if p == "" {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < '0' || p[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // render inserts the family digits and grouping separators.
 func (dp digitPattern) render(ascii string) string {
+	if dp.zero == '0' && len(dp.seps) == 0 && dp.regular == 0 {
+		return ascii // nothing to insert or to map
+	}
 	fam := mapDigitsToFamily(ascii, dp.zero)
 	famRunes := []rune(fam)
 	n := len(famRunes)
