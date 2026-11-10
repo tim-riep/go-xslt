@@ -7,50 +7,58 @@ import (
 	"strconv"
 )
 
-// mapKey produces the op:same-key canonical form of an atomic key: a category
-// prefix plus a value form, so that equal-value keys of compatible types
-// collapse (all string-family keys; all numeric keys with 1 == 1.0 and
-// NaN == NaN) while keys of different categories stay distinct (a QName "abc"
-// is not the string "abc"; the number 1.5 is not the string "1.5").
-func mapKey(it Item) string {
+// mkey is the op:same-key canonical form of a map key: a category plus a
+// value form, so that equal-value keys of compatible types collapse (all
+// string-family keys; all numeric keys with 1 == 1.0 and NaN == NaN) while
+// keys of different categories stay distinct (a QName "abc" is not the
+// string "abc"; the number 1.5 is not the string "1.5"). It used to be one
+// string with the category as a prefix, which cost a concatenation per map
+// operation on a string key; a string key's form is now its own string.
+type mkey struct {
+	cat byte // 'n' numeric, 'b' boolean, 's' string family, 'q' QName, 'd' duration, 'x' the rest
+	s   string
+}
+
+// mapKey produces the canonical form of an atomic map key.
+func mapKey(it Item) mkey {
 	// Numeric keys compare in the EXACT value space: op:same-key converts a
 	// double/float to xs:decimal without loss, so xs:double("1.1") is not the
 	// same key as xs:decimal("1.1") (same-key-007, map-put-023, map-remove-016)
 	// while 1, 1.0 and 1e0 are one key. The canonical form is the reduced
 	// rational (big.Rat.SetFloat64 is exact).
-	num := func(f float64) string {
+	num := func(f float64) mkey {
 		switch {
 		case math.IsNaN(f):
-			return "n:NaN" // every NaN key is the same key
+			return mkey{'n', "NaN"} // every NaN key is the same key
 		case math.IsInf(f, 1):
-			return "n:INF"
+			return mkey{'n', "INF"}
 		case math.IsInf(f, -1):
-			return "n:-INF"
+			return mkey{'n', "-INF"}
 		}
-		return "n:" + new(big.Rat).SetFloat64(f).RatString()
+		return mkey{'n', new(big.Rat).SetFloat64(f).RatString()}
 	}
 	switch v := it.(type) {
 	case *Atomic:
 		switch {
 		case isIntegerType(v.T) && v.i != nil:
-			return "n:" + v.i.String()
+			return mkey{'n', v.i.String()}
 		case v.T == XSdecimal && v.d != nil:
-			return "n:" + v.d.RatString()
+			return mkey{'n', v.d.RatString()}
 		case v.IsNumeric():
 			return num(v.Float())
 		case v.T == XSboolean:
 			if v.b {
-				return "b:1"
+				return mkey{'b', "1"}
 			}
-			return "b:0"
+			return mkey{'b', "0"}
 		case v.T == XSqname || v.T == XSnotation:
-			return "q:{" + v.qnv().Space + "}" + v.qnv().Local
+			return mkey{'q', "{" + v.qnv().Space + "}" + v.qnv().Local}
 		case v.T == XSstring || v.T == XSanyURI || v.T == XSuntypedAtomic || isStringType(v.T):
-			return "s:" + v.Lexical()
+			return mkey{'s', v.Lexical()}
 		case isDurationType(v.T):
 			// Durations are the same key by VALUE, across subtypes and lexical
 			// forms (P1Y and P12M are one key; map-get-017).
-			return "dur:" + strconv.Itoa(v.durv().Months) + "/" + strconv.FormatFloat(v.durv().Secs, 'g', -1, 64)
+			return mkey{'d', strconv.Itoa(v.durv().Months) + "/" + strconv.FormatFloat(v.durv().Secs, 'g', -1, 64)}
 		case isDateTimeType(v.T):
 			// Date/time keys are the same key when they are eq: the same
 			// type family, the same timezone presence, and the same instant
@@ -61,25 +69,25 @@ func mapKey(it Item) string {
 				t = XSdateTime
 			}
 			if v.hasTZ {
-				return "x:" + t.String() + ":Z:" + formatDateTime(t, v.tmv().UTC(), false)
+				return mkey{'x', t.String() + ":Z:" + formatDateTime(t, v.tmv().UTC(), false)}
 			}
-			return "x:" + t.String() + "::" + formatDateTime(t, v.tmv(), false)
+			return mkey{'x', t.String() + "::" + formatDateTime(t, v.tmv(), false)}
 		default:
 			// binary: distinguish by type then lexical form.
-			return "x:" + v.T.String() + ":" + v.Lexical()
+			return mkey{'x', v.T.String() + ":" + v.Lexical()}
 		}
 	case float64:
 		// A lookup key or number() result arrives as a bare Go float.
 		return num(v)
 	case bool:
 		if v {
-			return "b:1"
+			return mkey{'b', "1"}
 		}
-		return "b:0"
+		return mkey{'b', "0"}
 	case string:
-		return "s:" + v
+		return mkey{'s', v}
 	default:
-		return "s:" + itemString(it)
+		return mkey{'s', itemString(it)}
 	}
 }
 

@@ -918,7 +918,7 @@ var mapFuncs = map[string]coreFunc{
 		if err != nil {
 			return nil, err
 		}
-		drop := map[string]bool{}
+		drop := map[mkey]bool{}
 		for _, k := range keys {
 			drop[mapKey(k)] = true
 		}
