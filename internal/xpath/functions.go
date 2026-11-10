@@ -720,7 +720,15 @@ func fnName(c *Context, a []Object) (Object, error) {
 }
 
 func fnConcat(c *Context, a []Object) (Object, error) {
-	var b strings.Builder
+	// The parts are collected first so the result is built in one
+	// allocation of its final size, not grown piece by piece.
+	var buf [8]string
+	parts := buf[:0]
+	total := 0
+	add := func(s string) {
+		parts = append(parts, s)
+		total += len(s)
+	}
 	for _, x := range a {
 		// Each argument is xs:anyAtomicType?: a plural sequence is XPTY0004
 		// (K2-ConcatFunc-1..3), a map or function item cannot be atomized
@@ -740,16 +748,36 @@ func fnConcat(c *Context, a []Object) (Object, error) {
 					return nil, fmt.Errorf("err:XPTY0004: concat: argument atomizes to %d items", len(atoms))
 				}
 				if len(atoms) == 1 {
-					b.WriteString(itemString(atoms[0]))
+					add(itemString(atoms[0]))
 				}
 				continue
 			case *Map, *Function:
 				return nil, fmt.Errorf("err:FOTY0013: concat: cannot atomize a %T", v)
 			}
 		}
-		b.WriteString(ToString(x))
+		add(ToString(x))
 	}
-	return b.String(), nil
+	return joinParts(parts, total, ""), nil
+}
+
+// joinParts concatenates parts, whose lengths add up to total, with sep
+// between them, in one allocation.
+func joinParts(parts []string, total int, sep string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	}
+	var b strings.Builder
+	b.Grow(total + len(sep)*(len(parts)-1))
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(p)
+	}
+	return b.String()
 }
 
 // The substring-matching functions take an optional third $collation argument
@@ -1429,14 +1457,15 @@ func joinNodeStrings(ns NodeSet, sep string) string {
 	if len(ns) == 1 {
 		return ns[0].StringValue()
 	}
-	var b strings.Builder
-	for i, n := range ns {
-		if i > 0 {
-			b.WriteString(sep)
-		}
-		b.WriteString(n.StringValue())
+	var buf [16]string
+	parts := buf[:0]
+	total := 0
+	for _, n := range ns {
+		s := n.StringValue()
+		parts = append(parts, s)
+		total += len(s)
 	}
-	return b.String()
+	return joinParts(parts, total, sep)
 }
 
 // flagsArg returns the caller-supplied $flags value when the argument at

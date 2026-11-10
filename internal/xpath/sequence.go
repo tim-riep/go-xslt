@@ -2,7 +2,6 @@ package xpath
 
 import (
 	"math"
-	"strings"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -213,12 +212,15 @@ func seqAsString(items []Item, sep string) string {
 	if len(items) == 1 {
 		return itemString(items[0])
 	}
-	var b strings.Builder
-	for i, it := range items {
-		if i > 0 {
-			b.WriteString(sep)
-		}
-		b.WriteString(itemString(it))
+	// The strings are taken first so the result is built in one
+	// allocation of its final size (joinParts), not grown piece by piece.
+	var buf [16]string
+	parts := buf[:0]
+	total := 0
+	for _, it := range items {
+		s := itemString(it)
+		parts = append(parts, s)
+		total += len(s)
 	}
-	return b.String()
+	return joinParts(parts, total, sep)
 }
