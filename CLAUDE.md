@@ -121,6 +121,13 @@ dragging in the GUI's Wails/CGo dependencies:
   `Validate` via a standing differential test over the whole XSD conformance
   corpus. Content-model matching: a memoized position-set NFA (`content.go`)
   for ≤600 children; `bigmatch.go`'s linear counting matcher above that.
+  Per-call scratch (`validateScratch`, a field of the per-call Schema copy):
+  the assertion tree of every element is carved from ONE `xmltree.TreeAlloc`
+  that `Reset` reuses (so no node of an assertion tree may be kept past
+  `checkAsserts`), and the assertion/identity-constraint XPath contexts are
+  reused until `Captured()` (or the resolver's `ContextCaptured`) says a
+  function item holds them. An identity-constraint node set is the
+  evaluator's own and read-only (`icFilter` copies on the first drop).
   `messages.go`: a failed `xs:assert`/`xs:assertion` reports the
   `msg:message` (namespace `…/xsd/messages`, in its `xs:appinfo`) matching
   `ValidateRequest.Language`, plus `Rule`/`Path`/`Line`/`Col` — wording only,
@@ -646,7 +653,10 @@ Desktop GUI (**run from `desktop/`**):
     every prior attempt at this was rejected: `xmltree.Node` is a concrete
     struct referenced ~1,000+ times, no abstraction layer to swap in): a real
     incremental XML reader (`internal/xmltree/stream.go`) builds ordinary
-    `*Node`s one record at a time, retaining only the ancestor spine;
+    `*Node`s one record at a time, retaining only the ancestor spine (each
+    node its OWN allocation: a shared slab is one GC object, so dead records
+    in it would keep their children — and so the whole document — reachable;
+    tried in round 10, caught by `TestStreamIsMemoryBounded`);
     `internal/xslt/stream_exec.go` (+ `stream_acc/group/fork.go`) dispatches
     the streamed case, handing each completed record to the **unmodified**
     ordinary buffered evaluator once materialized. A compile-time

@@ -392,6 +392,42 @@ type Schema struct {
 	// by the validation process will still be present" even after annotations
 	// are stripped. Same lifetime and nil-ness as nodeTypes.
 	nodeDefaults map[*xmltree.Node][]defaultAttr
+	// scratchBuf is the per-call space the evaluation of assertions and
+	// identity constraints reuses from one element to the next (see
+	// checkAsserts), used only on a per-call copy (perCall; see
+	// scratchSpace) — a field, not an allocation of its own, and reached
+	// through the receiver rather than a pointer stored in the copy, which
+	// would make the copy itself escape to the heap.
+	scratchBuf validateScratch
+	perCall    bool
+}
+
+// scratchSpace returns the per-call scratch space, or nil on a Schema not
+// copied for a call, where everything is allocated afresh each time.
+func (s *Schema) scratchSpace() *validateScratch {
+	if !s.perCall {
+		return nil
+	}
+	return &s.scratchBuf
+}
+
+// validateScratch holds what checkAsserts and the identity-constraint
+// evaluation would otherwise allocate per element: the allocator the
+// assertion tree is carved from (Reset for every tree), the annotations the
+// tree's counting walk looks up for its cloning walk, and the XPath
+// evaluation contexts. A context is reused only while no function item
+// captured it (Captured, and the ContextCaptured notice to vars); busy
+// guards the assertion fields against a nested use.
+type validateScratch struct {
+	tree  xmltree.TreeAlloc
+	annos []assertAnno
+	ctx   *xpath.Context
+	vars  *valueVar
+	busy  bool
+	// icCtx evaluates identity-constraint selectors and fields; tuple is the
+	// buffer a key tuple is built in (tupleFor).
+	icCtx *xpath.Context
+	tuple []byte
 }
 
 // assertAnno is the typed-XDM description of a validated node for assertion

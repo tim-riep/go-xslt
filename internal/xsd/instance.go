@@ -81,6 +81,7 @@ func (s *Schema) ValidateOptsCtx(ctx context.Context, instance, lang string, max
 	// identical verdict on the identical document — the invariant
 	// TestValidateNodeMatchesValidate pins across 51,245 instances.
 	local.nodeDefaults = map[*xmltree.Node][]defaultAttr{}
+	local.perCall = true
 	local.coll = &collector{max: maxErrors}
 	if ctx.Done() != nil {
 		polls := 0
@@ -332,15 +333,29 @@ func (s *Schema) markUnassessed(el *xmltree.Node) {
 // skip-absorbed subtree (1.1 §3.11.4: only strictly-assessed nodes reach the
 // target/qualified node set — wild101/102/103). Decided declaratively per
 // ancestor step, because key tables are built before the subtree is validated.
+//
+// nodes is not written to (it may be the evaluator's own set, see
+// evalNodes): the result is nodes itself when nothing is dropped, else a
+// copy without the dropped ones.
 func (s *Schema) icFilter(nodes []*xmltree.Node) []*xmltree.Node {
 	if s.version != Version11 {
 		return nodes
 	}
-	out := nodes[:0]
-	for _, n := range nodes {
+	var out []*xmltree.Node
+	for i, n := range nodes {
 		if s.icNodeVisible(n) {
-			out = append(out, n)
+			if out != nil {
+				out = append(out, n)
+			}
+			continue
 		}
+		if out == nil {
+			out = make([]*xmltree.Node, i, len(nodes)-1)
+			copy(out, nodes[:i])
+		}
+	}
+	if out == nil {
+		return nodes
 	}
 	return out
 }
@@ -1142,8 +1157,13 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 	}
 	decls, fixedsByName := cm.decls, cm.fixedsByName
 	skipWc, laxWc, strictWc := cm.skipWc, cm.laxWc, cm.strictWc
-	var elemUsed map[xname]int // allocated on first use (1.1 EDC only)
-	pinned := kids             // lazily copied; wildcard-attributed children get probed out
+	// elemUsed counts the children attributed to each declared name, for the
+	// 1.1 dynamic EDC check below — which can only arise where the model
+	// has a lax or strict wildcard, so a model without one keeps no count
+	// (allocated on first use).
+	var elemUsed map[xname]int
+	edc := s.version == Version11 && (len(laxWc) > 0 || len(strictWc) > 0)
+	pinned := kids // lazily copied; wildcard-attributed children get probed out
 	for i, kid := range kids {
 		nn := nameOf(kid)
 		if d, ok := decls[nn]; ok {
@@ -1172,7 +1192,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 					continue
 				}
 			}
-			if s.version == Version11 {
+			if edc {
 				if elemUsed == nil {
 					elemUsed = map[xname]int{}
 				}

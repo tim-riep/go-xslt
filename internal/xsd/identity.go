@@ -260,12 +260,30 @@ func validIdentityNameTest(s string, node *xmltree.Node) bool {
 	return reNCName.MatchString(s)
 }
 
-func (ic *identityConstraint) evalNodes(p *xpath.Parsed, ctx *xmltree.Node, defNS string) ([]*xmltree.Node, error) {
-	obj, err := p.Eval(&xpath.Context{
-		Node: ctx, Pos: 1, Size: 1,
+// evalNodes evaluates a selector or field path p of ic from node, returning
+// the nodes it selects. The result is READ-ONLY for every caller: it may be
+// the evaluator's own node set, which can alias a node's children or
+// attributes (see xpath's axisNodes).
+func (s *Schema) evalNodes(ic *identityConstraint, p *xpath.Parsed, node *xmltree.Node, defNS string) ([]*xmltree.Node, error) {
+	// One context serves every evaluation of a call, until a function item
+	// captures it (xpath.Context.Captured); a Schema not copied for a call
+	// has no scratch space and allocates one.
+	var ctx *xpath.Context
+	if sc := s.scratchSpace(); sc != nil {
+		ctx = sc.icCtx
+		if ctx == nil || ctx.Captured() {
+			ctx = &xpath.Context{}
+			sc.icCtx = ctx
+		}
+	} else {
+		ctx = &xpath.Context{}
+	}
+	*ctx = xpath.Context{
+		Node: node, Pos: 1, Size: 1,
 		NS:            xsdNS(ic.ns),
 		DefaultElemNS: defNS,
-	})
+	}
+	obj, err := p.Eval(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +291,17 @@ func (ic *identityConstraint) evalNodes(p *xpath.Parsed, ctx *xmltree.Node, defN
 		// The usual result of a selector or field path, taken as it is:
 		// Items would copy it into a []Item first. A carrier node unwraps to
 		// the item it stands for, exactly as Items does, and only a node
-		// counts.
+		// counts; a set without carriers — the rule — is returned as it is.
+		carriers := false
+		for _, n := range ns {
+			if n != nil && n.RealItem() != nil {
+				carriers = true
+				break
+			}
+		}
+		if !carriers {
+			return []*xmltree.Node(ns), nil
+		}
 		nodes := make([]*xmltree.Node, 0, len(ns))
 		for _, n := range ns {
 			if n != nil && n.RealItem() != nil {
@@ -299,11 +327,19 @@ const tupleSep = "\x00"
 
 // tupleFor evaluates the fields against a target node, returning the serialized
 // key tuple and whether every field selected exactly one node (complete).
+// The tuple is built in the call's scratch buffer: one string per tuple,
+// not one per field and one more for joining them.
 func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string, bool, error) {
-	var buf [4]string // the fields of most constraints fit without a heap allocation
-	vals := buf[:0]
+	var buf []byte
+	sc := s.scratchSpace()
+	if sc != nil {
+		buf = sc.tuple[:0]
+	}
 	for fi, f := range ic.fields {
-		nodes, err := ic.evalNodes(f, target, ic.fieldNS[fi])
+		if fi > 0 {
+			buf = append(buf, tupleSep...)
+		}
+		nodes, err := s.evalNodes(ic, f, target, ic.fieldNS[fi])
 		if err != nil {
 			return "", false, ErrUnsupported
 		}
@@ -315,15 +351,15 @@ func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string,
 			if ic.kind != "keyref" && fi < len(ic.fieldRaw) {
 				if v, st, ok := s.absentAttrDefault(ic.fieldRaw[fi], target); ok {
 					// The supplied value must take the SAME canonical key form
-					// as an explicit one (fieldKeyValue), or "test" and the
+					// as an explicit one (appendFieldKey), or "test" and the
 					// defaulted "test" would never collide.
-					key := v
 					if st != nil && st.variety == vAtomic {
-						if cv, cok := canonAtomic(st, target, applyWhiteSpace(st.effectiveWhiteSpace(), v)); cok {
-							key = cv
+						if out, cok := appendCanonAtomic(buf, st, target, applyWhiteSpace(st.effectiveWhiteSpace(), v)); cok {
+							buf = out
+							continue
 						}
 					}
-					vals = append(vals, key)
+					buf = append(buf, v...)
 					continue
 				}
 			}
@@ -335,9 +371,12 @@ func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string,
 		if err := s.fieldTypeOK(nodes[0]); err != nil {
 			return "", false, err
 		}
-		vals = append(vals, s.fieldKeyValue(nodes[0]))
+		buf = s.appendFieldKey(buf, nodes[0])
 	}
-	return strings.Join(vals, tupleSep), true, nil
+	if sc != nil {
+		sc.tuple = buf
+	}
+	return string(buf), true, nil
 }
 
 // absentAttrDefault resolves a field of the simple form "@name" against the
@@ -419,15 +458,15 @@ func (s *Schema) fieldTypeOK(n *xmltree.Node) error {
 	return nil
 }
 
-// fieldKeyValue produces the comparison key for one identity-constraint field
+// appendFieldKey appends the comparison key for one identity-constraint field
 // value. Values are compared in their type's VALUE space, so the value is
 // canonicalised and prefixed with the type: boolean "1" and decimal "1" are
 // distinct keys, while decimal "1.0" and "1.00" are the same one. Without a
 // determinable type it falls back to the collapsed lexical string.
-func (s *Schema) fieldKeyValue(node *xmltree.Node) string {
+func (s *Schema) appendFieldKey(dst []byte, node *xmltree.Node) []byte {
 	st := s.declaredTypeOf(node)
 	if st == nil {
-		return applyWhiteSpace("collapse", nodeStringValue(node))
+		return append(dst, applyWhiteSpace("collapse", nodeStringValue(node))...)
 	}
 	// The comparison value is the field's value AFTER the type's own whiteSpace
 	// processing — xs:string preserves, so "  test  " and " test " are distinct
@@ -435,8 +474,8 @@ func (s *Schema) fieldKeyValue(node *xmltree.Node) string {
 	raw := applyWhiteSpace(st.effectiveWhiteSpace(), nodeStringValue(node))
 	switch st.variety {
 	case vAtomic:
-		if v, ok := canonAtomic(st, node, raw); ok {
-			return v
+		if out, ok := appendCanonAtomic(dst, st, node, raw); ok {
+			return out
 		}
 	case vList:
 		// A list's key is its items' canonical forms joined — which makes a
@@ -445,18 +484,20 @@ func (s *Schema) fieldKeyValue(node *xmltree.Node) string {
 			break
 		}
 		prim := xsdPrimitiveOf(st.item.resolvePrim())
-		items := xmlFields(raw)
-		vals := make([]string, 0, len(items))
-		for _, it := range items {
-			v, ok := canonAtomic(st.item, node, it)
-			if !ok {
-				return raw
+		mark := len(dst)
+		dst = append(append(dst, atomName(prim)...), ':')
+		for i, it := range xmlFields(raw) {
+			if i > 0 {
+				dst = append(dst, ' ')
 			}
-			vals = append(vals, strings.TrimPrefix(v, atomName(prim)+":"))
+			var ok bool
+			if dst, ok = appendCanonLexical(dst, prim, node, it); !ok {
+				return append(dst[:mark], raw...)
+			}
 		}
-		return atomName(prim) + ":" + strings.Join(vals, " ")
+		return dst
 	}
-	return raw
+	return append(dst, raw...)
 }
 
 // xsdPrimitiveOf maps a built-in type to the XSD primitive at the root of its
@@ -479,16 +520,32 @@ func xsdPrimitiveOf(t xpath.AtomType) xpath.AtomType {
 	return t
 }
 
-// canonAtomic renders one atomic value in its type's value space, prefixed with
-// the type so values of different types cannot collide.
-func canonAtomic(st *SimpleType, node *xmltree.Node, raw string) (string, bool) {
+// appendCanonAtomic appends one atomic value in its type's value space,
+// prefixed with the type so values of different types cannot collide.
+func appendCanonAtomic(dst []byte, st *SimpleType, node *xmltree.Node, raw string) ([]byte, bool) {
 	prim := xsdPrimitiveOf(st.resolvePrim())
-	if prim == xpath.XSqname || prim == xpath.XSnotation {
+	mark := len(dst)
+	dst = append(append(dst, atomName(prim)...), ':')
+	out, ok := appendCanonLexical(dst, prim, node, raw)
+	if !ok {
+		return dst[:mark], false
+	}
+	return out, true
+}
+
+// appendCanonLexical appends the value-space rendering of raw as prim (the
+// part of appendCanonAtomic after the type prefix).
+func appendCanonLexical(dst []byte, prim xpath.AtomType, node *xmltree.Node, raw string) ([]byte, bool) {
+	switch prim {
+	case xpath.XSqname, xpath.XSnotation:
 		// QName values are equal when their namespace and local part match; the
 		// prefix carries no identity of its own.
-		return atomName(prim) + ":" + resolveQName(node, raw).String(), true
-	}
-	if prim == xpath.XStime {
+		return append(dst, resolveQName(node, raw).String()...), true
+	case xpath.XSstring:
+		// A string's lexical form is its value: the cast below would hand it
+		// back unchanged.
+		return append(dst, raw...), true
+	case xpath.XStime:
 		// §3.3.8: the time value space maps 24:00:00 to 00:00:00 of the SAME
 		// (arbitrary) reference date — normalize before casting so the dummy
 		// date does not roll over (zone206.v02 vs .n02: 02:00+14:00 anchors a
@@ -499,24 +556,24 @@ func canonAtomic(st *SimpleType, node *xmltree.Node, raw string) (string, bool) 
 	}
 	a, err := xpath.CastTo(xpath.NewString(raw), prim)
 	if err != nil {
-		return "", false
+		return dst, false
 	}
 	if dateTimePrim(prim) {
 		// Key identity is on the TIMELINE for timezoned values (02:00:00-05:00
 		// equals 07:00:00Z — zone206); values without a timezone live in their
 		// own partition and never collide with timezoned ones.
 		if tm, hasTZ := a.TimeValue(); hasTZ {
-			return atomName(prim) + ":Z:" + tm.UTC().Format("2006-01-02T15:04:05.999999999"), true
+			return tm.UTC().AppendFormat(append(dst, "Z:"...), "2006-01-02T15:04:05.999999999"), true
 		}
-		return atomName(prim) + ":-:" + a.Lexical(), true
+		return append(append(dst, "-:"...), a.Lexical()...), true
 	}
-	return atomName(prim) + ":" + a.Lexical(), true
+	return append(dst, a.Lexical()...), true
 }
 
 // buildKeyTable evaluates a key/unique constraint at scope element el, checking
 // uniqueness (and, for key, that every selected target has all fields).
 func (s *Schema) buildKeyTable(ic *identityConstraint, el *xmltree.Node) (*keyTable, error) {
-	targets, err := ic.evalNodes(ic.selector, el, ic.selNS)
+	targets, err := s.evalNodes(ic, ic.selector, el, ic.selNS)
 	if err != nil {
 		return nil, ErrUnsupported
 	}
@@ -545,7 +602,7 @@ func (s *Schema) buildKeyTable(ic *identityConstraint, el *xmltree.Node) (*keyTa
 // key/unique table.
 func (s *Schema) checkKeyref(ic *identityConstraint, el *xmltree.Node, scopes map[xname]*keyTable) error {
 	ref := scopes[ic.refer]
-	targets, err := ic.evalNodes(ic.selector, el, ic.selNS)
+	targets, err := s.evalNodes(ic, ic.selector, el, ic.selNS)
 	if err != nil {
 		return ErrUnsupported
 	}
