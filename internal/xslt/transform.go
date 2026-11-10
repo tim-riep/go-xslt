@@ -2859,7 +2859,7 @@ type errSite struct {
 
 // sameErr compares two errors by identity without panicking on an
 // uncomparable dynamic type. Two errors of different dynamic types are never
-// equal, and two of one uncomparable type (itrNext, which carries a map)
+// equal, and two of one uncomparable type (itrNext, which carries slices)
 // cannot be compared, so both answers are given without the comparison:
 // comparing them used to raise and recover a panic for every
 // xsl:next-iteration. The deferred recovery stays for a comparable type

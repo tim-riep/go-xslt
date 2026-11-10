@@ -46,6 +46,7 @@ func (*itrIterate) instr() {}
 // itrNextInstr is the compiled xsl:next-iteration instruction.
 type itrNextInstr struct {
 	params []*VarDef // xsl:with-param children
+	keys   []string  // params' clark names, computed once
 	el     *xmltree.Node
 }
 
@@ -61,12 +62,26 @@ type itrBreakInstr struct {
 func (*itrBreakInstr) instr() {}
 
 // itrNext is the sentinel signalling xsl:next-iteration. It carries the new
-// values for the iteration parameters keyed by their clark name.
+// values for the iteration parameters: vals[i] is the value of the
+// with-param named keys[i] (a clark name; keys is the instruction's own list,
+// shared by every iteration). A map per iteration was one allocation more,
+// hashed every name on both sides and made the value uncomparable.
 type itrNext struct {
-	params map[string]xpath.Object
+	keys []string
+	vals []xpath.Object
 }
 
 func (itrNext) Error() string { return "xsl:next-iteration" }
+
+// value returns the new value supplied for the parameter named key.
+func (nx itrNext) value(key string) (xpath.Object, bool) {
+	for i, k := range nx.keys {
+		if k == key {
+			return nx.vals[i], true
+		}
+	}
+	return nil, false
+}
 
 // itrBreak is the sentinel signalling xsl:break. The break's result, if any,
 // has already been written to the output by the time this propagates.
@@ -201,6 +216,7 @@ func itrCompileNext(c *compiler, el *xmltree.Node) (instruction, error) {
 				return nil, err
 			}
 			n.params = append(n.params, vd)
+			n.keys = append(n.keys, clark(vd.name.Space, vd.name.Local))
 		}
 	}
 	return n, nil
@@ -268,7 +284,7 @@ func (n *itrIterate) exec(eng *engine, r rt, out *xmltree.Node) error {
 			// current value.
 			for _, p := range n.params {
 				key := clark(p.name.Space, p.name.Local)
-				nv, ok := nx.params[key]
+				nv, ok := nx.value(key)
 				if !ok {
 					continue
 				}
@@ -315,15 +331,15 @@ func (n *itrIterate) exec(eng *engine, r rt, out *xmltree.Node) error {
 }
 
 func (n *itrNextInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
-	vals := make(map[string]xpath.Object, len(n.params))
-	for _, p := range n.params {
+	vals := make([]xpath.Object, len(n.params))
+	for i, p := range n.params {
 		v, err := eng.evalVarDef(p, r)
 		if err != nil {
 			return err
 		}
-		vals[clark(p.name.Space, p.name.Local)] = v
+		vals[i] = v
 	}
-	return itrNext{params: vals}
+	return itrNext{keys: n.keys, vals: vals}
 }
 
 func (n *itrBreakInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
