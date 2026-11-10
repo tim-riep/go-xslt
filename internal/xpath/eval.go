@@ -986,13 +986,23 @@ func evalFor(binds []VarBind, i int, ctx *Context, body Expr) (Object, error) {
 	}
 	key := varKey(ctx, binds[i].Prefix, binds[i].Local)
 	var out []Item
+	// The items are read in place (itemAt; Items copied a node set), and the
+	// result starts with room for one item per input item, up to a small
+	// cap: most loops are a few items long and yield one item each, so that
+	// is one allocation in place of append's doubling, while a long loop
+	// that yields little does not reserve the length of its input.
+	n := itemCount(seqV)
+	if n > 1 {
+		out = make([]Item, 0, min(n, 16))
+	}
 	// One scratch context per loop (a copy of ctx, as withLocal makes),
 	// overwritten per item and replaced only once an evaluation captured it
 	// (as in applyPredicateOrdered). The binding itself is a fresh localScope
 	// per item: copies of the context made inside the body share it by
 	// pointer, so it is never overwritten.
 	var sub *Context
-	for _, it := range Items(seqV) {
+	for idx := 0; idx < n; idx++ {
+		it := itemAt(seqV, idx)
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}

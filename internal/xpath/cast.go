@@ -246,6 +246,12 @@ func atomizeOperand(o Object) (Item, int, error) {
 	return items[0], 1, nil
 }
 
+// AtomizeOperand atomizes o when that yields at most one atomic value, which
+// it returns with n = 1 (n = 0 for the empty sequence), without the sequence
+// Atomize builds; for more than one value n is their count and the item is
+// nil. An atomization error is reported as Atomize reports it.
+func AtomizeOperand(o Object) (Item, int, error) { return atomizeOperand(o) }
+
 // atomizeOneNodes is atomizeOne of a node set: its one node (a carrier node
 // unwrapped to the item it stands for) is atomized as a one-item Object, which
 // boxes a pointer and so allocates nothing.

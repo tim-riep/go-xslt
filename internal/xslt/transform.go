@@ -6136,9 +6136,20 @@ func (eng *engine) sortNodes(nodes []*xmltree.Node, sorts []sortKey, el *xmltree
 			// surfaced before as well: the inference checks that used to
 			// atomize first treated an error as an empty key, changing no
 			// state, so nothing observable happened between there and here.
-			atoms, aerr := xpath.Atomize(v)
+			// The usual one value is held in a stack array, not a sequence
+			// allocated per key; a plural key only needs its count, for the
+			// XTTE1020 below.
+			var oneAtom [1]xpath.Item
+			atoms := oneAtom[:0]
+			atom, nAtoms, aerr := xpath.AtomizeOperand(v)
 			if aerr != nil {
 				return nil, aerr
+			}
+			if nAtoms == 1 {
+				oneAtom[0] = atom
+				atoms = oneAtom[:1]
+			} else if nAtoms > 1 {
+				return nil, errAt(sk.el, "err:XTTE1020: the xsl:sort key value is a sequence of %d items", nAtoms)
 			}
 			if allNumeric[si] {
 				if num, empty := sortKeyIsNumeric(atoms); !empty {

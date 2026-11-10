@@ -105,6 +105,21 @@ func arithOperand(ctx *Context, o Object) (*Atomic, error) {
 // all participate in "+" without error). The result is unconditionally
 // xs:double, matching 1.0's one numeric type (backwards-027).
 func bc10ArithOperand(o Object) (*Atomic, error) {
+	// The usual operands, without the one-item slice Atomize builds: an
+	// atomic value (position(), a literal, an arithmetic result) is its own
+	// atomization; a node set of one node atomizes as Atomize's first item
+	// does. Anything else takes the general way below.
+	switch v := o.(type) {
+	case *Atomic:
+		return NewDouble(ToNumber(v)), nil
+	case NodeSet:
+		if a, n, err := atomizeOneNodes(v); err == nil && n < 2 {
+			if n == 0 {
+				return NewDouble(math.NaN()), nil
+			}
+			return NewDouble(ToNumber(a)), nil
+		}
+	}
 	items, err := Atomize(o)
 	if err != nil {
 		// Atomization can still fail outright for a map/function item — BC10
