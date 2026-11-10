@@ -632,6 +632,19 @@ func (p *argSpec) convert(fname string, idx int, a Object, ctx *Context) (v Obje
 				}
 				return c, true, nil
 			}
+			if !plainNode(x) {
+				// A type-annotated node: its one typed value, converted as
+				// the general loop below would, without the sequences it
+				// builds. Anything else (a list type, no typed value, an
+				// error) takes the general way, which reports it as before.
+				if at, n, err := atomizeOne(x); err == nil && n == 1 {
+					c, _, err := p.convertAtom(fname, idx, a, at.(*Atomic), ctx)
+					if err != nil {
+						return nil, false, err
+					}
+					return c, true, nil
+				}
+			}
 		}
 	}
 	items := Items(a)

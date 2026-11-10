@@ -602,20 +602,20 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
-	items, err := Atomize(arg(a, i))
+	item, n, err := atomizeOperand(arg(a, i))
 	if err != nil {
 		return "", err
 	}
 	switch {
-	case len(items) == 0:
+	case n == 0:
 		if optional {
 			return "", nil
 		}
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must not be empty", fn, i+1)
-	case len(items) > 1:
+	case n > 1:
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must be a single string", fn, i+1)
 	}
-	at, ok := items[0].(*Atomic)
+	at, ok := item.(*Atomic)
 	if !ok || !isComparableAsString(at) {
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must be an xs:string", fn, i+1)
 	}

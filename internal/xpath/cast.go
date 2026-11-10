@@ -163,6 +163,69 @@ func Atomize(o Object) ([]Item, error) {
 }
 
 // atomizeItem appends the atomized value of one item to out.
+// atomizeOne atomizes o when that yields at most one atomic value, without
+// the slice Atomize builds: n is 0 (empty) or 1 (a is the value), or 2 when o
+// has more than one item or atomizes to something this shortcut does not
+// handle (a list-typed node, an array, a map or function, an element with
+// element-only content) — the caller then uses Atomize, which decides those
+// exactly as before.
+func atomizeOne(o Object) (a Item, n int, err error) {
+	var it Item
+	switch v := o.(type) {
+	case nil:
+		return nil, 0, nil
+	case NodeSet:
+		if len(v) != 1 {
+			return nil, min(len(v), 2), nil
+		}
+		it = v[0]
+		if nd := v[0]; nd != nil && nd.RealItem() != nil {
+			it = nd.RealItem()
+		}
+	case Sequence:
+		if len(v) != 1 {
+			return nil, min(len(v), 2), nil
+		}
+		it = v[0]
+	default:
+		it = o
+	}
+	switch x := it.(type) {
+	case *Array, *Map, *Function:
+		return nil, 2, nil
+	case *xmltree.Node:
+		// The same order of checks as atomizeItem.
+		if x.Kind == xmltree.KindElement && x.Nilled() {
+			return nil, 0, nil
+		}
+		if x.ListTyped() || isElementOnlyCandidate(x) {
+			return nil, 2, nil
+		}
+	}
+	a, err = toAtomic(it)
+	if err != nil {
+		return nil, 0, err
+	}
+	return a, 1, nil
+}
+
+// atomizeOperand atomizes an operand that must be a singleton: the one
+// atomic value and n = 1, or n = 0 for the empty sequence, or n > 1.
+func atomizeOperand(o Object) (Item, int, error) {
+	a, n, err := atomizeOne(o)
+	if err != nil || n != 2 {
+		return a, n, err
+	}
+	items, err := Atomize(o)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(items) != 1 {
+		return nil, len(items), nil
+	}
+	return items[0], 1, nil
+}
+
 func atomizeItem(out []Item, it Item) ([]Item, error) {
 	switch v := it.(type) {
 	case *Array:
@@ -582,7 +645,17 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 		// the same number; anything else, overflow included, goes the general
 		// way, which also decides the lexical question.
 		if n, perr := strconv.ParseInt(s, 10, 64); perr == nil {
-			z = big.NewInt(n)
+			if n >= -16 && n < 1024 {
+				// The cached value's big.Int: an Atomic is never changed
+				// after construction, so the shared one serves (as the
+				// cached xs:integer Atomics themselves are shared).
+				if target == XSinteger {
+					return smallInts[n+16], nil
+				}
+				z = smallInts[n+16].i
+			} else {
+				z = big.NewInt(n)
+			}
 		} else {
 			var ok bool
 			z, ok = new(big.Int).SetString(s, 10)

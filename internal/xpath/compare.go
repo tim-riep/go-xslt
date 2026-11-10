@@ -263,21 +263,21 @@ func nodeComparison(op string, l, r Object) (Object, error) {
 
 // valueComparison implements eq, ne, lt, le, gt, ge on single atomized values.
 func valueComparison(op string, l, r Object, ctx *Context) (Object, error) {
-	la, err := Atomize(l)
+	la, ln, err := atomizeOperand(l)
 	if err != nil {
 		return nil, err
 	}
-	ra, err := Atomize(r)
+	ra, rn, err := atomizeOperand(r)
 	if err != nil {
 		return nil, err
 	}
-	if len(la) == 0 || len(ra) == 0 {
+	if ln == 0 || rn == 0 {
 		return Sequence{}, nil
 	}
-	if len(la) > 1 || len(ra) > 1 {
+	if ln > 1 || rn > 1 {
 		return nil, fmt.Errorf("err:XPTY0004: value comparison operand is not a singleton")
 	}
-	a0, b0 := la[0].(*Atomic), ra[0].(*Atomic)
+	a0, b0 := la.(*Atomic), ra.(*Atomic)
 	if err := cmpTypeError(valueOpToSym(op), a0, b0); err != nil {
 		return nil, err
 	}
