@@ -348,7 +348,7 @@ func (n *num2Number) compute(eng *engine, r rt) ([]num2Val, bool, error) {
 		// evalEnv/for-each), is XTTE0990 (number-0823/0824/1004).
 		return nil, false, errAt(n.el, "err:XTTE0990: xsl:number: the context item is absent or is not a node")
 	}
-	m := newNum2matcher(eng, n.el)
+	m := newNum2matcher(eng, n)
 
 	switch n.level {
 	case "any":
@@ -395,17 +395,30 @@ type num2matcher struct {
 	sc  *matchScratch
 	dns string
 	st  xpath.SchemaTypeResolver
+	// countStatic and fromStatic are @count's and @from's
+	// Pattern.NeedsOnlyDefaultNS, decided once per xsl:number evaluation:
+	// that walk over the pattern's steps was repeated for every candidate,
+	// which for level="single" is every preceding sibling of the node.
+	countStatic, fromStatic bool
 }
 
-func newNum2matcher(eng *engine, el *xmltree.Node) *num2matcher {
-	return &num2matcher{eng: eng, el: el, dns: xpathDefaultNS(el), st: schemaTypesFor(el)}
+func newNum2matcher(eng *engine, n *num2Number) *num2matcher {
+	m := &num2matcher{eng: eng, el: n.el, dns: xpathDefaultNS(n.el), st: schemaTypesFor(n.el)}
+	if n.count != nil {
+		m.countStatic = n.count.NeedsOnlyDefaultNS()
+	}
+	if n.from != nil {
+		m.fromStatic = n.from.NeedsOnlyDefaultNS()
+	}
+	return m
 }
 
-// match reports whether node matches p.
-func (m *num2matcher) match(p *xpath.Pattern, node *xmltree.Node) (bool, error) {
+// match reports whether node matches p, which reads no more of a Context
+// than its default element namespace when static is set.
+func (m *num2matcher) match(p *xpath.Pattern, static bool, node *xmltree.Node) (bool, error) {
 	eng := m.eng
 	var ctx *xpath.Context
-	if p.NeedsOnlyDefaultNS() {
+	if static {
 		// A pattern that reads no more of a context than its default
 		// element namespace is matched against just that (staticMatchCtx).
 		ctx = eng.staticMatchCtx(m.dns)
@@ -431,7 +444,7 @@ func (n *num2Number) matchesCount(m *num2matcher, node, target *xmltree.Node) (b
 	if n.count == nil {
 		return num2SameName(node, target), nil
 	}
-	return m.match(n.count, node)
+	return m.match(n.count, m.countStatic, node)
 }
 
 // matchesFrom reports whether node satisfies @from (false when @from absent).
@@ -439,7 +452,7 @@ func (n *num2Number) matchesFrom(m *num2matcher, node *xmltree.Node) (bool, erro
 	if n.from == nil {
 		return false, nil
 	}
-	return m.match(n.from, node)
+	return m.match(n.from, m.fromStatic, node)
 }
 
 // countSingle counts preceding siblings of node (plus self) that match @count,
