@@ -5486,29 +5486,42 @@ func (eng *engine) evalAVT(a *avt, el *xmltree.Node, r rt) (string, error) {
 	if lit, ok := a.isConstant(); ok {
 		return lit, nil
 	}
-	var b strings.Builder
+	// The parts are collected first and joined with one allocation of the
+	// final size; a single-part AVT ("{expr}") is its part's own string.
+	var buf [8]string
+	parts, size := buf[:0], 0
 	for _, part := range a.parts {
-		if part.expr == nil {
-			b.WriteString(part.literal)
-			continue
+		s := part.literal
+		if part.expr != nil {
+			// An AVT's {expr} is stringified the same way as constructing
+			// simple content (XSLT 3.0 §5.6.2): a multi-item sequence result
+			// joins with a single space, not just its first item's string
+			// (function-1013: "{$x[position()]}" over a 10-item sequence
+			// must print all 10 values).
+			//
+			// XSLT 1.0 backwards-compatible processing reverts this to the
+			// FIRST item's string value only (backwards-010's own point:
+			// "effect of BC on AVTs").
+			v, err := eng.eval(part.expr, elOrDoc(el, eng.doc), r)
+			if err != nil {
+				return "", err
+			}
+			if eng.bc10At(el) {
+				s = xpath.ToString(v)
+			} else {
+				s = joinSeq(v, " ")
+			}
 		}
-		// An AVT's {expr} is stringified the same way as constructing simple
-		// content (XSLT 3.0 §5.6.2): a multi-item sequence result joins with a
-		// single space, not just its first item's string (function-1013:
-		// "{$x[position()]}" over a 10-item sequence must print all 10 values).
-		//
-		// XSLT 1.0 backwards-compatible processing reverts this to the
-		// FIRST item's string value only (backwards-010's own point: "effect
-		// of BC on AVTs").
-		v, err := eng.eval(part.expr, elOrDoc(el, eng.doc), r)
-		if err != nil {
-			return "", err
-		}
-		if eng.bc10At(el) {
-			b.WriteString(xpath.ToString(v))
-		} else {
-			b.WriteString(joinSeq(v, " "))
-		}
+		parts = append(parts, s)
+		size += len(s)
+	}
+	if len(parts) == 1 {
+		return parts[0], nil
+	}
+	var b strings.Builder
+	b.Grow(size)
+	for _, s := range parts {
+		b.WriteString(s)
 	}
 	return b.String(), nil
 }
