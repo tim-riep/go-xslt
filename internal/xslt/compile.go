@@ -3761,7 +3761,12 @@ func checkPatternFunctions(ss *Stylesheet) error {
 }
 
 func funcKey(uri, local string, arity int) string {
-	return clark(uri, local) + "#" + strconv.Itoa(arity)
+	// One concatenation, one allocation: this runs on every call of a
+	// stylesheet function.
+	if uri == "" {
+		return local + "#" + strconv.Itoa(arity)
+	}
+	return "{" + uri + "}" + local + "#" + strconv.Itoa(arity)
 }
 
 func clarkName(n xmltree.Name) string { return clark(n.Space, n.Local) }

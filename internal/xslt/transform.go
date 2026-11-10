@@ -1552,6 +1552,12 @@ type engine struct {
 	// bcScopes memoizes inBackwardsCompatScope per stylesheet element (see
 	// bcScope).
 	bcScopes map[*xmltree.Node]bool
+	// asCtxs memoizes asTypeCtx per stylesheet element: the context a
+	// declared type is matched in is built from the element alone (its
+	// namespaces, xpath-default-namespace and schema), which a compiled
+	// stylesheet never changes, and it was allocated on every typed binding
+	// that needed one. It is only read (a function coercion may keep it).
+	asCtxs map[*xmltree.Node]*xpath.Context
 	// patCtx is the minimal match Context of staticMatchCtx.
 	patCtx *xpath.Context
 	// selBufs holds spare node lists for staticSelect, taken and given back
@@ -1813,7 +1819,7 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 			if p, perr := xpath.Parse(sel); perr == nil {
 				if v, verr := p.Eval(&xpath.Context{NoFocus: true}); verr == nil {
 					if vd.as != "" {
-						if cv, _ := coerceAs(vd.as, v, vd.el); cv != nil {
+						if cv, _ := eng.coerceAs(vd.as, v, vd.el); cv != nil {
 							v = cv
 						}
 					}
@@ -1835,7 +1841,7 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 			// xs:integer 541).
 			v := xpath.Object(xpath.NewUntyped(pv))
 			if vd.as != "" {
-				if cv, _ := coerceAs(vd.as, v, vd.el); cv != nil {
+				if cv, _ := eng.coerceAs(vd.as, v, vd.el); cv != nil {
 					v = cv
 				}
 			}
@@ -1872,7 +1878,14 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 // --- variable scope ---------------------------------------------------------
 
 // pushScope opens a frame; its map is allocated by the first bindVar into it
-// (most template invocations bind nothing, and paid a map each).
+// (most template invocations bind nothing, and paid a map each). A template
+// or function call starts its callee with an empty stack that keeps the
+// caller's spare capacity (callerScopes[len:]), so the frames of a call
+// chain share one backing array instead of each call allocating its own:
+// nothing beyond the live length is ever read (a snapshot taken for a
+// function item is a copy, see evalEnv.ContextCaptured), and the callee's
+// frames are dead by the time the caller, restored to its own length,
+// pushes again.
 func (eng *engine) pushScope() { eng.scopes = append(eng.scopes, nil) }
 func (eng *engine) popScope()  { eng.scopes = eng.scopes[:len(eng.scopes)-1] }
 
@@ -2030,6 +2043,23 @@ func coerceAs(as string, v xpath.Object, el *xmltree.Node) (xpath.Object, bool) 
 	return xpath.CoerceToDeclaredTypeCtx(as, v, asTypeCtx(el))
 }
 
+// coerceAs is the package-level coerceAs with the matching context
+// remembered per run (asCtxs).
+func (eng *engine) coerceAs(as string, v xpath.Object, el *xmltree.Node) (xpath.Object, bool) {
+	if schemaForElement(el) == nil && xpath.MatchesDeclaredTypeNoContext(as, v) {
+		return v, true
+	}
+	ctx, ok := eng.asCtxs[el]
+	if !ok {
+		ctx = asTypeCtx(el)
+		if eng.asCtxs == nil {
+			eng.asCtxs = map[*xmltree.Node]*xpath.Context{}
+		}
+		eng.asCtxs[el] = ctx
+	}
+	return xpath.CoerceToDeclaredTypeCtx(as, v, ctx)
+}
+
 func asTypeCtx(el *xmltree.Node) *xpath.Context {
 	// DefaultElemNS matters here as much as in any other evaluation: an
 	// UNPREFIXED ElementName inside element(N)/element(N,T) takes the default
@@ -2121,7 +2151,7 @@ func (e *evalEnv) ResolveVar(prefix, local string) (xpath.Object, bool) {
 			}
 		}
 	}
-	if e.eng.sheet.hiddenRef(e.el, "variable#"+clark(uri, local)) {
+	if len(e.eng.sheet.hiddenAt) > 0 && e.eng.sheet.hiddenRef(e.el, "variable#"+clark(uri, local)) {
 		return nil, false // hidden by the used package: undeclared here (XPST0008)
 	}
 	if e.scopes != nil {
@@ -2348,7 +2378,7 @@ func (eng *engine) resolveFunctionAs(env *evalEnv, lookup bool) func(ns, local s
 		if !ok {
 			return nil, false
 		}
-		if eng.sheet.hiddenRef(env.el, "function#"+clark(ns, local)+"#"+itoa(arity)) {
+		if len(eng.sheet.hiddenAt) > 0 && eng.sheet.hiddenRef(env.el, "function#"+clark(ns, local)+"#"+itoa(arity)) {
 			return nil, false // function-lookup() cannot see what the used package hides
 		}
 		if lookup {
@@ -2524,7 +2554,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 		// reporting a constructed result's true shape (e.g. document-node
 		// flattening) make a mismatch less trustworthy as a genuine error.
 		if vd.as != "" {
-			cv, ok := coerceAs(vd.as, v, vd.el)
+			cv, ok := eng.coerceAs(vd.as, v, vd.el)
 			if !ok {
 				return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 			}
@@ -2558,7 +2588,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 			if err != nil {
 				return nil, err
 			}
-			cv, ok := coerceAs(vd.as, v, vd.el)
+			cv, ok := eng.coerceAs(vd.as, v, vd.el)
 			if !ok {
 				return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 			}
@@ -2612,7 +2642,7 @@ func (eng *engine) evalVarDef(vd *VarDef, r rt) (xpath.Object, error) {
 	}
 	if vd.as != "" {
 		seq := fragAsSequence(frag)
-		cv, ok := coerceAs(vd.as, seq, vd.el)
+		cv, ok := eng.coerceAs(vd.as, seq, vd.el)
 		if !ok {
 			return nil, errAt(vd.el, "err:XTTE0570: supplied value of $%s does not match declared type %q", vd.name.Local, vd.as)
 		}
@@ -2843,15 +2873,21 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 		// silent "" that the general lenient ToString/joinSeq machinery
 		// (shared with attribute/simple-content construction elsewhere)
 		// otherwise produces (maps-907).
-		switch v.(type) {
+		switch sv := v.(type) {
 		case string, float64, bool, *xpath.Atomic:
 			// One atomic value: nothing to flatten, nothing to reject.
-		default:
-			for _, it := range xpath.Flatten(xpath.Items(v)) {
-				switch it.(type) {
-				case *xpath.Map, *xpath.Function:
-					return errAt(n.el, "err:FOTY0013: xsl:value-of cannot compute the string value of a map or function item")
+		case xpath.NodeSet:
+			// Nodes only: nothing to reject — unless a carrier node stands
+			// in for a non-node item (RealItem), which the general check
+			// below unwraps and judges.
+			if hasCarrier(sv) {
+				if err := rejectValueOfItems(n.el, v); err != nil {
+					return err
 				}
+			}
+		default:
+			if err := rejectValueOfItems(n.el, v); err != nil {
+				return err
 			}
 		}
 		// XSLT 1.0 backwards-compatible processing: xsl:value-of/@select
@@ -2952,6 +2988,30 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 	return fmt.Errorf("unknown instruction %T", in)
 }
 
+// hasCarrier reports whether a node of ns stands in for a non-node item
+// (xmltree.Node.RealItem), i.e. whether Items(ns) would hand out anything
+// but these nodes themselves.
+func hasCarrier(ns xpath.NodeSet) bool {
+	for _, nd := range ns {
+		if nd != nil && nd.RealItem() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectValueOfItems is xsl:value-of's FOTY0013 check over the items of v,
+// arrays flattened into their members first (as joinSeq does).
+func rejectValueOfItems(el *xmltree.Node, v xpath.Object) error {
+	for _, it := range xpath.Flatten(xpath.Items(v)) {
+		switch it.(type) {
+		case *xpath.Map, *xpath.Function:
+			return errAt(el, "err:FOTY0013: xsl:value-of cannot compute the string value of a map or function item")
+		}
+	}
+	return nil
+}
+
 func (eng *engine) execLitElement(n *litElement, r rt, out *xmltree.Node) error {
 	el := xmltree.NewElement(n.name)
 	// n.ns is the compiled TEMPLATE of namespace bindings (this element's own
@@ -3016,6 +3076,18 @@ func (eng *engine) execLitElement(n *litElement, r rt, out *xmltree.Node) error 
 // already finalized cannot perturb those merge decisions.
 func stripEmptyLiteralText(el *xmltree.Node) {
 	if len(el.Children) == 0 {
+		return
+	}
+	// Nothing to strip (the usual case) leaves the children as they are: the
+	// rebuild below allocates a new list.
+	strip := false
+	for _, c := range el.Children {
+		if c.Kind == xmltree.KindText && !c.Atomic() && c.Value == "" {
+			strip = true
+			break
+		}
+	}
+	if !strip {
 		return
 	}
 	// Three-index, not el.Children[:0]: that would keep the ORIGINAL backing
@@ -3539,7 +3611,7 @@ func (eng *engine) invokeTemplateBody(tmpl *Template, r rt, out *xmltree.Node, c
 	// (~10% of a template-heavy transform's mallocs) for a frame that stayed
 	// empty.
 	callerScopes := eng.scopes
-	eng.scopes = nil
+	eng.scopes = callerScopes[len(callerScopes):]
 	prevTunnel := eng.tunnel
 	if tunnelIn != nil {
 		eng.tunnel = tunnelIn
@@ -3564,7 +3636,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 					// declared type (variable-0206: an upstream tunnel
 					// with-param select="17" [xs:integer] reaching a
 					// downstream $t1 declared as="node()").
-					cv, ok := coerceAs(p.as, tv, p.el)
+					cv, ok := eng.coerceAs(p.as, tv, p.el)
 					if !ok {
 						return errAt(p.el, "err:XTTE0590: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 					}
@@ -3601,7 +3673,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 				// its own): it is a type error (XTTE0590) if conversion
 				// fails (error-0590a: with-param select="current-date()"
 				// supplied for a param declared as="xs:integer").
-				cv, ok := coerceAs(p.as, val, p.el)
+				cv, ok := eng.coerceAs(p.as, val, p.el)
 				if !ok {
 					return errAt(cp.el, "err:XTTE0590: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 				}
@@ -3630,7 +3702,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 			if err != nil {
 				return err
 			}
-			cv, ok := coerceAs(tmpl.as, v, tmpl.el)
+			cv, ok := eng.coerceAs(tmpl.as, v, tmpl.el)
 			if !ok {
 				return errAt(tmpl.el, "err:XTTE0505: result of template %s does not match declared type %q", templateLabel(tmpl), tmpl.as)
 			}
@@ -3652,7 +3724,7 @@ func (eng *engine) runTemplate(tmpl *Template, r rt, out *xmltree.Node, supplied
 		return err
 	}
 	seq := fragAsSequence(frag)
-	cv, ok := coerceAs(tmpl.as, seq, tmpl.el)
+	cv, ok := eng.coerceAs(tmpl.as, seq, tmpl.el)
 	if !ok {
 		return errAt(tmpl.el, "err:XTTE0505: result of template %s does not match declared type %q", templateLabel(tmpl), tmpl.as)
 	}
@@ -3727,7 +3799,7 @@ func (eng *engine) execCallTemplate(n *callTemplate, r rt, out *xmltree.Node) er
 	if !ok {
 		return errAt(n.el, "no template named %q", n.name)
 	}
-	if eng.sheet.hiddenRef(n.el, "template#"+clarkName(resolveQName(n.el, n.name))) {
+	if len(eng.sheet.hiddenAt) > 0 && eng.sheet.hiddenRef(n.el, "template#"+clarkName(resolveQName(n.el, n.name))) {
 		return errAt(n.el, "err:XTSE0650: no template named %q is visible here (it is hidden by the used package)", n.name)
 	}
 	// XTSE0680: every non-tunnel xsl:with-param must name a parameter the
@@ -3736,7 +3808,7 @@ func (eng *engine) execCallTemplate(n *callTemplate, r rt, out *xmltree.Node) er
 	// XSLT 1.0/2.0's lenient "an unwanted parameter is simply ignored"
 	// behaviour; see checkOneCallTemplate's identical, STATIC form of this
 	// same check for the reasoning.
-	bc10 := eng.sheet.feat.BackwardsCompatible && inBackwardsCompatScope(n.el)
+	bc10 := eng.sheet.feat.BackwardsCompatible && eng.bcScope(n.el)
 	for _, p := range n.params {
 		if p.tunnel || bc10 {
 			continue
@@ -4681,6 +4753,9 @@ func (eng *engine) checkSerializableItems(v xpath.Object, out *xmltree.Node) err
 	case "json", "adaptive":
 		return nil
 	}
+	if ns, ok := v.(xpath.NodeSet); ok && !hasCarrier(ns) {
+		return nil // nodes only, and no carrier standing in for a map or array
+	}
 	for _, it := range xpath.Items(v) {
 		switch it.(type) {
 		case *xpath.Map, *xpath.Array:
@@ -5109,7 +5184,7 @@ func (eng *engine) execAnalyzeString(n *analyzeString, r rt, out *xmltree.Node) 
 	// genuinely-typed non-string atomic (a number: analyze-string-001) or a
 	// sequence of more than one item (analyze-string-003) does not coerce,
 	// unlike fn:string()'s lenient any-atomic acceptance.
-	cv, ok := coerceAs("xs:string?", selVal, n.el)
+	cv, ok := eng.coerceAs("xs:string?", selVal, n.el)
 	if !ok {
 		return errAt(n.el, "err:XPTY0004: xsl:analyze-string/@select does not match the required type xs:string?")
 	}
@@ -5310,11 +5385,15 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 		env, mctx := &sc.env, &sc.ctx
 		dns, st := xpathDefaultNS(kd.el), schemaTypesFor(kd.el)
 		withNS := kd.match.MayMatchNamespaceNode()
+		// A pattern that can match elements only is tried on elements only:
+		// the attribute and text nodes of the tree, most of its nodes, were
+		// each handed to Match to be rejected by their kind.
+		elemOnly := kd.match.ElementsOnly()
 		// A pattern that reads no more of a context than its default element
 		// namespace is matched against just that (see staticMatchCtx), not a
 		// Context rebuilt for every node of the tree.
 		static := kd.match.NeedsOnlyDefaultNS()
-		eng.walkAllNS(root, func(node *xmltree.Node) {
+		visit := func(node *xmltree.Node) {
 			if walkErr != nil {
 				return
 			}
@@ -5386,7 +5465,12 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 					idx[k] = append(idx[k], node)
 				}
 			}
-		}, withNS)
+		}
+		if elemOnly {
+			walkElements(root, visit)
+		} else {
+			eng.walkAllNS(root, visit, withNS)
+		}
 	}
 	// Each entry is put in document order without duplicates once, here,
 	// rather than by every key() lookup that hands it out (see the fast path
@@ -5411,6 +5495,16 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 // select namespace nodes — key-087/090), then its children.
 func (eng *engine) walkAll(n *xmltree.Node, fn func(*xmltree.Node)) {
 	eng.walkAllNS(n, fn, true)
+}
+
+// walkElements visits every element of a tree in document order.
+func walkElements(n *xmltree.Node, fn func(*xmltree.Node)) {
+	if n.Kind == xmltree.KindElement {
+		fn(n)
+	}
+	for _, c := range n.Children {
+		walkElements(c, fn)
+	}
 }
 
 // walkAllNS is walkAll with the namespace nodes optional: a caller whose
@@ -5441,29 +5535,42 @@ func (eng *engine) evalAVT(a *avt, el *xmltree.Node, r rt) (string, error) {
 	if lit, ok := a.isConstant(); ok {
 		return lit, nil
 	}
-	var b strings.Builder
+	// The parts are collected first and joined with one allocation of the
+	// final size; a single-part AVT ("{expr}") is its part's own string.
+	var buf [8]string
+	parts, size := buf[:0], 0
 	for _, part := range a.parts {
-		if part.expr == nil {
-			b.WriteString(part.literal)
-			continue
+		s := part.literal
+		if part.expr != nil {
+			// An AVT's {expr} is stringified the same way as constructing
+			// simple content (XSLT 3.0 §5.6.2): a multi-item sequence result
+			// joins with a single space, not just its first item's string
+			// (function-1013: "{$x[position()]}" over a 10-item sequence
+			// must print all 10 values).
+			//
+			// XSLT 1.0 backwards-compatible processing reverts this to the
+			// FIRST item's string value only (backwards-010's own point:
+			// "effect of BC on AVTs").
+			v, err := eng.eval(part.expr, elOrDoc(el, eng.doc), r)
+			if err != nil {
+				return "", err
+			}
+			if eng.bc10At(el) {
+				s = xpath.ToString(v)
+			} else {
+				s = joinSeq(v, " ")
+			}
 		}
-		// An AVT's {expr} is stringified the same way as constructing simple
-		// content (XSLT 3.0 §5.6.2): a multi-item sequence result joins with a
-		// single space, not just its first item's string (function-1013:
-		// "{$x[position()]}" over a 10-item sequence must print all 10 values).
-		//
-		// XSLT 1.0 backwards-compatible processing reverts this to the
-		// FIRST item's string value only (backwards-010's own point: "effect
-		// of BC on AVTs").
-		v, err := eng.eval(part.expr, elOrDoc(el, eng.doc), r)
-		if err != nil {
-			return "", err
-		}
-		if eng.bc10At(el) {
-			b.WriteString(xpath.ToString(v))
-		} else {
-			b.WriteString(joinSeq(v, " "))
-		}
+		parts = append(parts, s)
+		size += len(s)
+	}
+	if len(parts) == 1 {
+		return parts[0], nil
+	}
+	var b strings.Builder
+	b.Grow(size)
+	for _, s := range parts {
+		b.WriteString(s)
 	}
 	return b.String(), nil
 }
@@ -6213,7 +6320,13 @@ func checkBackwardsCompatVersion(el *xmltree.Node) error {
 // exposed here for the handful of instruction-level relaxations (xsl:value-of
 // and an AVT's default, unseparated join; xsl:number/@value — see their own
 // call sites) that apply without going through an XPath evaluation at all.
+// el is a stylesheet element, so the answer is remembered per run (bcScope);
+// bc10AtDynamic is for a node that may belong to a tree still being built.
 func (eng *engine) bc10At(el *xmltree.Node) bool {
+	return eng.sheet.hasBackwardsCompat && eng.sheet.feat.BackwardsCompatible && eng.bcScope(el)
+}
+
+func (eng *engine) bc10AtDynamic(el *xmltree.Node) bool {
 	return eng.sheet.hasBackwardsCompat && eng.sheet.feat.BackwardsCompatible && inBackwardsCompatScope(el)
 }
 

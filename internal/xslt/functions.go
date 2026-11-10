@@ -67,7 +67,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			}
 		}
 		if fd, ok := eng.sheet.funcFor(env.el, funcKey(uri, local, len(args))); ok {
-			if eng.sheet.hiddenRef(env.el, "function#"+clark(uri, local)+"#"+itoa(len(args))) {
+			if len(eng.sheet.hiddenAt) > 0 && eng.sheet.hiddenRef(env.el, "function#"+clark(uri, local)+"#"+itoa(len(args))) {
 				return nil, false, nil // hidden by the used package: undeclared here (XPST0017)
 			}
 			if err := eng.checkEvaluateVisibility(fd); err != nil {
@@ -193,7 +193,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// timezone offsets, or NaN, would (mis)match by accident of spelling
 			// (key-069/070); collURI additionally re-canonicalizes string-family
 			// keys per the key's @collation/@default-collation (collations-0105).
-			bc := eng.bc10At(env.el)
+			bc := eng.bc10AtDynamic(env.el)
 			for _, it := range xpath.Items(argN(args, 1)) {
 				if at, ok := it.(*xpath.Atomic); ok && bc && at.IsNumeric() {
 					// XSLT 1.0 key(): the search value is converted with
@@ -759,7 +759,7 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 	// variables of whatever happens to be calling it. The scope stack is the
 	// dynamic call chain, so run the body on a stack of its own.
 	callerScopes := eng.scopes
-	eng.scopes = nil
+	eng.scopes = callerScopes[len(callerScopes):]
 	eng.pushScope()
 	defer func() { eng.scopes = callerScopes }()
 	// Calling a stylesheet function establishes a fresh, EMPTY tunnel
@@ -784,7 +784,7 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 		// rules cannot reconcile with the declared type is XTTE0790
 		// (function-1019: 'banana' passed where xs:integer is declared).
 		if p.as != "" {
-			cv, ok := coerceAs(p.as, v, p.el)
+			cv, ok := eng.coerceAs(p.as, v, p.el)
 			if !ok {
 				return nil, true, errAt(p.el, "err:XTTE0790: supplied value of parameter $%s does not match declared type %q", p.name.Local, p.as)
 			}
@@ -839,7 +839,7 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 		// there stays best-effort/lenient, matching every other @as site in
 		// this engine (VarDef, template params, …) rather than raising a
 		// false positive.
-		cv, ok := coerceAs(fd.as, result, fd.el)
+		cv, ok := eng.coerceAs(fd.as, result, fd.el)
 		if ok {
 			result = cv
 		} else if confident {

@@ -422,7 +422,8 @@ Desktop GUI (**run from `desktop/`**):
   directly, madvise is ~13 ms a run. Profile with macOS `sample` (per-thread
   stacks) and decide by A/B wall/CPU time in alternating processes; GC
   (scanning pointer-heavy small objects) is now the largest real share.
-- **Reused scratch contexts** (predicates in `applyPredicateOrdered`, the
+- **Reused scratch contexts** (the per-item loops of `applyPredicateOrdered`,
+  `applyPredicateToItems`, `evalSimpleMap` and a postfix path step, the
   `xsl:key` walk, `matchingTemplates`' pool, `evalWith`'s `evalPool`) are
   overwritten per use. Any code that keeps a `*xpath.Context` beyond the
   evaluation (an inline function, function-lookup, a named function
@@ -431,9 +432,12 @@ Desktop GUI (**run from `desktop/`**):
   VarResolver (`CaptureListener`, the XSLT `evalEnv`), since a context derived
   inside for/let/predicates still resolves through it. A reuser checks
   `Captured()`/`env.captured` and takes a fresh pair; `evalWith`'s scope
-  snapshot is taken at that moment (`ContextCaptured`), not per evaluation. The parser carves nodes from slabs and collects children on a shared
-  stack (`parseRaw`), so nothing may read `Children` of an open element while
-  parsing.
+  snapshot is taken at that moment (`ContextCaptured`), not per evaluation.
+  That snapshot is a COPY: `eng.scopes` is a stack whose backing array a
+  callee shares (`callerScopes[len:]`), so nothing may keep a slice of it
+  or read beyond its live length. The parser carves nodes from slabs and
+  collects children on a shared stack (`parseRaw`), so nothing may read
+  `Children` of an open element while parsing.
 - **Results must not depend on the platform.** The nightly job runs on
   linux/amd64, the maintainer's Mac is darwin/arm64, and two classes of
   difference have bitten: converting a NaN/huge float64 to int is
