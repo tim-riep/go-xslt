@@ -180,22 +180,58 @@ func (a *NodeAlloc) New() *Node {
 }
 
 // TreeAlloc carves one tree whose size is known before it is built from
-// two slabs, its nodes and the pointer slices of their children and
-// attributes: one allocation each instead of one per node and one per
-// slice. It is for a copy that is used and discarded as a whole, such as the
-// detached tree a schema assertion is evaluated against, so unlike NodeAlloc
-// it keeps no slab small — every node of such a tree lives exactly as long
-// as the tree. A count that turns out too small only costs an ordinary
-// allocation for what is over, never a wrong tree.
+// slabs — its nodes, the pointer slices of their children and attributes,
+// and the extensions of the nodes that need one — one allocation each
+// instead of one per node, one per slice and one per extension. It is for a
+// copy that is used and discarded as a whole, such as the detached tree a
+// schema assertion is evaluated against, so unlike NodeAlloc it keeps no
+// slab small — every node of such a tree lives exactly as long as the tree.
+// A count that turns out too small only costs an ordinary allocation for
+// what is over, never a wrong tree.
+//
+// Reset lets one allocator serve a sequence of such trees from the same
+// slabs, once the previous tree is no longer in use.
 type TreeAlloc struct {
 	nodes []Node
 	ptrs  []*Node
+	exts  []nodeExt
+	// The slabs the three slices above are the unused tails of, kept so
+	// that Reset can reuse them. Everything past what has been handed out is
+	// zero.
+	nodeSlab []Node
+	ptrSlab  []*Node
+	extSlab  []nodeExt
 }
 
-// Init sizes the slabs for nodes nodes and ptrs pointer slots in all.
+// Init sizes the slabs for nodes nodes and ptrs pointer slots in all, and no
+// extensions (Ext then allocates each one on its own).
 func (a *TreeAlloc) Init(nodes, ptrs int) {
-	a.nodes = make([]Node, nodes)
-	a.ptrs = make([]*Node, ptrs)
+	a.nodeSlab = make([]Node, nodes)
+	a.ptrSlab = make([]*Node, ptrs)
+	a.nodes, a.ptrs = a.nodeSlab, a.ptrSlab
+	a.extSlab, a.exts = nil, nil
+}
+
+// Reset prepares a for a tree of nodes nodes, ptrs pointer slots and exts
+// node extensions, reusing the slabs of the previous tree where they are
+// large enough and allocating larger ones where not. What the previous tree
+// used is cleared, so it is let go of; nothing of it may still be in use.
+func (a *TreeAlloc) Reset(nodes, ptrs, exts int) {
+	a.nodeSlab, a.nodes = resetSlab(a.nodeSlab, len(a.nodeSlab)-len(a.nodes), nodes)
+	a.ptrSlab, a.ptrs = resetSlab(a.ptrSlab, len(a.ptrSlab)-len(a.ptrs), ptrs)
+	a.extSlab, a.exts = resetSlab(a.extSlab, len(a.extSlab)-len(a.exts), exts)
+}
+
+// resetSlab returns a slab of at least n zero elements and the n of them to
+// hand out: slab itself with its used prefix cleared when it is large
+// enough, else a new one.
+func resetSlab[T any](slab []T, used, n int) ([]T, []T) {
+	if n > len(slab) {
+		slab = make([]T, n)
+		return slab, slab
+	}
+	clear(slab[:used])
+	return slab, slab[:n]
 }
 
 // Node returns a zeroed node.
@@ -220,6 +256,26 @@ func (a *TreeAlloc) Ptrs(n int) []*Node {
 	s := a.ptrs[:0:n]
 	a.ptrs = a.ptrs[n:]
 	return s
+}
+
+// Ext gives n an extension of its own, from the slab: a copy of the one it
+// shares with the node it was copied from, or a zero one. The setters that
+// follow then write into it instead of allocating one.
+func (a *TreeAlloc) Ext(n *Node) {
+	if len(a.exts) == 0 {
+		if n.extPtr == nil {
+			n.extPtr = &nodeExt{}
+		} else {
+			n.CloneExt()
+		}
+		return
+	}
+	e := &a.exts[0]
+	a.exts = a.exts[1:]
+	if n.extPtr != nil {
+		*e = *n.extPtr
+	}
+	n.extPtr = e
 }
 
 // SetAttrFrom is SetAttr with a new attribute node taken from a.

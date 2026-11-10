@@ -392,6 +392,26 @@ type Schema struct {
 	// by the validation process will still be present" even after annotations
 	// are stripped. Same lifetime and nil-ness as nodeTypes.
 	nodeDefaults map[*xmltree.Node][]defaultAttr
+	// scratch is the per-call space the evaluation of assertions and
+	// identity constraints reuses from one element to the next (see
+	// checkAsserts). nil, as on a Schema not copied for a call, means
+	// allocate afresh each time.
+	scratch *validateScratch
+}
+
+// validateScratch holds what checkAsserts and the identity-constraint
+// evaluation would otherwise allocate per element: the allocator the
+// assertion tree is carved from (Reset for every tree), the annotations the
+// tree's counting walk looks up for its cloning walk, and the XPath
+// evaluation contexts. A context is reused only while no function item
+// captured it (Captured, and the ContextCaptured notice to vars); busy
+// guards the assertion fields against a nested use.
+type validateScratch struct {
+	tree  xmltree.TreeAlloc
+	annos []assertAnno
+	ctx   *xpath.Context
+	vars  *valueVar
+	busy  bool
 }
 
 // assertAnno is the typed-XDM description of a validated node for assertion

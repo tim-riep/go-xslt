@@ -164,14 +164,26 @@ func (s *Schema) inheritedAttrs(el *xmltree.Node) []*xmltree.Node {
 }
 
 // valueVar binds $value for simple-type assertion facets.
-type valueVar struct{ v xpath.Object }
+type valueVar struct {
+	v xpath.Object
+	// captured is set when a function item retained a context resolving
+	// through this resolver (xpath.CaptureListener): the pair is then not
+	// reused for the next element.
+	captured bool
+}
 
-func (b valueVar) ResolveVar(prefix, local string) (xpath.Object, bool) {
+func (b *valueVar) ResolveVar(prefix, local string) (xpath.Object, bool) {
 	if prefix == "" && local == "value" {
 		return b.v, true
 	}
 	return nil, false
 }
+
+func (b *valueVar) ContextCaptured() { b.captured = true }
+
+// noValue is the $value of an element-level assertion over complex content:
+// the empty sequence (one shared boxed value, never appended to in place).
+var noValue xpath.Object = xpath.Sequence{}
 
 // typedSimpleValue casts an already-validated lexical to its primitive's
 // typed atomic; on a cast the engine cannot do, the untyped reading stands in.
@@ -191,7 +203,7 @@ func evalSimpleAssertions(asserts []*assertion, value xpath.Object) error {
 		obj, err := a.test.Eval(&xpath.Context{
 			NS:            xsdNS(a.ns),
 			DefaultElemNS: a.defaultNS,
-			Vars:          valueVar{value},
+			Vars:          &valueVar{v: value},
 			NoFocus:       true,
 		})
 		if err != nil || !xpath.ToBool(obj) {
@@ -223,15 +235,35 @@ func (s *Schema) effectiveAsserts(ct *ComplexType) []*assertion {
 // out (assert023: empty(.//comment()) must hold).
 //
 // The copy is used by the assertions of this one element and then dropped,
-// so its nodes and pointer slices come from one slab each (xmltree.TreeAlloc),
-// sized by a first walk over the subtree, instead of an allocation per node.
-func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
-	nodes, ptrs := 0, 0
+// so its nodes, pointer slices and node extensions come from one slab each
+// (xmltree.TreeAlloc), sized by a first walk over the subtree, instead of an
+// allocation per node — and the slabs are sc's, reset for every tree, so
+// the next element's copy is carved from the same memory. The first walk
+// also looks up each node's typed-XDM annotation and leaves it in sc.annos
+// for the second, in the same order, so a node is looked up once.
+func (s *Schema) assertTree(el *xmltree.Node, sc *validateScratch) *xmltree.Node {
+	nodes, ptrs, exts := 0, 0, 0
+	annos := sc.annos[:0]
+	note := func(n *xmltree.Node) {
+		a := s.assertAnnos[n]
+		annos = append(annos, a)
+		if a.prim != 0 {
+			exts++
+		}
+	}
 	var count func(n *xmltree.Node)
 	count = func(n *xmltree.Node) {
+		if n != el {
+			note(n)
+		}
 		attrs := len(n.Attrs)
+		for _, at := range n.Attrs {
+			note(at)
+		}
 		if len(s.nodeDefaults) > 0 {
-			attrs += len(s.nodeDefaults[n])
+			d := len(s.nodeDefaults[n])
+			attrs += d
+			exts += d
 		}
 		nodes += 1 + attrs
 		ptrs += attrs
@@ -246,14 +278,23 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 		ptrs += kids
 	}
 	count(el)
-	var alloc xmltree.TreeAlloc
-	alloc.Init(nodes, ptrs)
+	sc.annos = annos
+	alloc := &sc.tree
+	alloc.Reset(nodes, ptrs, exts)
+	k := 0 // the next entry of annos: the walk below visits in count's order
 	var clone func(n *xmltree.Node) *xmltree.Node
 	clone = func(n *xmltree.Node) *xmltree.Node {
 		cp := alloc.Node()
 		*cp = *n
-		cp.CloneExt()
 		cp.Parent = nil
+		var own assertAnno
+		if n != el {
+			own = annos[k]
+			k++
+		}
+		if own.prim == 0 {
+			cp.CloneExt() // annotateAssertNode below gives an annotated clone its own
+		}
 		// Attributes the element OMITTED but whose use carries a default or
 		// fixed value constraint (cvc-complex-type.4) are part of the
 		// post-schema-validation element the assertion is evaluated against —
@@ -278,9 +319,13 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 		for _, at := range n.Attrs {
 			ac := alloc.Node()
 			*ac = *at
-			ac.CloneExt()
 			ac.Parent = cp
-			s.annotateAssertNode(ac, at)
+			if annos[k].prim == 0 {
+				ac.CloneExt()
+			} else {
+				s.annotateAssertNode(ac, at, annos[k], alloc)
+			}
+			k++
 			cp.Attrs = append(cp.Attrs, ac)
 		}
 		for _, d := range defaults {
@@ -292,6 +337,7 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 			ac.Name = xmltree.Name{Space: d.name.Space, Local: d.name.Local}
 			ac.Value = d.value
 			ac.Parent = cp
+			alloc.Ext(ac)
 			ac.SetTypeAnno(int32(typeAnnoForNode(d.typ, ac)))
 			ac.SetListTyped(listTypedFor(d.typ))
 			ac.SetListItemType(s.listItemTypeName(d.typ))
@@ -306,7 +352,7 @@ func (s *Schema) assertTree(el *xmltree.Node) *xmltree.Node {
 		// attributes are ever annotated (annotateAssertType), so a text
 		// node's lookup is skipped.
 		if n != el && n.Kind == xmltree.KindElement {
-			s.annotateAssertNode(cp, n)
+			s.annotateAssertNode(cp, n, own, alloc)
 		}
 		kids := 0
 		for _, ch := range n.Children {
@@ -366,15 +412,17 @@ func ancestorsDeclareNS(el *xmltree.Node) bool {
 	return false
 }
 
-// annotateAssertNode copies the typed-XDM annotation recorded for src onto its
-// assertion-tree clone dst.
-func (s *Schema) annotateAssertNode(dst, src *xmltree.Node) {
-	if a, ok := s.assertAnnos[src]; ok {
-		dst.SetTypeAnno(a.prim)
-		if a.list {
-			dst.SetListTyped(true)
-			dst.SetListItemType(s.assertListItems[src])
-		}
+// annotateAssertNode copies the typed-XDM annotation a recorded for src onto
+// its assertion-tree clone dst, whose extension comes from alloc.
+func (s *Schema) annotateAssertNode(dst, src *xmltree.Node, a assertAnno, alloc *xmltree.TreeAlloc) {
+	if a.prim == 0 {
+		return
+	}
+	alloc.Ext(dst)
+	dst.SetTypeAnno(a.prim)
+	if a.list {
+		dst.SetListTyped(true)
+		dst.SetListItemType(s.assertListItems[src])
 	}
 }
 
@@ -391,20 +439,46 @@ func (s *Schema) checkAsserts(ct *ComplexType, el *xmltree.Node) error {
 	// content when the {content type} is simple (assert010/015; a list gives
 	// a SEQUENCE — assert_035), and the EMPTY sequence otherwise (assert019
 	// pins empty($value) valid on complex content).
-	var value xpath.Object = xpath.Sequence{}
+	value := noValue
 	if ct.kind == contentSimple && ct.simpleType != nil {
 		value = typedValueOf(ct.simpleType, elementText(el))
 	}
+	// The per-call scratch space, unless this is a nested use of it (an
+	// assertion's evaluation cannot validate, so none is expected) or there
+	// is none: then a private one, as every call used to have.
+	sc := s.scratch
+	if sc == nil || sc.busy {
+		sc = &validateScratch{}
+	}
+	sc.busy = true
+	err := s.evalAsserts(asserts, el, value, sc)
+	sc.busy = false
+	return err
+}
+
+// evalAsserts runs asserts against the detached copy of el, with $value
+// bound to value.
+func (s *Schema) evalAsserts(asserts []*assertion, el *xmltree.Node, value xpath.Object, sc *validateScratch) error {
 	orig := el
-	el = s.assertTree(el)
+	el = s.assertTree(el, sc)
 	for _, a := range asserts {
-		obj, err := a.test.Eval(&xpath.Context{
+		// One context and one resolver serve every assertion of every
+		// element, until a function item captures them (see
+		// xpath.Context.Captured): from then on that pair is theirs.
+		ctx, vars := sc.ctx, sc.vars
+		if ctx == nil || ctx.Captured() || vars.captured {
+			ctx, vars = &xpath.Context{}, &valueVar{}
+			sc.ctx, sc.vars = ctx, vars
+		}
+		vars.v = value
+		*ctx = xpath.Context{
 			Node: el, Pos: 1, Size: 1,
 			NS:            xsdNS(a.ns),
 			DefaultElemNS: a.defaultNS,
-			Vars:          valueVar{value},
+			Vars:          vars,
 			RootlessTree:  true,
-		})
+		}
+		obj, err := a.test.Eval(ctx)
 		if err != nil {
 			// ANY dynamic error makes the assertion NOT satisfied
 			// (§3.13.4.1): the rootless-tree '/' error (d4_3_15ii31/ii32),
