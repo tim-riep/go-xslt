@@ -373,6 +373,36 @@ func positionalIndex(f float64) int {
 
 // Eval evaluates the parsed expression in ctx.
 func (p *Parsed) Eval(ctx *Context) (Object, error) {
+	if err := p.checkPrefixedVarRefs(ctx); err != nil {
+		return nil, err
+	}
+	return evalExpr(p.root, ctx)
+}
+
+// EvalNodes is Eval returning a path's node set as it is: isNodes reports
+// that ns is the value (v is then nil); otherwise v is the value exactly as
+// Eval returns it. A host that only reads the nodes of a select, test or
+// key expression saves the boxing of the set into an Object this way.
+func (p *Parsed) EvalNodes(ctx *Context) (ns NodeSet, v Object, isNodes bool, err error) {
+	if err := p.checkPrefixedVarRefs(ctx); err != nil {
+		return nil, nil, false, err
+	}
+	ns, v, isPath, err := evalNodes(p.root, ctx)
+	if !isPath {
+		v, err = evalExpr(p.root, ctx)
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if isPath && v == nil {
+		return ns, nil, true, nil
+	}
+	return nil, v, false, nil
+}
+
+// checkPrefixedVarRefs is Eval's static check of the namespace prefixes of
+// the variable references, decided once per parsed expression.
+func (p *Parsed) checkPrefixedVarRefs(ctx *Context) error {
 	pv := p.prefVars.Load()
 	if pv == 0 {
 		pv = 1
@@ -382,11 +412,9 @@ func (p *Parsed) Eval(ctx *Context) (Object, error) {
 		p.prefVars.Store(pv)
 	}
 	if pv == 2 {
-		if err := checkStaticVarRefPrefixes(p.root, ctx); err != nil {
-			return nil, err
-		}
+		return checkStaticVarRefPrefixes(p.root, ctx)
 	}
-	return evalExpr(p.root, ctx)
+	return nil
 }
 
 // hasPrefixedVarRef reports whether the tree holds a variable reference that

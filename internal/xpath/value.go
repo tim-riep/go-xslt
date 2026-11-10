@@ -175,11 +175,7 @@ func ToString(o Object) string {
 	case float64:
 		return formatNumber(v)
 	case NodeSet:
-		if len(v) == 0 {
-			return ""
-		}
-		first := v.first()
-		return nodeStringValue(first)
+		return NodeSetString(v)
 	case Sequence:
 		if len(v) == 0 {
 			return ""
@@ -191,6 +187,15 @@ func ToString(o Object) string {
 		return ""
 	}
 	return ""
+}
+
+// NodeSetString is ToString of a node set: the string value of its first
+// node in document order, or "" for an empty set.
+func NodeSetString(ns NodeSet) string {
+	if len(ns) == 0 {
+		return ""
+	}
+	return nodeStringValue(ns.first())
 }
 
 // formatNumber renders a float per XPath string(number) rules.
