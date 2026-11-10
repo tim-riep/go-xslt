@@ -2843,15 +2843,21 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 		// silent "" that the general lenient ToString/joinSeq machinery
 		// (shared with attribute/simple-content construction elsewhere)
 		// otherwise produces (maps-907).
-		switch v.(type) {
+		switch sv := v.(type) {
 		case string, float64, bool, *xpath.Atomic:
 			// One atomic value: nothing to flatten, nothing to reject.
-		default:
-			for _, it := range xpath.Flatten(xpath.Items(v)) {
-				switch it.(type) {
-				case *xpath.Map, *xpath.Function:
-					return errAt(n.el, "err:FOTY0013: xsl:value-of cannot compute the string value of a map or function item")
+		case xpath.NodeSet:
+			// Nodes only: nothing to reject — unless a carrier node stands
+			// in for a non-node item (RealItem), which the general check
+			// below unwraps and judges.
+			if hasCarrier(sv) {
+				if err := rejectValueOfItems(n.el, v); err != nil {
+					return err
 				}
+			}
+		default:
+			if err := rejectValueOfItems(n.el, v); err != nil {
+				return err
 			}
 		}
 		// XSLT 1.0 backwards-compatible processing: xsl:value-of/@select
@@ -2952,6 +2958,30 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 	return fmt.Errorf("unknown instruction %T", in)
 }
 
+// hasCarrier reports whether a node of ns stands in for a non-node item
+// (xmltree.Node.RealItem), i.e. whether Items(ns) would hand out anything
+// but these nodes themselves.
+func hasCarrier(ns xpath.NodeSet) bool {
+	for _, nd := range ns {
+		if nd != nil && nd.RealItem() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectValueOfItems is xsl:value-of's FOTY0013 check over the items of v,
+// arrays flattened into their members first (as joinSeq does).
+func rejectValueOfItems(el *xmltree.Node, v xpath.Object) error {
+	for _, it := range xpath.Flatten(xpath.Items(v)) {
+		switch it.(type) {
+		case *xpath.Map, *xpath.Function:
+			return errAt(el, "err:FOTY0013: xsl:value-of cannot compute the string value of a map or function item")
+		}
+	}
+	return nil
+}
+
 func (eng *engine) execLitElement(n *litElement, r rt, out *xmltree.Node) error {
 	el := xmltree.NewElement(n.name)
 	// n.ns is the compiled TEMPLATE of namespace bindings (this element's own
@@ -3016,6 +3046,18 @@ func (eng *engine) execLitElement(n *litElement, r rt, out *xmltree.Node) error 
 // already finalized cannot perturb those merge decisions.
 func stripEmptyLiteralText(el *xmltree.Node) {
 	if len(el.Children) == 0 {
+		return
+	}
+	// Nothing to strip (the usual case) leaves the children as they are: the
+	// rebuild below allocates a new list.
+	strip := false
+	for _, c := range el.Children {
+		if c.Kind == xmltree.KindText && !c.Atomic() && c.Value == "" {
+			strip = true
+			break
+		}
+	}
+	if !strip {
 		return
 	}
 	// Three-index, not el.Children[:0]: that would keep the ORIGINAL backing
@@ -4680,6 +4722,9 @@ func (eng *engine) checkSerializableItems(v xpath.Object, out *xmltree.Node) err
 	switch eng.sheet.output.Method {
 	case "json", "adaptive":
 		return nil
+	}
+	if ns, ok := v.(xpath.NodeSet); ok && !hasCarrier(ns) {
+		return nil // nodes only, and no carrier standing in for a map or array
 	}
 	for _, it := range xpath.Items(v) {
 		switch it.(type) {
