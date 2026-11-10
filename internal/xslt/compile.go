@@ -917,6 +917,7 @@ func compileModule(src, baseDir, selfPath string, hostStatic map[string]string, 
 	// Gather modules in import-precedence order (lowest first), then compile.
 	c.principalRoot = root
 	mods, err := c.gatherModules(root, baseDir, map[string]bool{})
+	c.staticParsed = nil // consumed (an error discards the compiler anyway)
 	if err != nil {
 		return nil, err
 	}
@@ -1599,10 +1600,16 @@ type compiler struct {
 	importPrec  int
 	// importLo is the lowest import precedence the module now being compiled
 	// transitively imports; see modChildren.importLo.
-	importLo       int
-	order          int
-	staticParams   map[string]xpath.Object            // static="yes" parameters, for use-when (clark name -> value)
-	staticRes      xpath.ResourceResolver             // fn:doc resolver for static expressions (see staticResolver)
+	importLo     int
+	order        int
+	staticParams map[string]xpath.Object // static="yes" parameters, for use-when (clark name -> value)
+	staticRes    xpath.ResourceResolver  // fn:doc resolver for static expressions (see staticResolver)
+	// staticParsed holds, by absolute path, the module documents the static
+	// pass (loadStaticModule) parsed, for loadFile to take instead of
+	// reading and parsing the same file again. Each document is handed out
+	// once: a module reached twice through the include/import graph gets a
+	// tree of its own from the second parse, exactly as before.
+	staticParsed   map[string][]*xmltree.Node
 	nsAlias        map[string]xmltree.Name            // xsl:namespace-alias: stylesheet URI -> result {Space, Prefix}
 	nsAliasPkg     map[string]map[string]xmltree.Name // per-package tables when several packages take part (scope.go)
 	nsAliasPrecPkg map[string]map[string]int

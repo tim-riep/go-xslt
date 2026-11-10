@@ -409,13 +409,20 @@ func (c *compiler) loadFile(href, baseDir string, seen map[string]bool) (*xmltre
 		return nil, "", "", errAt(nil, "import/include cycle at %q", href)
 	}
 	seen[abs] = true
-	data, err := c.files.ReadFile(abs)
-	if err != nil {
-		return nil, "", "", err
-	}
-	doc, err := xmltree.ParseLenient11WithBaseFS(string(data), filepath.Dir(abs), c.files)
-	if err != nil {
-		return nil, "", "", err
+	var doc *xmltree.Node
+	if q := c.staticParsed[abs]; len(q) > 0 {
+		// Parsed by the static pass already (loadStaticModule): take that
+		// tree instead of reading and parsing the file a second time.
+		doc, c.staticParsed[abs] = q[0], q[1:]
+	} else {
+		data, err := c.files.ReadFile(abs)
+		if err != nil {
+			return nil, "", "", err
+		}
+		doc, err = xmltree.ParseLenient11WithBaseFS(string(data), filepath.Dir(abs), c.files)
+		if err != nil {
+			return nil, "", "", err
+		}
 	}
 	registerFeatures(doc, c.feat)
 	// This module's own retrieval location (its exact file, known here unlike
