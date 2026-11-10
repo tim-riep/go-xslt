@@ -679,11 +679,15 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			tz.pos, tz.err, tz.needClose = startOff, nil, false
 			continue
 		}
-		line, col := lines.at(startOff)
+		// A token's line and column are looked up only where they are
+		// kept: an end tag needs them for an error message alone, and a
+		// text token only when it opens a run (lines.at scans forward, so
+		// the lookups stay in offset order).
 		top := stack[len(stack)-1]
 
 		switch kind {
 		case tokStart:
+			line, col := lines.at(startOff)
 			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
 			// A new child starting is a run boundary: any pending text run
 			// belongs to the PARENT (top, before this element is pushed) and
@@ -746,6 +750,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			if n := len(t.Attr) - len(decls); n > 0 {
 				el.Attrs = ptrSlice(n)[:0]
 			}
+			// xml:space, if present, is noted here (the first match, as
+			// el.Attr would find it: a DTD-defaulted attribute, added after
+			// these, is never in a namespace) instead of by a second pass
+			// over the attributes of every element below.
+			spaceAttr, hasSpace := "", false
 			for _, a := range t.Attr {
 				if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 					continue
@@ -753,6 +762,9 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				an := newNode() // zeroed: see flushPending
 				an.Kind, an.Name, an.Value = KindAttribute, resolveRawName(frame, a.Name, true), a.Value
 				an.Line, an.Col = int32(line), int32(col)
+				if !hasSpace && an.Name.Local == "space" && an.Name.Space == xmlNS {
+					spaceAttr, hasSpace = an.Value, true
+				}
 				if m := idKinds[t.Name.Local]; m != nil {
 					if k := m[a.Name.Local]; k != 0 {
 						an.SetIDKind(k)
@@ -810,8 +822,8 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// this URI, but matching the same way the rest of this engine
 			// already does keeps the two checks provably in agreement.
 			preserve := preserveSpace[len(preserveSpace)-1]
-			if v, ok := el.Attr(xmlNS, "space"); ok {
-				preserve = v == "preserve"
+			if hasSpace {
+				preserve = spaceAttr == "preserve"
 			}
 			preserveSpace = append(preserveSpace, preserve)
 
@@ -822,9 +834,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// run before stack/preserveSpace are popped below.
 			flushPending()
 			if len(rawNames) == 0 {
+				line, col := lines.at(startOff)
 				return nil, &ParseError{Line: line, Col: col, Msg: "unexpected end element </" + rawQName(t.Name) + ">"}
 			}
 			if open := rawNames[len(rawNames)-1]; open != t.Name {
+				line, col := lines.at(startOff)
 				return nil, &ParseError{Line: line, Col: col, Msg: "element <" + rawQName(open) + "> closed by </" + rawQName(t.Name) + ">"}
 			}
 			rawNames = rawNames[:len(rawNames)-1]
@@ -842,11 +856,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			switch {
 			case !pendingOpen && tz.raw:
 				pendingOpen, pendingIsStr, pendingStr = true, true, tz.str
-				pendingLine, pendingCol = line, col
+				pendingLine, pendingCol = lines.at(startOff)
 				continue
 			case !pendingOpen:
 				pendingOpen = true
-				pendingLine, pendingCol = line, col
+				pendingLine, pendingCol = lines.at(startOff)
 			case pendingIsStr: // a second token: the run moves to the buffer
 				pendingBuf = append(pendingBuf, pendingStr...)
 				pendingStr, pendingIsStr = "", false
@@ -859,6 +873,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 
 		case tokComment:
 			flushPending()
+			line, col := lines.at(startOff)
 			c := &Node{Kind: KindComment, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(c)
 			addChild(top, c)
@@ -868,6 +883,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			if tz.target == "xml" {
 				continue // XML declaration, not a PI node
 			}
+			line, col := lines.at(startOff)
 			pi := &Node{Kind: KindPI, Name: Name{Local: tz.target}, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(pi)
 			addChild(top, pi)
