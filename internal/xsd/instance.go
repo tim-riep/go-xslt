@@ -1146,12 +1146,38 @@ func (s *Schema) baseChainContextType(ct *ComplexType, nn xname) Type {
 // it used to recompute (five maps and three walks of the particle tree) for
 // every element of the instance.
 type childModel struct {
-	p                       *particle
-	oc                      *openContent
-	decls                   map[xname]*ElementDecl
+	p     *particle
+	oc    *openContent
+	decls map[xname]*ElementDecl
+	// declList is decls as a list when it is small (smallDeclList): most
+	// content models declare a handful of names, which a comparison per
+	// entry finds faster than hashing the two strings of every child's name.
+	declList                []declEntry
 	fixedsByName            map[xname][]string
 	skipWc, laxWc, strictWc []*wildcard
 	asserts                 []*assertion // the type's effective assertions (1.1)
+}
+
+type declEntry struct {
+	name xname
+	decl *ElementDecl
+}
+
+// smallDeclList is the largest decls a childModel also keeps as a list.
+const smallDeclList = 8
+
+// decl is decls[nn] (see declList).
+func (cm *childModel) decl(nn xname) (*ElementDecl, bool) {
+	if cm.declList != nil {
+		for i := range cm.declList {
+			if e := &cm.declList[i]; e.name == nn {
+				return e.decl, true
+			}
+		}
+		return nil, false
+	}
+	d, ok := cm.decls[nn]
+	return d, ok
 }
 
 // childModelOf returns ct's childModel, from the per-call cache when there is
@@ -1163,6 +1189,12 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 	cm := &childModel{p: s.effectiveParticle(ct), oc: s.effectiveOpenContent(ct)}
 	cm.decls = map[xname]*ElementDecl{}
 	s.contentDecls(cm.p, cm.decls)
+	if n := len(cm.decls); n > 0 && n <= smallDeclList {
+		cm.declList = make([]declEntry, 0, n)
+		for name, d := range cm.decls {
+			cm.declList = append(cm.declList, declEntry{name, d})
+		}
+	}
 	cm.fixedsByName = map[xname][]string{}
 	collectFixedsByName(cm.p, cm.fixedsByName, map[*modelGroup]bool{})
 	collectWildcards(cm.p, "skip", &cm.skipWc)
@@ -1221,7 +1253,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 		}
 		return errModelMismatch
 	}
-	decls, fixedsByName := cm.decls, cm.fixedsByName
+	fixedsByName := cm.fixedsByName
 	skipWc, laxWc, strictWc := cm.skipWc, cm.laxWc, cm.strictWc
 	// elemUsed counts the children attributed to each declared name, for the
 	// 1.1 dynamic EDC check below — which can only arise where the model
@@ -1232,7 +1264,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 	pinned := kids // lazily copied; wildcard-attributed children get probed out
 	for i, kid := range kids {
 		nn := nameOf(kid)
-		if d, ok := decls[nn]; ok {
+		if d, ok := cm.decl(nn); ok {
 			// XSD 1.1 dynamic Element Declarations Consistent: once the
 			// like-named element particles are EXHAUSTED, a further same-named
 			// child is attributed to a non-skip wildcard — its governing type
@@ -1305,7 +1337,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 			// attribution is not a wildcard match.
 			if s.version == Version11 &&
 				(matchesAnyWildcard(laxWc, nn) || matchesAnyWildcard(strictWc, nn)) &&
-				!substMatchesAnyDecl(s, decls, nn) {
+				!substMatchesAnyDecl(s, cm.decls, nn) {
 				if tc := s.baseChainContextType(ct, nn); tc != nil {
 					tg := g.typ
 					if xt, ok := kid.Attr(xsiNS, "type"); ok {
