@@ -538,6 +538,10 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 		"xml": "http://www.w3.org/XML/1998/namespace",
 		"":    "",
 	}}
+	// defaultNS mirrors nsStack: the default namespace of each frame, so an
+	// unprefixed element name — nearly every name in most documents — is
+	// resolved without hashing "" into the frame's map for every element.
+	defaultNS := []string{""}
 	// rawNames holds each open element's name AS WRITTEN (prefix in Space),
 	// for the end-tag check the tokenizer leaves to its caller.
 	var rawNames []xml.Name
@@ -696,6 +700,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// never mutated — a deeper element that itself needs to add a decl
 			// clones its own copy at that point instead.
 			frame := nsStack[len(nsStack)-1]
+			def := defaultNS[len(defaultNS)-1]
 			cloned := false
 			var decls []*Node
 			if d := attrDefaults[t.Name.Local]; len(d) > 0 {
@@ -720,10 +725,18 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 					cloned = true
 				}
 				frame[local] = a.Value
+				if local == "" {
+					def = a.Value
+				}
 				decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: local}, Value: a.Value})
 			}
 			el := newNode() // zeroed: see flushPending
-			el.Kind, el.Name, el.Line, el.Col = KindElement, resolveRawName(frame, t.Name, false), int32(line), int32(col)
+			el.Kind, el.Line, el.Col = KindElement, int32(line), int32(col)
+			if t.Name.Space == "" {
+				el.Name = Name{Local: t.Name.Local, Space: def} // resolveRawName, without the lookup
+			} else {
+				el.Name = resolveRawName(frame, t.Name, false)
+			}
 			el.SetNSDecls(decls)
 			stamp(el)
 			for _, d := range decls {
@@ -783,6 +796,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			stack = append(stack, el)
 			marks = append(marks, len(childBuf))
 			nsStack = append(nsStack, frame)
+			defaultNS = append(defaultNS, def)
 			if len(stack) > MaxDepth+1 { // stack[0] is the document node
 				return nil, errTooDeep
 			}
@@ -817,6 +831,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			closeChildren(top)
 			stack = stack[:len(stack)-1]
 			nsStack = nsStack[:len(nsStack)-1]
+			defaultNS = defaultNS[:len(defaultNS)-1]
 			preserveSpace = preserveSpace[:len(preserveSpace)-1]
 
 		case tokText:
