@@ -1553,6 +1553,9 @@ type engine struct {
 	// bcScopes memoizes inBackwardsCompatScope per stylesheet element (see
 	// bcScope).
 	bcScopes map[*xmltree.Node]bool
+	// argStack is the run's one stack for built-in call arguments
+	// (xpath.Context.ArgStack), handed to every evaluation scratch.
+	argStack *xpath.ArgStack
 	// asCtxs memoizes asTypeCtx per stylesheet element: the context a
 	// declared type is matched in is built from the element alone (its
 	// namespaces, xpath-default-namespace and schema), which a compiled
@@ -2285,6 +2288,7 @@ type evalScratch struct {
 	ctx    xpath.Context
 	named  func(ns, local string, arity int) (*xpath.Function, bool)
 	lookup func(ns, local string, arity int) (*xpath.Function, bool)
+	args   *xpath.ArgStack // the run's built-in call argument stack (engine.argStack)
 }
 
 // checkoutEvalScratch takes a pair off the free list, or builds one.
@@ -2297,6 +2301,14 @@ func (eng *engine) checkoutEvalScratch() *evalScratch {
 	sc := new(evalScratch)
 	sc.named = eng.resolveNamedFunction(&sc.env)
 	sc.lookup = eng.resolveLookupFunction(&sc.env)
+	// One argument stack serves the whole run: every evaluation of a run
+	// nests on the one goroutine, so pushes and pops stay LIFO across
+	// scratches, captured ones included, and a scratch dropped because a
+	// function item captured it costs no stack of its own.
+	if eng.argStack == nil {
+		eng.argStack = xpath.NewArgStack()
+	}
+	sc.args = eng.argStack
 	return sc
 }
 
@@ -2400,7 +2412,7 @@ func (eng *engine) evalWithNodes(p *xpath.Parsed, el *xmltree.Node, r rt, ov eva
 		}
 	}
 	ctx := &sc.ctx
-	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
+	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt(), ArgStack: sc.args}
 	if nodes {
 		ns, v, isNodes, err = p.EvalNodes(ctx)
 	} else {

@@ -74,6 +74,8 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 	// repeats the check (which then finds the argument matching), and any
 	// value it does not handle is passed on for that check to decide.
 	var fuse uint32 // bit i: argument i is a path to convert here
+	var args []Object
+	var stack *ArgStack // the arguments' stack, when they live on one
 	if plan := n.plan.Load(); plan != planDecided {
 		// (A call that can do nothing of this is one load and one test.)
 		if plan == 0 {
@@ -86,13 +88,22 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 			// (1.0 compatibility passes every argument as it is.)
 			fuse = plan >> planArgShift
 		}
+		if plan&planStackArgs != 0 && ctx != nil && ctx.ArgStack != nil {
+			stack = ctx.ArgStack
+			args = stack.push(len(n.Args))
+		}
 	}
-	args := make([]Object, len(n.Args))
+	if stack == nil {
+		args = make([]Object, len(n.Args))
+	}
 	for i, a := range n.Args {
 		if fuse&(1<<i) != 0 {
 			p := n.form.Load().spec(i)
 			ns, v, _, err := evalNodes(a, ctx)
 			if err != nil {
+				if stack != nil {
+					stack.pop(len(n.Args))
+				}
 				return nil, err
 			}
 			if v != nil {
@@ -106,18 +117,54 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		}
 		v, err := evalExpr(a, ctx)
 		if err != nil {
+			if stack != nil {
+				stack.pop(len(n.Args))
+			}
 			return nil, err
 		}
 		args[i] = v
 	}
-	return dispatchFunc(n.Prefix, n.Local, args, ctx)
+	v, err := dispatchFunc(n.Prefix, n.Local, args, ctx)
+	if stack != nil {
+		stack.pop(len(n.Args))
+	}
+	return v, err
+}
+
+// argStackSafe lists the fn: built-ins whose implementations read their
+// argument slice during the call only — through arg, len, the argument
+// helpers and the conversion check, which copies the slice before changing a
+// value — and never keep it, a sub-slice of it, or a closure over it: their
+// arguments may live on the Context's ArgStack (planStackArgs). A function is
+// added here only after reading its implementation (and the helpers it hands
+// the slice to); one that returns Sequence(a), wraps a in an array or map, or
+// builds a function item over it never qualifies.
+var argStackSafe = map[string]bool{
+	"concat": true, "contains": true, "starts-with": true, "ends-with": true,
+	"substring": true, "substring-before": true, "substring-after": true,
+	"string-length": true, "normalize-space": true, "translate": true,
+	"upper-case": true, "lower-case": true, "matches": true, "replace": true,
+	"string-join": true, "tokenize": true, "compare": true,
+	"string-to-codepoints": true, "codepoints-to-string": true,
+	"string": true, "number": true, "data": true,
+	"sum": true, "avg": true, "min": true, "max": true,
+	"floor": true, "ceiling": true, "round": true, "abs": true,
+	"format-number": true, "format-integer": true,
+	"format-date": true, "format-dateTime": true, "format-time": true,
+	"year-from-date": true, "month-from-date": true, "day-from-date": true,
+	"year-from-dateTime": true, "month-from-dateTime": true, "day-from-dateTime": true,
+	"hours-from-dateTime": true, "minutes-from-dateTime": true, "seconds-from-dateTime": true,
+	"hours-from-time": true, "minutes-from-time": true, "seconds-from-time": true,
+	"local-name": true, "name": true, "namespace-uri": true, "generate-id": true,
+	"position": true, "last": true,
 }
 
 // The bits of FuncCall.plan.
 const (
-	planDecided  uint32 = 1 << iota // the plan has been computed
-	planSetFunc                     // fusedSetFunc answers the call
-	planFuseArgs                    // some argument bit is set
+	planDecided   uint32 = 1 << iota // the plan has been computed
+	planSetFunc                      // fusedSetFunc answers the call
+	planFuseArgs                     // some argument bit is set
+	planStackArgs                    // the arguments may live on the Context's ArgStack (argStackSafe)
 	// bit planArgShift+i: argument i is a path for an atomic parameter.
 	planArgShift = 8
 	planMaxArgs  = 32 - planArgShift
@@ -147,6 +194,9 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 	if len(n.Args) == 1 && isSetFunc(n.Local) {
 		plan |= planSetFunc
 	} else if f := sig.form(len(n.Args)); f != nil && len(n.Args) <= planMaxArgs {
+		if len(n.Args) > 0 && argStackSafe[n.Local] {
+			plan |= planStackArgs
+		}
 		for i, a := range n.Args {
 			if _, isPath := a.(*PathExpr); isPath {
 				if p := f.spec(i); p != nil && p.kind == akAtomic {

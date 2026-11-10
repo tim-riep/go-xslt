@@ -206,6 +206,40 @@ type Context struct {
 	nowCache        *nowBox     // ONE current instant per evaluation (fn:current-*)
 	locals          *localScope // for/let/quantified/inline-function bindings
 	evalDepth       int         // recursion guard for evalExpr (prevents stack overflow)
+	// ArgStack, when a host sets it on the root context of an evaluation
+	// (every derived context shares the pointer), is the stack the argument
+	// slices of the built-in calls listed in argStackSafe are carved from
+	// instead of being allocated per call. Nil: every call allocates.
+	ArgStack *ArgStack
+}
+
+// ArgStack is a stack of argument slices for built-in function calls (see
+// Context.ArgStack and evalFunc): a call pushes its arguments and pops them
+// when it returns, so a slice lives exactly as long as the call. Only the
+// functions in argStackSafe, which never keep their argument slice, are
+// called with one; any other call allocates its slice as before.
+type ArgStack struct{ buf []Object }
+
+// NewArgStack returns an empty stack for a root Context.
+func NewArgStack() *ArgStack { return &ArgStack{buf: make([]Object, 0, 32)} }
+
+// push reserves n slots on top of the stack, capacity-limited to the slots.
+func (s *ArgStack) push(n int) []Object {
+	l := len(s.buf)
+	if cap(s.buf)-l < n {
+		nb := make([]Object, l, 2*cap(s.buf)+n)
+		copy(nb, s.buf)
+		s.buf = nb
+	}
+	s.buf = s.buf[:l+n]
+	return s.buf[l : l+n : l+n]
+}
+
+// pop releases the n slots on top, clearing them so they keep nothing alive.
+func (s *ArgStack) pop(n int) {
+	l := len(s.buf)
+	clear(s.buf[l-n : l])
+	s.buf = s.buf[:l-n]
 }
 
 // maxEvalDepth bounds the static recursion of one expression evaluation. Real
@@ -1329,7 +1363,7 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 		if sub.captured {
 			sub = new(Context)
 		}
-		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 		switch it.(type) {
 		case *xmltree.Node:
 			sub.Node = it.(*xmltree.Node)
@@ -1549,7 +1583,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				if sub.captured {
 					sub = new(Context)
 				}
-				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 				pv, err := evalExpr(step.Postfix, sub)
 				if err != nil {
 					return nil, nil, err
@@ -1863,7 +1897,7 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 		if sub.captured {
 			sub = new(Context)
 		}
-		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 		// A path predicate ([@b], [item]) is an existence test: its node
 		// set is never a position (asPositionalInt), so only its effective
 		// boolean value is needed, taken without boxing the set.
@@ -2262,7 +2296,7 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 			if sub.captured {
 				sub = new(Context)
 			}
-			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 			if nd, ok := it.(*xmltree.Node); ok {
 				sub.Node = nd
 			}
