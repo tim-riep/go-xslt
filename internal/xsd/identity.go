@@ -269,7 +269,7 @@ func (s *Schema) evalNodes(ic *identityConstraint, p *xpath.Parsed, node *xmltre
 	// captures it (xpath.Context.Captured); a Schema not copied for a call
 	// has no scratch space and allocates one.
 	var ctx *xpath.Context
-	if sc := s.scratch; sc != nil {
+	if sc := s.scratchSpace(); sc != nil {
 		ctx = sc.icCtx
 		if ctx == nil || ctx.Captured() {
 			ctx = &xpath.Context{}
@@ -331,7 +331,7 @@ const tupleSep = "\x00"
 // not one per field and one more for joining them.
 func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string, bool, error) {
 	var buf []byte
-	sc := s.scratch
+	sc := s.scratchSpace()
 	if sc != nil {
 		buf = sc.tuple[:0]
 	}

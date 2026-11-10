@@ -81,7 +81,7 @@ func (s *Schema) ValidateOptsCtx(ctx context.Context, instance, lang string, max
 	// identical verdict on the identical document — the invariant
 	// TestValidateNodeMatchesValidate pins across 51,245 instances.
 	local.nodeDefaults = map[*xmltree.Node][]defaultAttr{}
-	local.scratch = &local.scratchBuf
+	local.perCall = true
 	local.coll = &collector{max: maxErrors}
 	if ctx.Done() != nil {
 		polls := 0

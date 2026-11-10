@@ -446,7 +446,7 @@ func (s *Schema) checkAsserts(ct *ComplexType, el *xmltree.Node) error {
 	// The per-call scratch space, unless this is a nested use of it (an
 	// assertion's evaluation cannot validate, so none is expected) or there
 	// is none: then a private one, as every call used to have.
-	sc := s.scratch
+	sc := s.scratchSpace()
 	if sc == nil || sc.busy {
 		sc = &validateScratch{}
 	}

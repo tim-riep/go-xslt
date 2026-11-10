@@ -461,7 +461,7 @@ func (s *Schema) ValidateNode(n *xmltree.Node, opts NodeValidateOptions) error {
 	local.nodeTypes = map[*xmltree.Node]Type{}
 	local.nodeNilled = map[*xmltree.Node]bool{}
 	local.nodeDefaults = map[*xmltree.Node][]defaultAttr{}
-	local.scratch = &local.scratchBuf
+	local.perCall = true
 	// No instance TEXT exists to re-scan for <!ENTITY … NDATA …> declarations,
 	// so the xs:ENTITY value space comes from the owning document's own
 	// already-parsed table (Node.Unparsed, set by the parser and carried across
