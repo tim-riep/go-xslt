@@ -193,7 +193,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// timezone offsets, or NaN, would (mis)match by accident of spelling
 			// (key-069/070); collURI additionally re-canonicalizes string-family
 			// keys per the key's @collation/@default-collation (collations-0105).
-			bc := eng.bc10At(env.el)
+			bc := eng.bc10AtDynamic(env.el)
 			for _, it := range xpath.Items(argN(args, 1)) {
 				if at, ok := it.(*xpath.Atomic); ok && bc && at.IsNumeric() {
 					// XSLT 1.0 key(): the search value is converted with

@@ -3778,7 +3778,7 @@ func (eng *engine) execCallTemplate(n *callTemplate, r rt, out *xmltree.Node) er
 	// XSLT 1.0/2.0's lenient "an unwanted parameter is simply ignored"
 	// behaviour; see checkOneCallTemplate's identical, STATIC form of this
 	// same check for the reasoning.
-	bc10 := eng.sheet.feat.BackwardsCompatible && inBackwardsCompatScope(n.el)
+	bc10 := eng.sheet.feat.BackwardsCompatible && eng.bcScope(n.el)
 	for _, p := range n.params {
 		if p.tunnel || bc10 {
 			continue
@@ -6271,7 +6271,13 @@ func checkBackwardsCompatVersion(el *xmltree.Node) error {
 // exposed here for the handful of instruction-level relaxations (xsl:value-of
 // and an AVT's default, unseparated join; xsl:number/@value — see their own
 // call sites) that apply without going through an XPath evaluation at all.
+// el is a stylesheet element, so the answer is remembered per run (bcScope);
+// bc10AtDynamic is for a node that may belong to a tree still being built.
 func (eng *engine) bc10At(el *xmltree.Node) bool {
+	return eng.sheet.hasBackwardsCompat && eng.sheet.feat.BackwardsCompatible && eng.bcScope(el)
+}
+
+func (eng *engine) bc10AtDynamic(el *xmltree.Node) bool {
 	return eng.sheet.hasBackwardsCompat && eng.sheet.feat.BackwardsCompatible && inBackwardsCompatScope(el)
 }
 
