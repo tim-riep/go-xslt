@@ -166,14 +166,33 @@ func (s *Schema) checkLateHints(root *xmltree.Node) *Error {
 	var walk func(el *xmltree.Node) *Error
 	walk = func(el *xmltree.Node) *Error {
 		var addressed [][2]string
-		if v, ok := el.Attr(xsiNS, "schemaLocation"); ok {
-			f := strings.Fields(v)
+		// Both hint attributes in one pass over the attributes (each the
+		// first of its name, as el.Attr finds it), not one pass per hint for
+		// every element of the instance.
+		loc, hasLoc, noNS, hasNoNS := "", false, "", false
+		for _, a := range el.Attrs {
+			if a.Name.Space != xsiNS {
+				continue
+			}
+			switch a.Name.Local {
+			case "schemaLocation":
+				if !hasLoc {
+					loc, hasLoc = a.Value, true
+				}
+			case "noNamespaceSchemaLocation":
+				if !hasNoNS {
+					noNS, hasNoNS = a.Value, true
+				}
+			}
+		}
+		if hasLoc {
+			f := strings.Fields(loc)
 			for i := 0; i+1 < len(f); i += 2 {
 				addressed = append(addressed, [2]string{f[i], f[i+1]})
 			}
 		}
-		if v, ok := el.Attr(xsiNS, "noNamespaceSchemaLocation"); ok {
-			addressed = append(addressed, [2]string{"", strings.TrimSpace(v)})
+		if hasNoNS {
+			addressed = append(addressed, [2]string{"", strings.TrimSpace(noNS)})
 		}
 		for _, h := range addressed {
 			first := !hinted[h]
@@ -601,7 +620,24 @@ func (s *Schema) validateElement(el *xmltree.Node) (err error) {
 func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) (err error) {
 	defer stampLoc(&err, el)
 	typ := decl.typ
-	if xt, ok := el.Attr(xsiNS, "type"); ok {
+	// The two xsi attributes this function reads are found in one pass over
+	// the element's attributes (each the first of its name, as el.Attr finds
+	// it) instead of a pass per attribute for every element.
+	xt, hasType, hasNil := "", false, false
+	for _, a := range el.Attrs {
+		if a.Name.Space != xsiNS {
+			continue
+		}
+		switch a.Name.Local {
+		case "type":
+			if !hasType {
+				xt, hasType = a.Value, true
+			}
+		case "nil":
+			hasNil = true
+		}
+	}
+	if hasType {
 		t, err := s.resolveInstanceType(el, xt)
 		if err != nil {
 			return err
@@ -640,7 +676,7 @@ func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, sco
 	} else if alt != nil {
 		typ = alt // XSD 1.1 conditional type assignment
 	}
-	if _, hasNil := el.Attr(xsiNS, "nil"); hasNil {
+	if hasNil {
 		// cvc-elt.3.1: xsi:nil may APPEAR only on a nillable element — its
 		// value does not matter (elemO011, nillable00201m2).
 		if !decl.nillable {
