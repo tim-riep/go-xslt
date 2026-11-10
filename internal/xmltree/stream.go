@@ -104,6 +104,13 @@ type StreamReader struct {
 	// nameIntern dedupes element Local/Prefix strings across the stream, the
 	// same reasoning as parseRaw's identical table in parse.go.
 	nameIntern map[string]string
+	// wsRuns shares the whitespace-only text runs (the indentation between
+	// elements, most of a pretty-printed document's text nodes), as
+	// parseRaw's internText does, so each costs a node and not also a copy
+	// of the decoder's buffer. Capped at streamMaxWSRuns distinct runs: a
+	// document is not holding this reader's memory hostage with ever new
+	// whitespace.
+	wsRuns map[string]string
 
 	// incomplete records the nodes Drop has taken children away from. Only
 	// live ancestors accumulate here (an entry is removed when the node is
@@ -420,7 +427,7 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 	// longer than before, and a record of a few attributes costs one
 	// allocation instead of one per node plus the regrowth of Attrs.
 	nAttrs := len(t.Attr) - len(decls)
-	slab := make([]Node, 1+nAttrs)
+	slab, attrs := streamElementSlab(nAttrs)
 	el := &slab[0]
 	el.Kind, el.Name = KindElement, resolveRawName(frame, t.Name, false)
 	el.SetNSDecls(decls)
@@ -432,9 +439,7 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 		d.Parent = el
 		s.stamp(d)
 	}
-	if nAttrs > 0 {
-		el.Attrs = make([]*Node, 0, nAttrs)
-	}
+	el.Attrs = attrs
 	for _, a := range t.Attr {
 		if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 			continue
@@ -475,11 +480,49 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 			el.Attrs = append(el.Attrs, an)
 		}
 	}
-	s.top().Append(el)
+	s.appendChild(s.top(), el)
 	s.stack = append(s.stack, el)
 	s.nsStack = append(s.nsStack, frame)
 	s.rawNames = append(s.rawNames, t.Name)
 	return el
+}
+
+// Element records with one to three attributes, the common shapes, come
+// from one allocation holding the attribute pointer list as well; the
+// pointers stay in the element's own allocation, which its attributes keep
+// alive through Parent anyway, so nothing lives longer than before.
+type streamElem1 struct {
+	nodes [2]Node
+	ptrs  [1]*Node
+}
+
+type streamElem2 struct {
+	nodes [3]Node
+	ptrs  [2]*Node
+}
+
+type streamElem3 struct {
+	nodes [4]Node
+	ptrs  [3]*Node
+}
+
+// streamElementSlab allocates an element node followed by nAttrs attribute
+// nodes, and the empty attribute list to append them to (nil for none).
+func streamElementSlab(nAttrs int) (nodes []Node, attrs []*Node) {
+	switch nAttrs {
+	case 0:
+		return make([]Node, 1), nil
+	case 1:
+		e := &streamElem1{}
+		return e.nodes[:], e.ptrs[:0]
+	case 2:
+		e := &streamElem2{}
+		return e.nodes[:], e.ptrs[:0]
+	case 3:
+		e := &streamElem3{}
+		return e.nodes[:], e.ptrs[:0]
+	}
+	return make([]Node, 1+nAttrs), make([]*Node, 0, nAttrs)
 }
 
 func (s *StreamReader) endElement(t xml.EndElement) (*Node, error) {
@@ -516,10 +559,52 @@ func (s *StreamReader) charData(t xml.CharData) *Node {
 		top.Children[k-1].Value += string(t)
 		return nil
 	}
-	n := &Node{Kind: KindText, Value: string(t)}
+	n := &Node{Kind: KindText, Value: s.textString(t)}
 	s.stamp(n)
-	top.Append(n)
+	s.appendChild(top, n)
 	return n
+}
+
+// appendChild is Node.Append with the growth a streamed record is built by:
+// an element's first child gets a list of one (most elements are a leaf
+// holding one text node), the second a list of four, then doubling — so
+// an element of three or four children costs two list allocations, not
+// three (1, 2, 4), for the same bytes.
+func (s *StreamReader) appendChild(parent, child *Node) {
+	child.Parent = parent
+	if n := len(parent.Children); n == cap(parent.Children) {
+		grown := make([]*Node, n, max(1, 4*n))
+		copy(grown, parent.Children)
+		parent.Children = grown
+	}
+	parent.Children = append(parent.Children, child)
+}
+
+// streamMaxWSRuns bounds StreamReader.wsRuns.
+const streamMaxWSRuns = 256
+
+// textString is string(t), shared when t is a short whitespace-only run
+// seen before (see wsRuns).
+func (s *StreamReader) textString(t xml.CharData) string {
+	if len(t) == 0 || len(t) > maxInternedWS {
+		return string(t)
+	}
+	for _, c := range t {
+		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			return string(t)
+		}
+	}
+	if v, ok := s.wsRuns[string(t)]; ok { // no allocation: map lookup by []byte conversion
+		return v
+	}
+	v := string(t)
+	if len(s.wsRuns) < streamMaxWSRuns {
+		if s.wsRuns == nil {
+			s.wsRuns = make(map[string]string)
+		}
+		s.wsRuns[v] = v
+	}
+	return v
 }
 
 // streamNormalizeAttrValue applies the XML attribute-value normalization step
