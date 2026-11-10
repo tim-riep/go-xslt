@@ -736,12 +736,67 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 		if strings.ContainsAny(s, "eE") {
 			return nil, fmt.Errorf("err:FORG0001: decimal lexical may not use exponent %q", s)
 		}
+		if mant, scale, ok := plainDecimal(s); ok {
+			// The usual lexical ("12.5", "-3"): the fraction mant/10^scale
+			// built directly. Rat.SetString computes the power of ten in
+			// big arithmetic first; both end in the same canonical form
+			// (Rat.norm), so the value is the same Rat either way.
+			return NewDecimal(new(big.Rat).SetFrac64(mant, pow10i64[scale])), nil
+		}
 		r, ok := new(big.Rat).SetString(s)
 		if !ok {
 			return nil, fmt.Errorf("err:FORG0001: invalid decimal %q", s)
 		}
 		return NewDecimal(r), nil
 	}
+}
+
+// pow10i64 holds the powers of ten an int64 mantissa can be scaled by.
+var pow10i64 = [...]int64{1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000,
+	10000000000, 100000000000, 1000000000000, 10000000000000, 100000000000000, 1000000000000000,
+	10000000000000000, 100000000000000000, 1000000000000000000}
+
+// plainDecimal reads a decimal lexical of the strict form [+-]?D+(.D+)? with
+// at most 18 digits in all as the integer mant and the scale (digits after
+// the point), so that the value is mant / 10^scale. Any other string — a
+// leading or trailing point, more digits, anything else — is left to
+// Rat.SetString, so this only shortens what SetString would parse to the
+// same number.
+func plainDecimal(s string) (mant int64, scale int, ok bool) {
+	i := 0
+	neg := false
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		neg = s[i] == '-'
+		i++
+	}
+	digits := 0
+	intDigits := 0
+	for ; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+		mant = mant*10 + int64(s[i]-'0')
+		digits++
+	}
+	intDigits = digits
+	if intDigits == 0 {
+		return 0, 0, false
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		for ; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+			mant = mant*10 + int64(s[i]-'0')
+			digits++
+		}
+		scale = digits - intDigits
+		if scale == 0 {
+			return 0, 0, false
+		}
+	}
+	if i != len(s) || digits > 18 {
+		return 0, 0, false
+	}
+	if neg {
+		mant = -mant
+	}
+	return mant, scale, true
 }
 
 // newFloating builds an xs:double, or an xs:float rounded to single precision
