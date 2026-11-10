@@ -157,7 +157,37 @@ libxslt's time to where it is now:
   schema-location-hint check, which saved 0.1 % of the instructions and
   cost an 8 MB stack of child pointers.
 
-The sixth to ninth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a tenth round, part A, on the evaluator and the serializer, under the same
+  harness and the same rule (no workload may allocate more, grow or execute
+  more instructions): the html serializer parsed the usually empty
+  html-version string for every element to decide prefix normalization,
+  allocating a parse error each time — it is decided once per serialization
+  (HTML output workload: 3 % fewer instructions, 7.5 % fewer allocations);
+  an attribute value template is built in one allocation from parts
+  collected on the stack, and a one-expression template is its part's own
+  string (HTML: 8 % fewer allocations; 200 transforms in one process: 3.5 %
+  fewer); the backwards-compatibility scope of an instruction (its
+  ancestors' `[xsl:]version` attributes) is remembered per run instead of
+  walked for every xsl:value-of, attribute value template, xsl:number and
+  xsl:call-template under a version="1.0" stylesheet; xsl:value-of and
+  xsl:sequence check a node-set result for map or function items without
+  boxing it, and a literal result element's children are rebuilt only when
+  there is an empty text node to drop (HTML: 7 % fewer allocations); an
+  xsl:key index whose pattern can match elements only is built over the
+  elements alone — the attributes and text nodes, most of the tree, were
+  each handed to the matcher to be rejected by kind; a template or function
+  call starts its callee with the caller's spare scope-stack capacity, the
+  context a declared type is matched in is remembered per run, and the key
+  of a stylesheet function is one concatenation; the simple map operator, a
+  postfix path step and a predicate over non-node items reuse one evaluation
+  context per loop, as predicates over nodes already did, replaced only once
+  a function item captured it (grouping into a map with JSON output: 8 %
+  fewer bytes allocated); and the apply-templates select `@*|node()` hands
+  its node set back without boxing it into an interface, which was 94 % of
+  the allocations of the template-dispatch workload. No workload executes
+  more instructions than before, and every output is byte-identical.
+
+The sixth to tenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
