@@ -815,6 +815,36 @@ func effectiveSimpleText(decl *ElementDecl, el *xmltree.Node) string {
 }
 
 func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
+	if s.assertAnnos == nil {
+		return s.validateComplexContent(ct, el, scopes, decl)
+	}
+	// An annotation is read by assertTree alone, for the subtree of an
+	// element whose type has assertions, once that element's content is
+	// validated. So while no open element has assertions, nothing recorded
+	// so far — this element's subtree included — is ever read again, and
+	// the map is emptied rather than left to grow by one entry per
+	// simple-typed node of the instance (a 200,000-record document put 2.4
+	// million entries in it, rehashed on the way up and scanned by every
+	// collection). clear keeps the buckets, so the map settles at the size
+	// of the largest asserted subtree and allocates nothing further.
+	open := len(s.childModelOf(ct).asserts) > 0
+	if open {
+		s.assertOpen++
+	}
+	err := s.validateComplexContent(ct, el, scopes, decl)
+	if open {
+		s.assertOpen--
+	}
+	if s.assertOpen == 0 && len(s.assertAnnos) > 0 {
+		clear(s.assertAnnos)
+		clear(s.assertListItems)
+	}
+	return err
+}
+
+// validateComplexContent is validateComplex proper; see there for the
+// assertion-annotation bookkeeping around it.
+func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
 	if ct.abstract {
 		return invalidf("cvc-type.2", "type is abstract and cannot be used directly")
 	}
