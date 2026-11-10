@@ -213,3 +213,93 @@ func TestStreamEntityExpansionIsBounded(t *testing.T) {
 		t.Fatalf("want a refusal, got %v", err)
 	}
 }
+
+// TestStreamReaderWindowBoundaries is TestStreamReaderMatchesParse with the
+// tokenizer's window cut at every size from one byte up: a boundary then
+// falls inside every kind of token — a name, an attribute value, a
+// reference, a multi-byte character, a comment, a CDATA section, the
+// DOCTYPE — and the reader must still produce the parsed tree.
+func TestStreamReaderWindowBoundaries(t *testing.T) {
+	docs := []string{
+		`<a><b x="1">t</b><c/></a>`,
+		`<?xml version="1.0"?><root xmlns="urn:d" xmlns:p="urn:p"><p:x a="1" p:b="2"/><y/>tail</root>`,
+		`<a>  <b/> text <!--c--><?pi data?><![CDATA[<raw>]]> </a>`,
+		"<a>\n  <b/>\n</a>\n",
+		`<!DOCTYPE a [<!ENTITY e "EXP">]><a>&e;<b n="&e;"/></a>`,
+		`<!DOCTYPE a [<!ELEMENT a (b)><!ATTLIST b id ID #IMPLIED k CDATA "dflt">]><a><b id="i1"/></a>`,
+		"\xEF\xBB\xBF<a>bom</a>",
+		"<a>Grüße — καλημέρα — 日本語 &amp; &#x1F600; &lt;x&gt;</a>",
+		"<a b='x&#65;y' c=\"&quot;q&quot;\">line1\r\nline2\rline3<![CDATA[one]]><![CDATA[two]]>tail</a>",
+		"<a>" + strings.Repeat("0123456789", 700) + "<b/>" + strings.Repeat("é", 300) + "</a>",
+		`<?xml version="1.0" encoding="ISO-8859-1"?><a>caf` + "\xe9" + `</a>`,
+		`<a xmlns:p="urn:p"><p:b p:c="1"><!-- a comment that is a bit longer than the others --><?target some instruction data?></p:b></a>`,
+	}
+	opts := SerializeOptions{Method: "xml", OmitXMLDeclaration: true}
+	for _, src := range docs {
+		want, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		ws := Serialize(want, opts)
+		for chunk := 1; chunk <= 24; chunk++ {
+			s, err := newStreamReaderChunk(strings.NewReader(src), chunk)
+			if err != nil {
+				t.Fatalf("chunk %d: NewStreamReader(%q): %v", chunk, src, err)
+			}
+			for {
+				ev, err := s.Advance()
+				if err != nil {
+					t.Fatalf("chunk %d: Advance(%q): %v", chunk, src, err)
+				}
+				if ev.Kind == StreamEOF {
+					break
+				}
+			}
+			if gs := Serialize(s.Doc(), opts); gs != ws {
+				t.Errorf("chunk %d: stream(%q):\n got %q\nwant %q", chunk, src, gs, ws)
+				break
+			}
+			if err := sameOrdering(s.Doc(), want); err != nil {
+				t.Errorf("chunk %d: stream(%q): %v", chunk, src, err)
+				break
+			}
+		}
+	}
+}
+
+// TestStreamReaderWindowErrors: a well-formedness error is reported with
+// the same text whatever the window, and its line is the document's.
+func TestStreamReaderWindowErrors(t *testing.T) {
+	docs := []string{
+		"<a>\n<b>\n</a>",
+		"<a>\n\n<b x='1'/><c>&bogus;</c></a>",
+		"<a>" + strings.Repeat("x", 100) + "]]>" + "</a>",
+		"<a><b></a>",
+		"<a>\n<b x=1/></a>",
+		"<a>text",
+		"<a>\xff</a>",
+	}
+	for _, src := range docs {
+		var want string
+		for chunk := 0; chunk <= 12; chunk++ {
+			s, err := newStreamReaderChunk(strings.NewReader(src), chunk)
+			if err != nil {
+				t.Fatalf("chunk %d: NewStreamReader(%q): %v", chunk, src, err)
+			}
+			for err == nil {
+				var ev StreamEvent
+				ev, err = s.Advance()
+				if err == nil && ev.Kind == StreamEOF {
+					err = errors.New("no error")
+				}
+			}
+			if chunk == 0 {
+				want = err.Error()
+				continue
+			}
+			if got := err.Error(); got != want {
+				t.Errorf("chunk %d: stream(%q) error %q, with the default window %q", chunk, src, got, want)
+			}
+		}
+	}
+}

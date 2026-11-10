@@ -20,6 +20,10 @@ import (
 // unmodified — but hands them to the caller one at a time, letting the caller
 // keep the ancestor spine plus a single record live and DISCARD everything
 // else. Peak memory is then O(depth + largest record) rather than O(document).
+// The tokens come from parse.go's own tokenizer, run over a window of the
+// input (stream_tok.go); a node's strings are substrings of that window, so
+// a live node keeps its window alive — the same bound, since a window is
+// read once and dropped records drop theirs.
 //
 // It deliberately does NOT reuse parseRaw: every one of that function's
 // pre-passes (entity expansion, attribute-whitespace normalization, line
@@ -78,10 +82,10 @@ type StreamEvent struct {
 // drops nothing simply ends up with the whole document, exactly as Parse would
 // have produced it.
 type StreamReader struct {
-	dec *xml.Decoder
+	tok *streamTokenizer
 	// textBytes counts the character data and attribute values read so far,
 	// once the DOCTYPE has declared entities: their references are expanded
-	// by the decoder, so this is how the reader bounds the amplification
+	// by the tokenizer, so this is how the reader bounds the amplification
 	// (expansionLimit of the input read).
 	textBytes int
 	doc       *Node
@@ -129,6 +133,13 @@ type StreamReader struct {
 // source at once (see the file comment); the caller must then fall back to a
 // full parse.
 func NewStreamReader(r io.Reader) (*StreamReader, error) {
+	return newStreamReaderChunk(r, 0)
+}
+
+// newStreamReaderChunk is NewStreamReader reading chunk bytes at a time (0:
+// the default); tests use a tiny chunk to put a window boundary inside
+// every kind of token.
+func newStreamReaderChunk(r io.Reader, chunk int) (*StreamReader, error) {
 	src, err := streamDecode(r)
 	if err != nil {
 		return nil, err
@@ -137,18 +148,28 @@ func NewStreamReader(r io.Reader) (*StreamReader, error) {
 	// The prolog is the one place a streamed document can declare something
 	// this reader cannot honour. Peeking it costs nothing (it is already in
 	// the buffer) and keeps the refusal at construction time, where the caller
-	// can still fall back cheaply.
-	if head, _ := br.Peek(256); len(head) > 0 {
+	// can still fall back cheaply. The XML declaration's encoding is read
+	// here as well: the tokenizer works on a window, which it cannot re-read
+	// through a charset decoder the way a whole source is, so the input is
+	// decoded ahead of it (encoding/xml did the same through CharsetReader).
+	var in io.Reader = br
+	if head, _ := br.Peek(4096); len(head) > 0 {
 		if declaresXML11(string(head)) {
 			return nil, fmt.Errorf("%w: XML 1.1 needs the lenient whole-source pre-passes", ErrStreamUnsupported)
 		}
+		if enc := declaredEncoding(string(head)); enc != "" {
+			dr, err := charsetReader(enc, br)
+			if err != nil {
+				return nil, fmt.Errorf("xml: opening charset %q: %w", enc, err)
+			}
+			if dr != nil {
+				in = dr
+			}
+		}
 	}
-	dec := xml.NewDecoder(br)
-	dec.Strict = true
-	dec.CharsetReader = charsetReader
 	doc := &Node{Kind: KindDocument}
 	s := &StreamReader{
-		dec:        dec,
+		tok:        newStreamTokenizer(in, chunk),
 		doc:        doc,
 		stack:      []*Node{doc},
 		nsStack:    []map[string]string{{"xml": "http://www.w3.org/XML/1998/namespace", "": ""}},
@@ -167,6 +188,20 @@ func NewStreamReader(r io.Reader) (*StreamReader, error) {
 	}
 	s.primed, s.hasPrime = ev, true
 	return s, nil
+}
+
+// declaredEncoding is the encoding the XML declaration at the start of head
+// names, "" when there is none (or the declaration is cut off).
+func declaredEncoding(head string) string {
+	head = strings.TrimLeft(head, "\uFEFF \t\r\n")
+	if !strings.HasPrefix(head, "<?xml") {
+		return ""
+	}
+	end := strings.Index(head, "?>")
+	if end < 0 {
+		return ""
+	}
+	return procInstParam("encoding", head[:end])
 }
 
 // streamDecode strips a UTF-8 BOM / transcodes a UTF-16 one, the streaming
@@ -223,7 +258,7 @@ func (s *StreamReader) Advance() (StreamEvent, error) {
 
 func (s *StreamReader) advance() (StreamEvent, error) {
 	for {
-		tok, err := s.dec.RawToken()
+		kind, err := s.tok.next()
 		if err == io.EOF {
 			if len(s.rawNames) != 0 {
 				return StreamEvent{}, errors.New("unexpected end of document: unclosed elements")
@@ -233,15 +268,16 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 		if err != nil {
 			return StreamEvent{}, err
 		}
-		// RawToken rather than Token for the same reason parseRaw uses it: Token
-		// resolves names to URIs and discards the prefix the author wrote. The
-		// namespace frame stack below re-establishes the resolution, and the
-		// end-tag check Token would have done is re-established too.
-		if err := s.countText(tok); err != nil {
-			return StreamEvent{}, err
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
+		// The tokenizer reports names as written (the prefix in Space), as
+		// parseRaw has them: the namespace frame stack below does the
+		// resolution, and the end tags are matched here.
+		tz := &s.tok.tz
+		switch kind {
+		case tokStart:
+			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
+			if err := s.countAttrs(t.Attr); err != nil {
+				return StreamEvent{}, err
+			}
 			// A streamed document is XML 1.0 (1.1 is ErrStreamUnsupported), so
 			// a prefix may not be undeclared — parseRaw's identical check.
 			for _, a := range t.Attr {
@@ -255,67 +291,84 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			el := s.startElement(t)
 			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.stack) - 1}, nil
 
-		case xml.EndElement:
-			el, err := s.endElement(t)
+		case tokEnd:
+			el, err := s.endElement(xml.EndElement{Name: tz.name})
 			if err != nil {
 				return StreamEvent{}, err
 			}
 			return StreamEvent{Kind: StreamExit, Node: el, Depth: len(s.stack)}, nil
 
-		case xml.CharData:
-			if n := s.charData(t); n != nil {
+		case tokText:
+			text := s.text()
+			if err := s.countText(len(text)); err != nil {
+				return StreamEvent{}, err
+			}
+			if n := s.charData(text); n != nil {
 				return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
 			}
 
-		case xml.Comment:
-			n := &Node{Kind: KindComment, Value: string(t)}
+		case tokComment:
+			n := &Node{Kind: KindComment, Value: tz.str}
 			s.stamp(n)
 			s.top().Append(n)
 			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
 
-		case xml.ProcInst:
-			if t.Target == "xml" {
+		case tokPI:
+			if tz.target == "xml" {
 				continue // the XML declaration is not a PI node
 			}
-			n := &Node{Kind: KindPI, Name: Name{Local: t.Target}, Value: string(t.Inst)}
+			n := &Node{Kind: KindPI, Name: Name{Local: tz.target}, Value: tz.str}
 			s.stamp(n)
 			s.top().Append(n)
 			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
 
-		case xml.Directive:
-			if err := s.directive(t); err != nil {
+		case tokDirective:
+			if err := s.directive(xml.Directive(tz.data)); err != nil {
 				return StreamEvent{}, err
 			}
 		}
 	}
 }
 
-// countText adds a token's character data and attribute values to
-// textBytes once the DOCTYPE has declared entities, and fails when entity
-// expansion has made them outgrow expansionLimit of the input read so far.
+// text is the character data of the tokText token just read: a substring of
+// the input where it stands there as written, else (a reference or a CR in
+// it) a copy of the tokenizer's buffer, which the next token reuses.
+func (s *StreamReader) text() string {
+	if s.tok.tz.raw {
+		return s.tok.tz.str
+	}
+	return string(s.tok.tz.textBytes())
+}
+
+// countText adds n bytes of character data to textBytes once the DOCTYPE has
+// declared entities, and fails when entity expansion has made the text
+// outgrow expansionLimit of the input read so far; countAttrs does the same
+// for a start tag's attribute values.
 // streamEntityMax is the longest entity value the streaming reader expands
 // itself: at most 8 times the 3 bytes of the shortest reference (&e;), the
 // factor expansionLimit allows.
 const streamEntityMax = 24
 
-func (s *StreamReader) countText(tok xml.Token) error {
-	if s.dec.Entity == nil {
+func (s *StreamReader) countText(n int) error {
+	if s.tok.tz.entity == nil {
 		return nil
 	}
-	switch t := tok.(type) {
-	case xml.CharData:
-		s.textBytes += len(t)
-	case xml.StartElement:
-		for _, a := range t.Attr {
-			s.textBytes += len(a.Value)
-		}
-	default:
-		return nil
-	}
-	if limit := expansionLimit(int(s.dec.InputOffset())); s.textBytes > limit {
+	s.textBytes += n
+	if limit := expansionLimit(s.tok.offset()); s.textBytes > limit {
 		return errEntityExpansion(limit)
 	}
 	return nil
+}
+
+func (s *StreamReader) countAttrs(attrs []xml.Attr) error {
+	if s.tok.tz.entity == nil {
+		return nil
+	}
+	n := 0
+	for _, a := range attrs {
+		n += len(a.Value)
+	}
+	return s.countText(n)
 }
 
 func (s *StreamReader) top() *Node { return s.stack[len(s.stack)-1] }
@@ -343,7 +396,7 @@ func (s *StreamReader) directive(t xml.Directive) error {
 	if err != nil {
 		return err
 	}
-	// encoding/xml builds a whole run of text, every reference in it
+	// The tokenizer builds a whole run of text, every reference in it
 	// substituted, before this reader sees it, so countText alone cannot keep
 	// a long entity value referenced many times from being built. Such a
 	// document goes to the full parser, which bounds the expansion before
@@ -355,7 +408,7 @@ func (s *StreamReader) directive(t xml.Directive) error {
 		}
 	}
 	if len(ents) > 0 {
-		s.dec.Entity = ents
+		s.tok.tz.entity = ents
 	}
 	s.idKinds = idAttrKinds(src)
 	s.attrDefaults = attlistDefaults(src)
@@ -391,10 +444,12 @@ func streamHasExternalEntity(sub string) bool {
 }
 
 func (s *StreamReader) startElement(t xml.StartElement) *Node {
-	// Intern the tag's own name before anything retains it — see parse.go's
-	// identical gate in its StartElement case for why.
-	t.Name.Local = intern(s.nameIntern, t.Name.Local)
-	t.Name.Space = intern(s.nameIntern, t.Name.Space)
+	// Intern the tag's own name before anything retains it: one string per
+	// distinct name, copied out of the tokenizer's window (see
+	// streamTokenizer), where the element and rawNames would otherwise keep
+	// the window alive.
+	t.Name.Local = internCopy(s.nameIntern, t.Name.Local)
+	t.Name.Space = internCopy(s.nameIntern, t.Name.Space)
 	// Lazy-clone, same reasoning as the buffered parser's identical gate in
 	// parse.go: most elements declare no namespace of their own, so reuse the
 	// parent's frame reference until a decl actually forces a copy.
@@ -419,8 +474,11 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 			frame = cloneNS(frame)
 			cloned = true
 		}
-		frame[local] = a.Value
-		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: local}, Value: a.Value})
+		// Copied out of the window: the frame lives as long as the element
+		// is open, which for the document element is the whole document.
+		uri := strings.Clone(a.Value)
+		frame[local] = uri
+		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: internCopy(s.nameIntern, local)}, Value: uri})
 	}
 	// The element and its attribute nodes are one allocation: an attribute
 	// keeps its element alive through Parent anyway, so nothing is retained
@@ -547,16 +605,16 @@ func (s *StreamReader) pop() {
 // the data was discarded (prolog/epilog or element-content whitespace) or
 // coalesced into a text node already reported. The three rules mirror
 // parseRaw's CharData case exactly.
-func (s *StreamReader) charData(t xml.CharData) *Node {
+func (s *StreamReader) charData(t string) *Node {
 	top := s.top()
-	if top == s.doc && strings.Trim(string(t), " \t\r\n") == "" {
+	if top == s.doc && strings.Trim(t, " \t\r\n") == "" {
 		return nil
 	}
-	if top.Kind == KindElement && s.elemOnly[top.Name.Local] && strings.Trim(string(t), " \t\r\n") == "" {
+	if top.Kind == KindElement && s.elemOnly[top.Name.Local] && strings.Trim(t, " \t\r\n") == "" {
 		return nil
 	}
 	if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic() {
-		top.Children[k-1].Value += string(t)
+		top.Children[k-1].Value += t
 		return nil
 	}
 	n := &Node{Kind: KindText, Value: s.textString(t)}
@@ -583,28 +641,41 @@ func (s *StreamReader) appendChild(parent, child *Node) {
 // streamMaxWSRuns bounds StreamReader.wsRuns.
 const streamMaxWSRuns = 256
 
-// textString is string(t), shared when t is a short whitespace-only run
-// seen before (see wsRuns).
-func (s *StreamReader) textString(t xml.CharData) string {
+// textString is t, or the shared copy of it when t is a short
+// whitespace-only run (see wsRuns): one string per distinct run, instead of
+// a text node per run keeping its own window of the input alive.
+func (s *StreamReader) textString(t string) string {
 	if len(t) == 0 || len(t) > maxInternedWS {
-		return string(t)
+		return t
 	}
-	for _, c := range t {
-		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
-			return string(t)
+	for i := 0; i < len(t); i++ {
+		if c := t[i]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			return t
 		}
 	}
-	if v, ok := s.wsRuns[string(t)]; ok { // no allocation: map lookup by []byte conversion
+	if v, ok := s.wsRuns[t]; ok {
 		return v
 	}
-	v := string(t)
 	if len(s.wsRuns) < streamMaxWSRuns {
 		if s.wsRuns == nil {
 			s.wsRuns = make(map[string]string)
 		}
+		v := strings.Clone(t)
 		s.wsRuns[v] = v
+		return v
 	}
-	return v
+	return t
+}
+
+// internCopy is intern (parse.go) for strings cut from a tokenizer window:
+// the kept string is a copy, so the table never holds a window.
+func internCopy(m map[string]string, s string) string {
+	if v, ok := m[s]; ok {
+		return v
+	}
+	s = strings.Clone(s)
+	m[s] = s
+	return s
 }
 
 // streamNormalizeAttrValue applies the XML attribute-value normalization step
@@ -667,26 +738,31 @@ func (s *StreamReader) SkipSubtree() error {
 	el := s.top()
 	nested := 0
 	for {
-		tok, err := s.dec.RawToken()
+		kind, err := s.tok.next()
 		if err != nil {
 			if err == io.EOF {
 				return errors.New("unexpected end of document: unclosed elements")
 			}
 			return err
 		}
-		if err := s.countText(tok); err != nil {
-			return err
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
+		tz := &s.tok.tz
+		switch kind {
+		case tokStart:
+			if err := s.countAttrs(tz.attrs); err != nil {
+				return err
+			}
 			nested++
-		case xml.EndElement:
+		case tokText:
+			if err := s.countText(len(s.text())); err != nil {
+				return err
+			}
+		case tokEnd:
 			if nested > 0 {
 				nested--
 				continue
 			}
-			if open := s.rawNames[len(s.rawNames)-1]; open != t.Name {
-				return errors.New("element <" + rawQName(open) + "> closed by </" + rawQName(t.Name) + ">")
+			if open := s.rawNames[len(s.rawNames)-1]; open != tz.name {
+				return errors.New("element <" + rawQName(open) + "> closed by </" + rawQName(tz.name) + ">")
 			}
 			s.pop()
 			s.Drop(el)
