@@ -1252,12 +1252,18 @@ func evalFilter(n *FilterExpr, ctx *Context) (Object, error) {
 func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error) {
 	size := len(items)
 	var out []Item
+	// One scratch context serves every item, as in applyPredicateOrdered:
+	// overwritten per item, replaced only once an evaluation captured it.
+	sub := new(Context)
 	for i, it := range items {
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
 		pos := i + 1
-		sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		if sub.captured {
+			sub = new(Context)
+		}
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 		switch it.(type) {
 		case *xmltree.Node:
 			sub.Node = it.(*xmltree.Node)
@@ -1413,8 +1419,15 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 			// PostfixExpr step (function call etc.): evaluate per context node.
 			var items []Item
 			size := len(current)
+			// One scratch context per step, overwritten per context node and
+			// replaced only once an evaluation captured it (as in
+			// applyPredicateOrdered).
+			sub := new(Context)
 			for idx, cn := range current {
-				sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+				if sub.captured {
+					sub = new(Context)
+				}
+				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 				v, err := evalExpr(step.Postfix, sub)
 				if err != nil {
 					return nil, err
@@ -2077,11 +2090,17 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 	for _, step := range n.Steps[1:] {
 		items := Items(cur)
 		var out []Item
+		// One scratch context per step, overwritten per item and replaced
+		// only once an evaluation captured it (as in applyPredicateOrdered).
+		sub := new(Context)
 		for i, it := range items {
 			if err := ctx.poll(); err != nil {
 				return nil, err
 			}
-			sub := &Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+			if sub.captured {
+				sub = new(Context)
+			}
+			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
 			if nd, ok := it.(*xmltree.Node); ok {
 				sub.Node = nd
 			}
