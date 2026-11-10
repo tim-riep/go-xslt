@@ -252,7 +252,7 @@ func (n *evEvaluate) value(eng *engine, r rt) (xpath.Object, error) {
 		return nil, err
 	}
 	if n.as != "" {
-		cv, ok := coerceAs(n.as, v, n.el)
+		cv, ok := eng.coerceAs(n.as, v, n.el)
 		if !ok {
 			return nil, errAt(n.el, "err:XTTE3165: xsl:evaluate result does not match declared type %q", n.as)
 		}
