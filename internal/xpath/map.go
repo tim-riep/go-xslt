@@ -46,7 +46,7 @@ type Map struct {
 // that form's hash.
 type mapSlot struct {
 	h uint64
-	k string
+	k mkey
 }
 
 // mapLog guards the append-only use of a backing array that several maps'
@@ -67,7 +67,7 @@ type mapLog struct {
 // hentry is one entry. It is never changed after it is made.
 type hentry struct {
 	h   uint64
-	k   string // mapKey(key)
+	k   mkey // mapKey(key)
 	key Item
 	val Object
 }
@@ -91,13 +91,17 @@ type hkid struct {
 
 var mapSeed = maphash.MakeSeed()
 
-func mapHash(k string) uint64 { return maphash.String(mapSeed, k) }
+// mapHash hashes a canonical key: the hash of its string, with the
+// category folded in so "1" the number and "1" the string hash apart.
+func mapHash(k mkey) uint64 {
+	return maphash.String(mapSeed, k.s) ^ (uint64(k.cat) * 0x9E3779B97F4A7C15)
+}
 
 // NewMap returns an empty map.
 func NewMap() *Map { return &Map{} }
 
 // find returns the entry with canonical key k (hash h), or nil.
-func (n *hnode) find(h uint64, k string) *hentry {
+func (n *hnode) find(h uint64, k mkey) *hentry {
 	for shift := uint(0); n != nil; shift += 5 {
 		if n.coll != nil {
 			for _, e := range n.coll {

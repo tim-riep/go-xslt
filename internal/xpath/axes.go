@@ -161,7 +161,7 @@ func collectDescendants(n *xmltree.Node, out *NodeSet) {
 // must see every node to compute position before any test) keeps using the
 // plain, unfiltered collectDescendants — this is a distinct function, not a
 // behavior change to that one.
-func collectDescendantsFiltered(n *xmltree.Node, test NodeTest, axis string, ctx *Context, pc *prefixCache, out *NodeSet) error {
+func collectDescendantsFiltered(n *xmltree.Node, test *NodeTest, axis string, ctx *Context, pc *prefixCache, out *NodeSet) error {
 	for _, c := range n.Children {
 		ok, err := matchTestC(test, axis, c, ctx, pc)
 		if err != nil {
@@ -301,13 +301,13 @@ type prefixCache struct {
 }
 
 // matchTest reports whether node c satisfies the node test on the given axis.
-func matchTest(t NodeTest, axis string, c *xmltree.Node, ctx *Context) (bool, error) {
+func matchTest(t *NodeTest, axis string, c *xmltree.Node, ctx *Context) (bool, error) {
 	return matchTestC(t, axis, c, ctx, nil)
 }
 
 // matchTestC is matchTest with an optional per-step prefix cache (nil: resolve
 // afresh each time, exactly as matchTest always did).
-func matchTestC(t NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *prefixCache) (bool, error) {
+func matchTestC(t *NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *prefixCache) (bool, error) {
 	switch t.Kind {
 	case testNode:
 		return true, nil
@@ -407,7 +407,7 @@ func matchTestC(t NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *pref
 			if elem == nil {
 				return false, nil
 			}
-			return matchTest(*t.Inner, "child", elem, ctx)
+			return matchTest(t.Inner, "child", elem, ctx)
 		}
 		return true, nil
 	case testNamespace:
@@ -418,7 +418,7 @@ func matchTestC(t NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *pref
 
 // kindTestNameOK checks the optional name of an element(...)/attribute(...)
 // kind test against the node.
-func kindTestNameOK(t NodeTest, c *xmltree.Node, ctx *Context) (bool, error) {
+func kindTestNameOK(t *NodeTest, c *xmltree.Node, ctx *Context) (bool, error) {
 	if t.AnyName || t.Local == "" {
 		return true, nil
 	}
@@ -448,7 +448,7 @@ func kindTestNameOK(t NodeTest, c *xmltree.Node, ctx *Context) (bool, error) {
 // declared type) whenever the host installs no declaration resolver, which is
 // exactly the pre-existing behaviour for any caller that does not implement
 // the optional seam.
-func schemaElementTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
+func schemaElementTypeOK(t *NodeTest, c *xmltree.Node, ctx *Context) bool {
 	et, ok := schemaElemDeclType(c.Name, ctx)
 	if !ok {
 		return kindTestTypeOK(t, c, ctx)
@@ -471,7 +471,7 @@ func schemaElementTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
 // read "string" or "untyped". Only the UNPREFIXED form still matches by local
 // part — the same deliberate leniency atomTypeForEQName documents, and harmless
 // while no user-defined type exists to collide with a built-in's name.
-func kindTestTypeOK(t NodeTest, c *xmltree.Node, ctx *Context) bool {
+func kindTestTypeOK(t *NodeTest, c *xmltree.Node, ctx *Context) bool {
 	// A name RESOLVED against an imported schema (element(N,T) naming a
 	// user-defined type; the declared type of a schema-element()/
 	// schema-attribute() declaration) is settled by identity + derivation on
@@ -616,11 +616,11 @@ func builtinTypeLocalName(name string, ctx *Context) (string, bool) {
 	return localOfEQName(name), uri == nsXS
 }
 
-func matchNameTest(t NodeTest, axis string, c *xmltree.Node, ctx *Context) (bool, error) {
+func matchNameTest(t *NodeTest, axis string, c *xmltree.Node, ctx *Context) (bool, error) {
 	return matchNameTestC(t, axis, c, ctx, nil)
 }
 
-func matchNameTestC(t NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *prefixCache) (bool, error) {
+func matchNameTestC(t *NodeTest, axis string, c *xmltree.Node, ctx *Context, pc *prefixCache) (bool, error) {
 	// principal node type per axis
 	switch axis {
 	case "attribute":

@@ -2,7 +2,6 @@ package xpath
 
 import (
 	"math"
-	"strings"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 )
@@ -83,6 +82,28 @@ func Items(o Object) []Item {
 		return out
 	default:
 		return []Item{v}
+	}
+}
+
+// appendItems appends the items of o to dst: Items(o) without the one-item
+// slice that a single non-node item would be boxed into first.
+func appendItems(dst []Item, o Object) []Item {
+	switch v := o.(type) {
+	case nil:
+		return dst
+	case Sequence:
+		return append(dst, v...)
+	case NodeSet:
+		for _, n := range v {
+			if n != nil && n.RealItem() != nil {
+				dst = append(dst, n.RealItem())
+				continue
+			}
+			dst = append(dst, n)
+		}
+		return dst
+	default:
+		return append(dst, v)
 	}
 }
 
@@ -191,12 +212,15 @@ func seqAsString(items []Item, sep string) string {
 	if len(items) == 1 {
 		return itemString(items[0])
 	}
-	var b strings.Builder
-	for i, it := range items {
-		if i > 0 {
-			b.WriteString(sep)
-		}
-		b.WriteString(itemString(it))
+	// The strings are taken first so the result is built in one
+	// allocation of its final size (joinParts), not grown piece by piece.
+	var buf [16]string
+	parts := buf[:0]
+	total := 0
+	for _, it := range items {
+		s := itemString(it)
+		parts = append(parts, s)
+		total += len(s)
 	}
-	return b.String()
+	return joinParts(parts, total, sep)
 }

@@ -101,9 +101,9 @@ func itoa(n int) string { return strconv.Itoa(n) }
 func TestMapHashCollision(t *testing.T) {
 	var root *hnode
 	ents := []*hentry{
-		{h: 1, k: "a"}, {h: 1, k: "b"}, {h: 1, k: "c"}, // one hash, three keys
-		{h: 1 | 1<<60, k: "d"}, // differs only in the last level
-		{h: 33, k: "e"},        // differs in the second level
+		{h: 1, k: mkey{'s', "a"}}, {h: 1, k: mkey{'s', "b"}}, {h: 1, k: mkey{'s', "c"}}, // one hash, three keys
+		{h: 1 | 1<<60, k: mkey{'s', "d"}}, // differs only in the last level
+		{h: 33, k: mkey{'s', "e"}},        // differs in the second level
 	}
 	for _, e := range ents {
 		root, _ = root.assoc(nil, 0, e)
@@ -113,12 +113,12 @@ func TestMapHashCollision(t *testing.T) {
 			t.Fatalf("find %q: got %v", e.k, got)
 		}
 	}
-	if root.find(1, "z") != nil || root.find(2, "a") != nil {
+	if root.find(1, mkey{'s', "z"}) != nil || root.find(2, mkey{'s', "a"}) != nil {
 		t.Fatal("found an absent key")
 	}
-	nb := &hentry{h: 1, k: "b", val: "new"}
+	nb := &hentry{h: 1, k: mkey{'s', "b"}, val: "new"}
 	r2, old := root.assoc(nil, 0, nb)
-	if old != ents[1] || r2.find(1, "b") != nb || root.find(1, "b") != ents[1] {
+	if old != ents[1] || r2.find(1, mkey{'s', "b"}) != nb || root.find(1, mkey{'s', "b"}) != ents[1] {
 		t.Fatal("replacing in a collision list must leave the old trie alone")
 	}
 }

@@ -187,6 +187,43 @@ libxslt's time to where it is now:
   the allocations of the template-dispatch workload. No workload executes
   more instructions than before, and every output is byte-identical.
 
+- an eleventh round, part A, on the evaluator, the value model and the
+  functions, under the same harness and rule: a node test (128 bytes) was
+  copied three times for every candidate node of every axis step and
+  pattern match, and xsl:number asked its count pattern for every candidate
+  whether it needs a full context — numbering 2,000 records with
+  position()/last(): 31 % fewer instructions, and 2–4 % fewer in every
+  workload that walks axes; a `for` expression reuses one context per loop
+  and a result's items are appended without boxing a single item first; a
+  template or function frame keeps its bindings in a short slice instead of
+  a map; format-date's plain digit pictures ([D01], [Y0001]) are formatted
+  without parsing them into maps; a valid JSON text is tokenized in place
+  rather than through json.Decoder.Token, which decoded every scalar through
+  Decode and built a syntax error it discarded for each (JSON round trip:
+  40 % fewer instructions, 45 % fewer allocations, 20 % less bytes
+  allocated; a text the Decoder rejects still goes through it for its
+  error); a value comparison and a built-in's string argument atomize a
+  singleton without building a sequence, a small integer cast from a
+  lexical reuses the cached Atomic, a plain decimal lexical becomes a Rat
+  from an int64 mantissa (XSD 1.1 assertions over the 200,000-order
+  document: 10 % fewer instructions, 28 % fewer allocations); concat and
+  string-join build their result in one allocation; xsl:next-iteration no
+  longer panics and recovers once per iteration to compare two errors; a
+  map key's category sits beside its string instead of being prefixed to
+  it (one concatenation less per map operation on a string key); and
+  tokenize on a pattern of plain characters splits on the string. The
+  function-call workload: 16 % fewer instructions, 29 % fewer allocations;
+  deep recursion: 15 % fewer instructions; iterating over maps: 12 % fewer
+  instructions; the string workload: 6 % fewer instructions, 18 % fewer
+  allocations. No workload allocates more; the one workload that executes
+  more instructions is the key lookup one, 0.6 % more against 2 % fewer
+  allocations, from the one-allocation concat. Every output is
+  byte-identical. Tried and dropped: handing key()'s result out as the
+  index's own list (the receiver may reuse a node set as a buffer, and
+  did), and a SERE0006 scan that read a result tree eight bytes at a time
+  — ordinary output is full of newlines, each of which tripped the word
+  test, so it executed more instructions than the byte loop it replaced.
+
 The sixth to tenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.

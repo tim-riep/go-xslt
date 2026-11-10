@@ -75,7 +75,11 @@ dragging in the GUI's Wails/CGo dependencies:
   3.1 catalog split across `fn_*.go` family files (registered into
   `coreFuncs`/`mapFuncs`/`arrayFuncs`/`mathFuncs` via `init()` — API contract:
   `internal/xpath/FNAPI.md`; each built-in also needs its signature line in
-  `fn_catalog.go`, see the first Conventions bullet), `streamability.go` (posture/sweep
+  `fn_catalog.go`, see the first Conventions bullet; `fn_json_scan.go` is the
+  in-place tokenizer `parse-json`/`json-to-xml` use for a text `json.Valid`
+  accepts — it must yield exactly `json.Decoder.Token`'s tokens, which
+  `TestJSONFastScannerMatchesDecoder` checks, and an invalid text still goes
+  through the Decoder for its error), `streamability.go` (posture/sweep
   classification, XSLT 3.0 §19/Appendix J), `schema_names.go` (schema-aware
   name resolution for `element(N,T)`/`schema-element(N)`), `static_axes.go`
   (XPath 3.1's *optional* Static Typing Feature — narrow static-emptiness
@@ -423,9 +427,9 @@ Desktop GUI (**run from `desktop/`**):
   stacks) and decide by A/B wall/CPU time in alternating processes; GC
   (scanning pointer-heavy small objects) is now the largest real share.
 - **Reused scratch contexts** (the per-item loops of `applyPredicateOrdered`,
-  `applyPredicateToItems`, `evalSimpleMap` and a postfix path step, the
-  `xsl:key` walk, `matchingTemplates`' pool, `evalWith`'s `evalPool`) are
-  overwritten per use. Any code that keeps a `*xpath.Context` beyond the
+  `applyPredicateToItems`, `evalSimpleMap`, `evalFor` and a postfix path
+  step, the `xsl:key` walk, `matchingTemplates`' pool, `evalWith`'s
+  `evalPool`) are overwritten per use. Any code that keeps a `*xpath.Context` beyond the
   evaluation (an inline function, function-lookup, a named function
   reference, partial application, function coercion) must call
   `ctx.capture()` — never set the flag directly: it also tells the host's
@@ -435,9 +439,22 @@ Desktop GUI (**run from `desktop/`**):
   snapshot is taken at that moment (`ContextCaptured`), not per evaluation.
   That snapshot is a COPY: `eng.scopes` is a stack whose backing array a
   callee shares (`callerScopes[len:]`), so nothing may keep a slice of it
-  or read beyond its live length. The parser carves nodes from slabs and
-  collects children on a shared stack (`parseRaw`), so nothing may read
-  `Children` of an open element while parsing.
+  or read beyond its live length. Its frames (`*scopeFrame`, a short slice
+  of bindings with a map index past eight) are shared by pointer between
+  the live stack and that snapshot, so a frame is only ever appended to or
+  rebound in place, never replaced by a copy. `evalFor` reuses its context
+  copy but makes a fresh `localScope` per item: contexts derived inside the
+  body share the scope by pointer, so a binding is never overwritten. The
+  parser carves nodes from slabs and collects children on a shared stack
+  (`parseRaw`), so nothing may read `Children` of an open element while
+  parsing.
+- **A node set handed out may be reused as a buffer.** `execApplyTemplates`
+  keeps its static-select result slices in `eng.selBufs` and refills them
+  (`static[:0]`), and `normalize`/`dedupByIdentity` rewrite a set in place,
+  so a node set the engine stores for later (an `xsl:key` index entry list,
+  `key()`'s result) must be a COPY, as `callFunc`'s key() lookup makes —
+  returning the index list itself, even capacity-cut, corrupted the index
+  (round 11A, dropped; the writer was not pinned down).
 - **Results must not depend on the platform.** The nightly job runs on
   linux/amd64, the maintainer's Mac is darwin/arm64, and two classes of
   difference have bitten: converting a NaN/huge float64 to int is
@@ -494,7 +511,11 @@ Desktop GUI (**run from `desktop/`**):
   that split — never `Put` into a map you did not just create. Arrays from
   `Append` share one backing array, so `Members()` is capped at its length
   and nothing may write into a member slice. Iterate with `Map.Range`
-  (`Keys()` builds a new slice). A parsed `SeqType` is shared too
+  (`Keys()` builds a new slice); iteration order is the insertion-order
+  slot list, never the hash. A key's canonical form is `mkey{cat, s}`
+  (`types.go`'s `mapKey`: category byte plus value string, hashed
+  together), not a prefixed string — `KeyString` (xsl:key) is a separate,
+  deliberately different canonical form. A parsed `SeqType` is shared too
   (`declaredType` caches @as parses for every goroutine; xslt's `coerceAs`
   skips the context for types that need none): never modify one after
   parsing.

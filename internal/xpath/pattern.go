@@ -476,7 +476,7 @@ func (p *Pattern) NeedsOnlyDefaultNS() bool {
 			return false
 		}
 		for _, s := range pe.Steps {
-			if len(s.Preds) > 0 || s.Postfix != nil || !testNeedsOnlyDefaultNS(s.Test) {
+			if len(s.Preds) > 0 || s.Postfix != nil || !testNeedsOnlyDefaultNS(&s.Test) {
 				return false
 			}
 		}
@@ -486,7 +486,7 @@ func (p *Pattern) NeedsOnlyDefaultNS() bool {
 
 // testNeedsOnlyDefaultNS reports whether matching node test t (matchTestC)
 // reads nothing of its Context but DefaultElemNS.
-func testNeedsOnlyDefaultNS(t NodeTest) bool {
+func testNeedsOnlyDefaultNS(t *NodeTest) bool {
 	switch t.Kind {
 	case testNode, testText, testComment, testPI:
 		return true
@@ -708,7 +708,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 			return false, nil
 		}
 	}
-	ok, err := matchTest(step.Test, axis, n, ctx)
+	ok, err := matchTest(&step.Test, axis, n, ctx)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -722,7 +722,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 		cands = []*xmltree.Node{n}
 	} else {
 		for _, s := range axisNodes(step.Axis, n.Parent) {
-			ok, err := matchTest(step.Test, step.Axis, s, ctx)
+			ok, err := matchTest(&step.Test, step.Axis, s, ctx)
 			if err != nil {
 				return false, err
 			}

@@ -163,6 +163,69 @@ func Atomize(o Object) ([]Item, error) {
 }
 
 // atomizeItem appends the atomized value of one item to out.
+// atomizeOne atomizes o when that yields at most one atomic value, without
+// the slice Atomize builds: n is 0 (empty) or 1 (a is the value), or 2 when o
+// has more than one item or atomizes to something this shortcut does not
+// handle (a list-typed node, an array, a map or function, an element with
+// element-only content) — the caller then uses Atomize, which decides those
+// exactly as before.
+func atomizeOne(o Object) (a Item, n int, err error) {
+	var it Item
+	switch v := o.(type) {
+	case nil:
+		return nil, 0, nil
+	case NodeSet:
+		if len(v) != 1 {
+			return nil, min(len(v), 2), nil
+		}
+		it = v[0]
+		if nd := v[0]; nd != nil && nd.RealItem() != nil {
+			it = nd.RealItem()
+		}
+	case Sequence:
+		if len(v) != 1 {
+			return nil, min(len(v), 2), nil
+		}
+		it = v[0]
+	default:
+		it = o
+	}
+	switch x := it.(type) {
+	case *Array, *Map, *Function:
+		return nil, 2, nil
+	case *xmltree.Node:
+		// The same order of checks as atomizeItem.
+		if x.Kind == xmltree.KindElement && x.Nilled() {
+			return nil, 0, nil
+		}
+		if x.ListTyped() || isElementOnlyCandidate(x) {
+			return nil, 2, nil
+		}
+	}
+	a, err = toAtomic(it)
+	if err != nil {
+		return nil, 0, err
+	}
+	return a, 1, nil
+}
+
+// atomizeOperand atomizes an operand that must be a singleton: the one
+// atomic value and n = 1, or n = 0 for the empty sequence, or n > 1.
+func atomizeOperand(o Object) (Item, int, error) {
+	a, n, err := atomizeOne(o)
+	if err != nil || n != 2 {
+		return a, n, err
+	}
+	items, err := Atomize(o)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(items) != 1 {
+		return nil, len(items), nil
+	}
+	return items[0], 1, nil
+}
+
 func atomizeItem(out []Item, it Item) ([]Item, error) {
 	switch v := it.(type) {
 	case *Array:
@@ -582,7 +645,17 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 		// the same number; anything else, overflow included, goes the general
 		// way, which also decides the lexical question.
 		if n, perr := strconv.ParseInt(s, 10, 64); perr == nil {
-			z = big.NewInt(n)
+			if n >= -16 && n < 1024 {
+				// The cached value's big.Int: an Atomic is never changed
+				// after construction, so the shared one serves (as the
+				// cached xs:integer Atomics themselves are shared).
+				if target == XSinteger {
+					return smallInts[n+16], nil
+				}
+				z = smallInts[n+16].i
+			} else {
+				z = big.NewInt(n)
+			}
 		} else {
 			var ok bool
 			z, ok = new(big.Int).SetString(s, 10)
@@ -663,12 +736,67 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 		if strings.ContainsAny(s, "eE") {
 			return nil, fmt.Errorf("err:FORG0001: decimal lexical may not use exponent %q", s)
 		}
+		if mant, scale, ok := plainDecimal(s); ok {
+			// The usual lexical ("12.5", "-3"): the fraction mant/10^scale
+			// built directly. Rat.SetString computes the power of ten in
+			// big arithmetic first; both end in the same canonical form
+			// (Rat.norm), so the value is the same Rat either way.
+			return NewDecimal(new(big.Rat).SetFrac64(mant, pow10i64[scale])), nil
+		}
 		r, ok := new(big.Rat).SetString(s)
 		if !ok {
 			return nil, fmt.Errorf("err:FORG0001: invalid decimal %q", s)
 		}
 		return NewDecimal(r), nil
 	}
+}
+
+// pow10i64 holds the powers of ten an int64 mantissa can be scaled by.
+var pow10i64 = [...]int64{1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000,
+	10000000000, 100000000000, 1000000000000, 10000000000000, 100000000000000, 1000000000000000,
+	10000000000000000, 100000000000000000, 1000000000000000000}
+
+// plainDecimal reads a decimal lexical of the strict form [+-]?D+(.D+)? with
+// at most 18 digits in all as the integer mant and the scale (digits after
+// the point), so that the value is mant / 10^scale. Any other string — a
+// leading or trailing point, more digits, anything else — is left to
+// Rat.SetString, so this only shortens what SetString would parse to the
+// same number.
+func plainDecimal(s string) (mant int64, scale int, ok bool) {
+	i := 0
+	neg := false
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		neg = s[i] == '-'
+		i++
+	}
+	digits := 0
+	intDigits := 0
+	for ; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+		mant = mant*10 + int64(s[i]-'0')
+		digits++
+	}
+	intDigits = digits
+	if intDigits == 0 {
+		return 0, 0, false
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		for ; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+			mant = mant*10 + int64(s[i]-'0')
+			digits++
+		}
+		scale = digits - intDigits
+		if scale == 0 {
+			return 0, 0, false
+		}
+	}
+	if i != len(s) || digits > 18 {
+		return 0, 0, false
+	}
+	if neg {
+		mant = -mant
+	}
+	return mant, scale, true
 }
 
 // newFloating builds an xs:double, or an xs:float rounded to single precision

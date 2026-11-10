@@ -489,7 +489,6 @@ func jsMarshalNumber(f float64) (string, error) {
 // fallback options and what replaces a character JSON allows but XML does not
 // with U+FFFD (json-to-xml-error-015's \u0000).
 func jsDecodeOrdered(t *jsTokenizer) (any, error) {
-	dec := t.dec
 	tok, err := t.token()
 	if err != nil {
 		return nil, fmt.Errorf("err:FOJS0001: invalid JSON: %v", err)
@@ -499,7 +498,7 @@ func jsDecodeOrdered(t *jsTokenizer) (any, error) {
 		switch v {
 		case '{':
 			o := &jsObj{}
-			for dec.More() {
+			for t.more() {
 				kt, err := t.token()
 				if err != nil {
 					return nil, fmt.Errorf("err:FOJS0001: invalid JSON: %v", err)
@@ -515,18 +514,18 @@ func jsDecodeOrdered(t *jsTokenizer) (any, error) {
 				// result tree and makes it unserializable (error-3250a).
 				o.put(jsReplaceInvalidXML(key), val)
 			}
-			dec.Token() // consume '}'
+			t.skipClose() // consume '}'
 			return o, nil
 		case '[':
 			arr := []any{}
-			for dec.More() {
+			for t.more() {
 				m, err := jsDecodeOrdered(t)
 				if err != nil {
 					return nil, err
 				}
 				arr = append(arr, m)
 			}
-			dec.Token() // consume ']'
+			t.skipClose() // consume ']'
 			return arr, nil
 		}
 	case json.Number:
@@ -736,13 +735,20 @@ func jsBoolOption(m *Map, key string) (val, present bool, err error) {
 // unpaired surrogate escape with U+FFFD, which loses exactly what the
 // escape/fallback options need to see (json-doc-019/021/024/025/026/039).
 type jsTokenizer struct {
-	dec  *json.Decoder
+	dec  *json.Decoder // nil in fast mode
 	src  string
 	prev int64 // input offset after the previous token
 	opts jsOptions
+	// fast is set when src is known to be valid JSON (newJSTokenizer): the
+	// tokens then come from fastToken, scanning src at pos, not from dec.
+	fast bool
+	pos  int
 }
 
 func (t *jsTokenizer) token() (json.Token, error) {
+	if t.fast {
+		return t.fastToken()
+	}
 	tok, err := t.dec.Token()
 	if err != nil {
 		return nil, err
@@ -931,14 +937,12 @@ func isValidXMLChar(r rune) bool {
 func jsParseWithOptions(s string, opts jsOptions) (Object, error) {
 	// A leading byte order mark is ignored (F&O 3.1 §17.5.1).
 	s = strings.TrimPrefix(s, "\uFEFF")
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.UseNumber()
-	tz := &jsTokenizer{dec: dec, src: s, opts: opts}
+	tz := newJSTokenizer(s, opts)
 	v, err := jsParseToken(tz, opts)
 	if err != nil {
 		return nil, err
 	}
-	if err := jsCheckTrailing(s, dec); err != nil {
+	if err := tz.trailing(); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -955,7 +959,7 @@ func jsParseToken(dec *jsTokenizer, opts jsOptions) (Object, error) {
 		case '{':
 			m := NewMap()
 			seen := map[string]bool{}
-			for dec.dec.More() {
+			for dec.more() {
 				kt, err := dec.token()
 				if err != nil {
 					return nil, jsParseErr(err)
@@ -985,7 +989,7 @@ func jsParseToken(dec *jsTokenizer, opts jsOptions) (Object, error) {
 			return m, nil
 		case '[':
 			members := []Object{}
-			for dec.dec.More() {
+			for dec.more() {
 				v, err := jsParseToken(dec, opts)
 				if err != nil {
 					return nil, err
@@ -2243,14 +2247,12 @@ func fnJSJSONToXML(ctx *Context, args []Object) (Object, error) {
 	}
 	// A leading byte order mark is ignored (F&O 3.1 §17.5.4).
 	src := strings.TrimPrefix(ToString(in), "\uFEFF")
-	dec := json.NewDecoder(strings.NewReader(src))
-	dec.UseNumber()
-	tok := &jsTokenizer{dec: dec, src: src, opts: opts}
+	tok := newJSTokenizer(src, opts)
 	v, err := jsDecodeOrdered(tok)
 	if err != nil {
 		return nil, err
 	}
-	if err := jsCheckTrailing(src, dec); err != nil {
+	if err := tok.trailing(); err != nil {
 		return nil, err
 	}
 	if reject {

@@ -471,6 +471,12 @@ var coreFuncs = func() map[string]coreFunc {
 			if err != nil {
 				return nil, err
 			}
+			if pat := ToString(a[1]); flags == "" && literalPattern(pat) {
+				// A pattern of plain characters (",", "; ") matches only
+				// itself, so splitting on the string is splitting on the
+				// regular expression, without compiling or matching one.
+				return stringsToSeq(strings.Split(input, pat)), nil
+			}
 			re, matchesEmpty, err := compileRegexEmpty(ToString(a[1]), flags)
 			if err != nil {
 				return nil, err
@@ -602,20 +608,20 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
-	items, err := Atomize(arg(a, i))
+	item, n, err := atomizeOperand(arg(a, i))
 	if err != nil {
 		return "", err
 	}
 	switch {
-	case len(items) == 0:
+	case n == 0:
 		if optional {
 			return "", nil
 		}
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must not be empty", fn, i+1)
-	case len(items) > 1:
+	case n > 1:
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must be a single string", fn, i+1)
 	}
-	at, ok := items[0].(*Atomic)
+	at, ok := item.(*Atomic)
 	if !ok || !isComparableAsString(at) {
 		return "", fmt.Errorf("err:XPTY0004: fn:%s argument %d must be an xs:string", fn, i+1)
 	}
@@ -719,8 +725,38 @@ func fnName(c *Context, a []Object) (Object, error) {
 	return n.Name.Local, nil
 }
 
+// literalPattern reports whether a regular expression is a non-empty string
+// of ASCII letters, digits, spaces and punctuation that are not
+// metacharacters (none of . [ ] ( ) { } * + ? ^ $ | \ and no '#' or '-'),
+// so that it matches exactly itself, never the empty string, and is valid
+// under every flag-free interpretation of the XSD regex grammar.
+func literalPattern(p string) bool {
+	if p == "" {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == ' ', c == ',', c == ';', c == ':', c == '_', c == '=', c == '/', c == '@', c == '!',
+			c == '%', c == '&', c == '\'', c == '"', c == '<', c == '>', c == '~', c == '`':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func fnConcat(c *Context, a []Object) (Object, error) {
-	var b strings.Builder
+	// The parts are collected first so the result is built in one
+	// allocation of its final size, not grown piece by piece.
+	var buf [8]string
+	parts := buf[:0]
+	total := 0
+	add := func(s string) {
+		parts = append(parts, s)
+		total += len(s)
+	}
 	for _, x := range a {
 		// Each argument is xs:anyAtomicType?: a plural sequence is XPTY0004
 		// (K2-ConcatFunc-1..3), a map or function item cannot be atomized
@@ -740,16 +776,36 @@ func fnConcat(c *Context, a []Object) (Object, error) {
 					return nil, fmt.Errorf("err:XPTY0004: concat: argument atomizes to %d items", len(atoms))
 				}
 				if len(atoms) == 1 {
-					b.WriteString(itemString(atoms[0]))
+					add(itemString(atoms[0]))
 				}
 				continue
 			case *Map, *Function:
 				return nil, fmt.Errorf("err:FOTY0013: concat: cannot atomize a %T", v)
 			}
 		}
-		b.WriteString(ToString(x))
+		add(ToString(x))
 	}
-	return b.String(), nil
+	return joinParts(parts, total, ""), nil
+}
+
+// joinParts concatenates parts, whose lengths add up to total, with sep
+// between them, in one allocation.
+func joinParts(parts []string, total int, sep string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	}
+	var b strings.Builder
+	b.Grow(total + len(sep)*(len(parts)-1))
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(p)
+	}
+	return b.String()
 }
 
 // The substring-matching functions take an optional third $collation argument
@@ -1429,14 +1485,15 @@ func joinNodeStrings(ns NodeSet, sep string) string {
 	if len(ns) == 1 {
 		return ns[0].StringValue()
 	}
-	var b strings.Builder
-	for i, n := range ns {
-		if i > 0 {
-			b.WriteString(sep)
-		}
-		b.WriteString(n.StringValue())
+	var buf [16]string
+	parts := buf[:0]
+	total := 0
+	for _, n := range ns {
+		s := n.StringValue()
+		parts = append(parts, s)
+		total += len(s)
 	}
-	return b.String()
+	return joinParts(parts, total, sep)
 }
 
 // flagsArg returns the caller-supplied $flags value when the argument at

@@ -728,7 +728,7 @@ func evalExprNode(e Expr, ctx *Context) (Object, error) {
 			if err != nil {
 				return nil, err
 			}
-			items = append(items, Items(v)...)
+			items = appendItems(items, v)
 		}
 		return FromItems(items), nil
 	case *RangeExpr:
@@ -951,18 +951,38 @@ func evalFor(binds []VarBind, i int, ctx *Context, body Expr) (Object, error) {
 	}
 	key := varKey(ctx, binds[i].Prefix, binds[i].Local)
 	var out []Item
+	// One scratch context per loop (a copy of ctx, as withLocal makes),
+	// overwritten per item and replaced only once an evaluation captured it
+	// (as in applyPredicateOrdered). The binding itself is a fresh localScope
+	// per item: copies of the context made inside the body share it by
+	// pointer, so it is never overwritten.
+	var sub *Context
 	for _, it := range Items(seqV) {
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
-		child := withLocal(ctx, key, FromItems([]Item{it}))
-		r, err := evalFor(binds, i+1, child, body)
+		if sub == nil || sub.captured {
+			sub = new(Context)
+		}
+		*sub = *ctx
+		sub.captured = false
+		sub.locals = &localScope{parent: ctx.locals, key: key, val: singleItem(it)}
+		r, err := evalFor(binds, i+1, sub, body)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Items(r)...)
+		out = appendItems(out, r)
 	}
 	return FromItems(out), nil
+}
+
+// singleItem is FromItems([]Item{it}) without the slice: a node becomes a
+// one-node NodeSet, anything else is the item itself.
+func singleItem(it Item) Object {
+	if n, ok := it.(*xmltree.Node); ok {
+		return NodeSet{n}
+	}
+	return it
 }
 
 func evalQuant(every bool, binds []VarBind, i int, ctx *Context, test Expr) (bool, error) {
@@ -1184,18 +1204,18 @@ func evalLookup(n *LookupExpr, ctx *Context) (Object, error) {
 		case *Map:
 			if n.Wild {
 				v.Range(func(_ Item, val Object) bool {
-					out = append(out, Items(val)...)
+					out = appendItems(out, val)
 					return true
 				})
 			} else {
 				for _, k := range keys {
-					out = append(out, Items(v.Get(k))...)
+					out = appendItems(out, v.Get(k))
 				}
 			}
 		case *Array:
 			if n.Wild {
 				for _, m := range v.Members() {
-					out = append(out, Items(m)...)
+					out = appendItems(out, m)
 				}
 			} else {
 				for _, k := range keys {
@@ -1211,7 +1231,7 @@ func evalLookup(n *LookupExpr, ctx *Context) (Object, error) {
 					if idx < 1 || idx > v.Size() {
 						return nil, fmt.Errorf("err:FOAY0001: array index %d out of bounds [1,%d]", idx, v.Size())
 					}
-					out = append(out, Items(v.Get(idx))...)
+					out = appendItems(out, v.Get(idx))
 				}
 			}
 		default:
@@ -1432,7 +1452,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 				if err != nil {
 					return nil, err
 				}
-				items = append(items, Items(v)...)
+				items = appendItems(items, v)
 			}
 			// XPath 3.1 §3.3.3: when E1/E2 yields NODES the result is returned
 			// in document order with duplicates eliminated. That applies to a
@@ -1558,7 +1578,7 @@ func staticStepUnion(e Expr) (ls, rs *Step, ok bool) {
 		return nil, nil, false
 	}
 	ls, rs = unionStep(u.L), unionStep(u.R)
-	if ls == nil || rs == nil || !testNeedsOnlyDefaultNS(ls.Test) || !testNeedsOnlyDefaultNS(rs.Test) {
+	if ls == nil || rs == nil || !testNeedsOnlyDefaultNS(&ls.Test) || !testNeedsOnlyDefaultNS(&rs.Test) {
 		return nil, nil, false
 	}
 	return ls, rs, true
@@ -1603,7 +1623,7 @@ func appendMatches(dst, candidates NodeSet, step *Step, ctx *Context, pc *prefix
 	broad := t.Kind == testNode ||
 		(t.Kind == testName && t.AnyName && !t.WildNS && t.Prefix == "" && !t.Braced)
 	for i, c := range candidates {
-		ok, err := matchTestC(step.Test, step.Axis, c, ctx, pc)
+		ok, err := matchTestC(&step.Test, step.Axis, c, ctx, pc)
 		if err != nil {
 			return nil, err
 		}
@@ -1628,7 +1648,7 @@ func evalStep(step *Step, cn *xmltree.Node, ctx *Context, pc *prefixCache) (Node
 		// count grows with the WHOLE subtree, not with one node's immediate
 		// neighborhood the way child/attribute/sibling do.
 		if step.Axis == "descendant-or-self" {
-			ok, err := matchTestC(step.Test, step.Axis, cn, ctx, pc)
+			ok, err := matchTestC(&step.Test, step.Axis, cn, ctx, pc)
 			if err != nil {
 				return nil, err
 			}
@@ -1636,7 +1656,7 @@ func evalStep(step *Step, cn *xmltree.Node, ctx *Context, pc *prefixCache) (Node
 				matched = append(matched, cn)
 			}
 		}
-		if err := collectDescendantsFiltered(cn, step.Test, step.Axis, ctx, pc, &matched); err != nil {
+		if err := collectDescendantsFiltered(cn, &step.Test, step.Axis, ctx, pc, &matched); err != nil {
 			return nil, err
 		}
 	default:
@@ -2115,7 +2135,7 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, Items(r)...)
+			out = appendItems(out, r)
 		}
 		cur = FromItems(out)
 	}
