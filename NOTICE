@@ -11,7 +11,7 @@ desktop app, in its Licenses view (toolbar).
 Go standard library and code derived from it
 --------------------------------------------
   FreeBSD msun e_exp.c (via Go math.Exp) - SunPro - Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
-  Go standard library go1.26.10 - BSD-3-Clause - Copyright 2009 The Go Authors.
+  Go standard library go1.26.11 - BSD-3-Clause - Copyright 2009 The Go Authors.
 
 Go modules (the library needs only golang.org/x/text; the desktop app the rest)
 -------------------------------------------------------------------------------
@@ -83,7 +83,7 @@ Permission to use, copy, modify, and distribute this
 software is freely granted, provided that this notice
 is preserved.
 
-Go standard library go1.26.10 (BSD-3-Clause)
+Go standard library go1.26.11 (BSD-3-Clause)
 Linked into every binary (library CLI and desktop app); internal/xpath/exp.go is also a copy of its math.Exp.
 
 Copyright 2009 The Go Authors.

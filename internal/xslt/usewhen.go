@@ -455,6 +455,19 @@ func (c *compiler) expandShadowAttrs(el *xmltree.Node) error {
 		return nil
 	}
 	xsltElem := el.Name.Space == NS
+	// Almost no element has a shadow attribute: find out before copying the
+	// attribute list (SetAttr below may append to el.Attrs while it is
+	// ranged over, so the copy is only needed when one exists).
+	has := false
+	for _, a := range el.Attrs {
+		if len(a.Name.Local) >= 2 && a.Name.Local[0] == '_' {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return nil
+	}
 	for _, a := range append([]*xmltree.Node(nil), el.Attrs...) {
 		if !strings.HasPrefix(a.Name.Local, "_") || len(a.Name.Local) < 2 {
 			continue
@@ -539,17 +552,28 @@ func (c *compiler) staticResolver() xpath.ResourceResolver {
 // pruneUseWhen recursively removes element children whose use-when evaluates to
 // false in the static context.
 func (c *compiler) pruneUseWhen(node *xmltree.Node) error {
-	var kept []*xmltree.Node
-	for _, ch := range node.Children {
+	// The survivors are compacted in place: a survivor's new index is never
+	// above its old one, and the tree is this compilation's own, so nothing
+	// else reads the slice meanwhile. A list no child leaves is untouched
+	// (the common case — one allocation per element with children before).
+	kept := node.Children[:0]
+	for i, ch := range node.Children {
 		keep, err := c.pruneChild(ch)
 		if err != nil {
 			return err
 		}
 		if keep {
-			kept = append(kept, ch)
+			if len(kept) != i {
+				kept = append(kept, ch)
+			} else {
+				kept = kept[:i+1]
+			}
 		}
 	}
-	node.Children = kept
+	if len(kept) != len(node.Children) {
+		clear(node.Children[len(kept):]) // pruned subtrees become garbage
+		node.Children = kept
+	}
 	return nil
 }
 

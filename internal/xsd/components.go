@@ -368,6 +368,10 @@ type Schema struct {
 	// assertListItems: the item type's own name for the nodes assertAnnos
 	// marks as lists, when it has one. Same lifetime as assertAnnos.
 	assertListItems map[*xmltree.Node]*xmltree.SchemaTypeName
+	// assertOpen counts the open elements whose complex type has effective
+	// assertions: while it is zero, assertAnnos holds nothing that will be
+	// read, and validateComplex empties it. Per call, like assertAnnos.
+	assertOpen int
 	// coll collects every error of a Validate call (nil on ValidateNode).
 	coll *collector
 	// interrupt, set for one ValidateOptsCtx call, is polled for every

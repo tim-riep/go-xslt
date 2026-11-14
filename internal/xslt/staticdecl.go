@@ -287,6 +287,15 @@ func (c *compiler) loadStaticModule(el *xmltree.Node, baseDir string, seen map[s
 		return nil, "", "", false
 	}
 	seen[abs] = true
+	// loadFile parses this same file again for the compile proper, from
+	// the same text with the same base, and this pass changes the tree
+	// only as applyStatic will again (shadow attributes, idempotent) — the
+	// principal module is already shared between the two passes this way.
+	// So the document is kept for it (see compiler.staticParsed).
+	if c.staticParsed == nil {
+		c.staticParsed = map[string][]*xmltree.Node{}
+	}
+	c.staticParsed[abs] = append(c.staticParsed[abs], doc)
 	return sub, filepath.Dir(abs), abs, true
 }
 

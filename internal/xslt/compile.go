@@ -917,6 +917,7 @@ func compileModule(src, baseDir, selfPath string, hostStatic map[string]string, 
 	// Gather modules in import-precedence order (lowest first), then compile.
 	c.principalRoot = root
 	mods, err := c.gatherModules(root, baseDir, map[string]bool{})
+	c.staticParsed = nil // consumed (an error discards the compiler anyway)
 	if err != nil {
 		return nil, err
 	}
@@ -1599,10 +1600,16 @@ type compiler struct {
 	importPrec  int
 	// importLo is the lowest import precedence the module now being compiled
 	// transitively imports; see modChildren.importLo.
-	importLo       int
-	order          int
-	staticParams   map[string]xpath.Object            // static="yes" parameters, for use-when (clark name -> value)
-	staticRes      xpath.ResourceResolver             // fn:doc resolver for static expressions (see staticResolver)
+	importLo     int
+	order        int
+	staticParams map[string]xpath.Object // static="yes" parameters, for use-when (clark name -> value)
+	staticRes    xpath.ResourceResolver  // fn:doc resolver for static expressions (see staticResolver)
+	// staticParsed holds, by absolute path, the module documents the static
+	// pass (loadStaticModule) parsed, for loadFile to take instead of
+	// reading and parsing the same file again. Each document is handed out
+	// once: a module reached twice through the include/import graph gets a
+	// tree of its own from the second parse, exactly as before.
+	staticParsed   map[string][]*xmltree.Node
 	nsAlias        map[string]xmltree.Name            // xsl:namespace-alias: stylesheet URI -> result {Space, Prefix}
 	nsAliasPkg     map[string]map[string]xmltree.Name // per-package tables when several packages take part (scope.go)
 	nsAliasPrecPkg map[string]map[string]int
@@ -2581,16 +2588,40 @@ func isXSLTTrue(v string) bool {
 	return v == "yes" || v == "true" || v == "1"
 }
 
+// instructionsUpTo bounds the instructions compileSequence makes of
+// nodes[i:]: its elements and the text nodes that are not whitespace only
+// (the whitespace between elements is stripped, whether or not xml:space
+// keeps it, so counting it would double the list's capacity). It sizes the
+// list once, at the first instruction, in place of the 1-2-4-8 regrowth.
+func instructionsUpTo(nodes []*xmltree.Node, i int) int {
+	n := 0
+	for _, c := range nodes[i:] {
+		switch c.Kind {
+		case xmltree.KindElement:
+			n++
+		case xmltree.KindText:
+			if !isXMLSpaceOnly(c.Value) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // compileSequence compiles the children (in document order, including text) of
 // a template-body element into instructions.
 func (c *compiler) compileSequence(nodes []*xmltree.Node) ([]instruction, error) {
 	var out []instruction
-	for _, n := range mergeTextAcrossComments(nodes) {
+	nodes = mergeTextAcrossComments(nodes)
+	for i, n := range nodes {
 		switch n.Kind {
 		case xmltree.KindText:
 			if isXMLSpaceOnly(n.Value) && (!xmlSpacePreserved(n) || stripDespiteXMLSpace(n)) {
 				// Strip whitespace-only text nodes from the stylesheet.
 				continue
+			}
+			if out == nil {
+				out = make([]instruction, 0, instructionsUpTo(nodes, i))
 			}
 			if c.expandTextFor(n) {
 				a, err := parseAVTFor(n, n.Value) // TVT uses the same {expr} syntax as AVTs
@@ -2611,6 +2642,9 @@ func (c *compiler) compileSequence(nodes []*xmltree.Node) ([]instruction, error)
 				return nil, err
 			}
 			if ins != nil {
+				if out == nil {
+					out = make([]instruction, 0, instructionsUpTo(nodes, i))
+				}
 				out = append(out, ins)
 			}
 		}
@@ -3612,28 +3646,39 @@ func elementChildren(n *xmltree.Node) []*xmltree.Node {
 // childNodesForBody returns body children (text + elements) excluding leading
 // xsl:param and xsl:sort/with-param housekeeping children.
 func childNodesForBody(el *xmltree.Node) []*xmltree.Node {
-	var out []*xmltree.Node
-	for _, c := range el.Children {
-		if c.Kind == xmltree.KindElement && c.Name.Space == NS {
-			switch c.Name.Local {
-			case "param", "sort", "with-param":
-				continue
-			}
+	return childrenExcept(el, func(c *xmltree.Node) bool {
+		switch c.Name.Local {
+		case "param", "sort", "with-param":
+			return true
 		}
-		out = append(out, c)
-	}
-	return out
+		return false
+	})
 }
 
 func nonSortChildren(el *xmltree.Node) []*xmltree.Node {
-	var out []*xmltree.Node
-	for _, c := range el.Children {
-		if c.Kind == xmltree.KindElement && c.Name.Space == NS && c.Name.Local == "sort" {
-			continue
+	return childrenExcept(el, func(c *xmltree.Node) bool { return c.Name.Local == "sort" })
+}
+
+// childrenExcept is el's children without the xsl: elements skip reports.
+// Most bodies have none to drop, and then the result is el's own list,
+// capped at its length so an append by the caller can never write into the
+// tree — every caller only reads it.
+func childrenExcept(el *xmltree.Node, skip func(*xmltree.Node) bool) []*xmltree.Node {
+	kids := el.Children
+	for i, c := range kids {
+		if c.Kind == xmltree.KindElement && c.Name.Space == NS && skip(c) {
+			out := make([]*xmltree.Node, i, len(kids)-1)
+			copy(out, kids[:i])
+			for _, c := range kids[i+1:] {
+				if c.Kind == xmltree.KindElement && c.Name.Space == NS && skip(c) {
+					continue
+				}
+				out = append(out, c)
+			}
+			return out
 		}
-		out = append(out, c)
 	}
-	return out
+	return kids[:len(kids):len(kids)]
 }
 
 func requireExpr(el *xmltree.Node, attr string) (*xpath.Parsed, error) {

@@ -30,8 +30,9 @@ import (
 // encoding/xml accepts something XML 1.0 forbids, this tokenizer accepts it
 // too: the reference is the decoder parseRaw used, not the spec.
 //
-// stream.go's incremental reader still uses encoding/xml: it reads from an
-// io.Reader, where substrings of a whole source do not exist.
+// stream.go's incremental reader runs it too, over a window of its input
+// (stream_tok.go), so a streamed document's names and text are substrings
+// of the window they were read in.
 type tokenizer struct {
 	s   string
 	pos int // the decoder's InputOffset: everything before it is consumed
@@ -57,6 +58,14 @@ type tokenizer struct {
 	buf []byte
 	// nameASCII: the name the last successful readName took is all ASCII.
 	nameASCII bool
+
+	// The streaming reader runs this tokenizer over a WINDOW of its input
+	// (stream_tok.go): lineBase is the number of newlines before s, so an
+	// error names the right line, and noDecode tells xmlDecl that the
+	// input already arrives decoded (the window cannot be re-read through
+	// a charset decoder). Both are zero for a whole-source parse.
+	lineBase int
+	noDecode bool
 }
 
 type tokKind uint8
@@ -81,7 +90,7 @@ func (t *tokenizer) textBytes() []byte { return t.data }
 // syntaxError is encoding/xml's SyntaxError at the current position: its
 // line is one more than the newlines consumed so far.
 func (t *tokenizer) syntaxError(msg string) error {
-	return &xml.SyntaxError{Msg: msg, Line: 1 + strings.Count(t.s[:t.pos], "\n")}
+	return &xml.SyntaxError{Msg: msg, Line: 1 + t.lineBase + strings.Count(t.s[:t.pos], "\n")}
 }
 
 func (t *tokenizer) getc() (byte, bool) {
@@ -333,7 +342,7 @@ func (t *tokenizer) xmlDecl(content string) bool {
 		return false
 	}
 	enc := procInstParam("encoding", content)
-	if enc == "" || strings.EqualFold(enc, "utf-8") {
+	if enc == "" || strings.EqualFold(enc, "utf-8") || t.noDecode {
 		return true
 	}
 	in := strings.NewReader(t.s[t.pos:])

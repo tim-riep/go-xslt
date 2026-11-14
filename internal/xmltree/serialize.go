@@ -92,8 +92,14 @@ type SerializeOptions struct {
 
 // xmlVersion11 reports whether the xml/xhtml output version is 1.1.
 func (s *serializer) xmlVersion11() bool {
-	return strings.TrimSpace(s.opts.XMLVersion) == "1.1" &&
-		(s.opts.Method == "" || s.opts.Method == "xml" || s.opts.Method == "xhtml")
+	// Decided once: opts never change after construction, and this is asked
+	// for every text node and attribute.
+	if !s.v11OK {
+		s.v11 = strings.TrimSpace(s.opts.XMLVersion) == "1.1" &&
+			(s.opts.Method == "" || s.opts.Method == "xml" || s.opts.Method == "xhtml")
+		s.v11OK = true
+	}
+	return s.v11
 }
 
 // isXMLControlChar reports whether r is a control character that an XML 1.1
@@ -432,6 +438,14 @@ type serializer struct {
 	// html5 is htmlVersion5(opts.HTMLVersion) for the html and xhtml
 	// methods, computed in newSerializer.
 	html5 bool
+	// v11 caches xmlVersion11() once v11OK is set, for the same reason.
+	v11   bool
+	v11OK bool
+	// defURI mirrors prefixes[""] (defOK: the entry exists): the default
+	// namespace in scope, read for every no-namespace element without the
+	// map lookup. declare and undeclare keep it current.
+	defURI string
+	defOK  bool
 }
 
 // encLimit is encodingLimit(s.opts.Encoding), computed once.
@@ -524,6 +538,7 @@ func (s *serializer) declare(pfx, uri string, saves *[]nsSave) string {
 	s.declared[uri] = pfx
 	s.prefixes[pfx] = uri
 	if pfx == "" {
+		s.defURI, s.defOK = uri, true
 		return ` xmlns="` + escapeAttr(uri) + `"`
 	}
 	return ` xmlns:` + pfx + `="` + escapeAttr(uri) + `"`
@@ -756,7 +771,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 			}
 		}
 		if ownDefault == "" {
-			if cur, ok := s.prefixes[""]; ok && cur != "" {
+			if s.defOK && s.defURI != "" {
 				decls.WriteString(s.declare("", "", &saves))
 			}
 		}
@@ -768,7 +783,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		qname = n.Name.Local
 		// A default namespace in scope must be undeclared for a no-namespace
 		// element.
-		if cur, ok := s.prefixes[""]; ok && cur != "" {
+		if s.defOK && s.defURI != "" {
 			decls.WriteString(s.declare("", "", &saves))
 		}
 	} else if normalizePfx && htmlFamilyNS[n.Name.Space] {
@@ -777,7 +792,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		// the default in scope, so a run of sibling XHTML elements declares it
 		// just once, on their common ancestor).
 		qname = n.Name.Local
-		if cur, ok := s.prefixes[""]; !ok || cur != n.Name.Space {
+		if !s.defOK || s.defURI != n.Name.Space {
 			decls.WriteString(s.declare("", n.Name.Space, &saves))
 		}
 	} else {
@@ -983,6 +998,9 @@ func (s *serializer) undeclare(saves []nsSave) {
 		} else {
 			delete(s.prefixes, sv.pfx)
 		}
+		if sv.pfx == "" {
+			s.defURI, s.defOK = sv.prevURI, sv.hadPfx
+		}
 	}
 }
 
@@ -1087,14 +1105,20 @@ func writeTextValue(b outWriter, n *Node) {
 // after Unicode normalization (opts.NormalizationForm) — normalization never
 // touches a character map's own raw replacement text.
 func (s *serializer) mapChars(v string, esc func(string) string) string {
+	cmap := s.opts.CharacterMap
+	if len(cmap) == 0 {
+		// The rule: no character map. Straight through, without the
+		// closures the general case below builds for every call.
+		v = s.normalize(v)
+		if esc == nil {
+			return v
+		}
+		return esc(v)
+	}
 	if esc == nil {
 		esc = func(x string) string { return x }
 	}
 	normEsc := func(x string) string { return esc(s.normalize(x)) }
-	cmap := s.opts.CharacterMap
-	if len(cmap) == 0 {
-		return normEsc(v)
-	}
 	var b, run strings.Builder
 	flush := func() {
 		if run.Len() > 0 {
@@ -1258,8 +1282,45 @@ const (
 	attrXMLSpecials = "&<>\"\t\n\r"
 )
 
+// The pre-check tables: byte -> which escapers must look at it (a bit per
+// escaper). strings.IndexAny builds its own ASCII set from the specials on
+// every call; one table lookup per byte needs no set-up, and the values
+// here are mostly short.
+const (
+	escText    = 1 << iota // textSpecials
+	escTextXML             // textXMLSpecials
+	escAttr                // attrSpecials
+	escAttrXML             // attrXMLSpecials
+)
+
+var escapeClass = func() (t [256]uint8) {
+	for _, c := range []byte(textSpecials) {
+		t[c] |= escText
+	}
+	for _, c := range []byte(textXMLSpecials) {
+		t[c] |= escTextXML
+	}
+	for _, c := range []byte(attrSpecials) {
+		t[c] |= escAttr
+	}
+	for _, c := range []byte(attrXMLSpecials) {
+		t[c] |= escAttrXML
+	}
+	return
+}()
+
+// needsEscape reports whether s holds a byte of the escaper class.
+func needsEscape(s string, class uint8) bool {
+	for i := 0; i < len(s); i++ {
+		if escapeClass[s[i]]&class != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func escapeText(s string) string {
-	if strings.IndexAny(s, textSpecials) < 0 {
+	if !needsEscape(s, escText) {
 		return s
 	}
 	return textReplacer.Replace(s)
@@ -1270,7 +1331,7 @@ func escapeText(s string) string {
 // on re-parse (Serialization 3.1 §6.1.4; xml-version-002/020 round-trip
 // &#13; through a text node).
 func escapeTextXML(s string) string {
-	if strings.IndexAny(s, textXMLSpecials) < 0 {
+	if !needsEscape(s, escTextXML) {
 		return s
 	}
 	return textXMLReplacer.Replace(s)
@@ -1282,7 +1343,7 @@ func escapeTextXML(s string) string {
 // both require &#34;/&#x22;, never &quot;, and nothing in the suite expects
 // &quot; either, so this is a safe, not just test-fitted, choice).
 func escapeAttr(s string) string {
-	if strings.IndexAny(s, attrSpecials) < 0 {
+	if !needsEscape(s, escAttr) {
 		return s
 	}
 	return attrReplacer.Replace(s)
@@ -1295,7 +1356,7 @@ func escapeAttr(s string) string {
 // The html output method has no such normalization step, so it keeps using
 // plain escapeAttr.
 func escapeAttrXML(s string) string {
-	if strings.IndexAny(s, attrXMLSpecials) < 0 {
+	if !needsEscape(s, escAttrXML) {
 		return s
 	}
 	return attrXMLReplacer.Replace(s)
