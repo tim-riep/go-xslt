@@ -255,7 +255,37 @@ libxslt's time to where it is now:
   HTML output workload: 4 %). No workload executes more instructions than
   before, and every output is byte-identical.
 
-The sixth to eleventh rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a twelfth round, part B, on the readers, the validator and the compiler
+  (part A, in parallel, took the evaluator). The streaming reader allocated
+  a child list for every element that had any children, most of them leaves
+  holding one text node; a streamed element's allocation now carries the
+  slot for its first child, which costs nothing — a node is 152 bytes, so an
+  element with up to three attributes ended 8 bytes short of its allocation
+  size class — and the reader keeps one frame per open element in place of
+  three stacks (streaming the 200,000-record document: 17 % fewer
+  allocations, 5 % fewer instructions). The parser looked every token's
+  line and column up, scanned each element's attributes a second time for
+  xml:space, and kept six parallel stacks of what it knows about the open
+  elements; it now looks a position up only where a node or an error
+  message keeps it, notes xml:space while it resolves the attributes, and
+  keeps one frame per open element (copying the whole document: 5 % fewer
+  instructions; every workload that parses the large document 2–5 %
+  fewer). The validator found an element's xsi:type and xsi:nil, and the
+  XSD 1.0 schema-location hints, with one pass over the attributes per
+  name, and looked each child's declaration up by hashing its name; it now
+  finds them in one pass, and a content model of up to eight declared names
+  is searched as a list kept in the model itself (XSD 1.0 validation of the
+  200,000-order document: 7 % fewer instructions in all, with the parser's
+  share). The compiler asked, for every whitespace-only text node of a
+  stylesheet, whether xml:space preserves it by walking its ancestors; it
+  asks once per parent element (compiling the DocBook stylesheets: 3 %
+  fewer instructions). No workload executes more instructions than
+  before, and every output is byte-identical. Tried and dropped:
+  lower-casing each attribute name once in the HTML serializer saved 1 %
+  on the HTML workload but cost the xml output method a check per
+  attribute (0.5 % more instructions on the identity workload).
+
+The sixth to twelfth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 

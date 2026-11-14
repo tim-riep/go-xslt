@@ -89,9 +89,10 @@ type StreamReader struct {
 	// (expansionLimit of the input read).
 	textBytes int
 	doc       *Node
-	stack     []*Node
-	nsStack   []map[string]string
-	rawNames  []xml.Name
+	// open has one frame per open element under one for the document node:
+	// the node, its namespace scope and its name AS WRITTEN (prefix in
+	// Space) for the end-tag check the tokenizer leaves to its caller.
+	open []streamFrame
 
 	// order/tree stamp nodes as they are created, in the same sequence
 	// assignOrder would have used for a completed tree. See stamp.
@@ -126,6 +127,12 @@ type StreamReader struct {
 	// refusal reaches the caller before it has acted on anything.
 	primed   StreamEvent
 	hasPrime bool
+}
+
+type streamFrame struct {
+	node  *Node
+	frame map[string]string // prefix -> uri (default prefix "")
+	raw   xml.Name
 }
 
 // NewStreamReader starts an incremental parse of r. It returns
@@ -171,11 +178,11 @@ func newStreamReaderChunk(r io.Reader, chunk int) (*StreamReader, error) {
 	s := &StreamReader{
 		tok:        newStreamTokenizer(in, chunk),
 		doc:        doc,
-		stack:      []*Node{doc},
-		nsStack:    []map[string]string{{"xml": "http://www.w3.org/XML/1998/namespace", "": ""}},
+		open:       make([]streamFrame, 1, 8),
 		tree:       atomic.AddUint64(&treeSeq, 1),
 		nameIntern: make(map[string]string),
 	}
+	s.open[0] = streamFrame{node: doc, frame: map[string]string{"xml": "http://www.w3.org/XML/1998/namespace", "": ""}}
 	s.stamp(doc)
 	// Priming. The DOCTYPE is the other place a document can turn out to be
 	// unstreamable, and it is only seen once tokenizing starts. Reading the
@@ -231,7 +238,7 @@ func streamDecode(r io.Reader) (io.Reader, error) {
 func (s *StreamReader) Doc() *Node { return s.doc }
 
 // Depth is the current element depth (0 = at document level).
-func (s *StreamReader) Depth() int { return len(s.stack) - 1 }
+func (s *StreamReader) Depth() int { return len(s.open) - 1 }
 
 // stamp assigns the next document-order index and this document's tree stamp.
 //
@@ -260,7 +267,7 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 	for {
 		kind, err := s.tok.next()
 		if err == io.EOF {
-			if len(s.rawNames) != 0 {
+			if len(s.open) > 1 {
 				return StreamEvent{}, errors.New("unexpected end of document: unclosed elements")
 			}
 			return StreamEvent{Kind: StreamEOF}, nil
@@ -285,18 +292,18 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 					return StreamEvent{}, fmt.Errorf("namespace constraint No Prefix Undeclaring: xmlns:%s may not be empty in an XML 1.0 document", a.Name.Local)
 				}
 			}
-			if len(s.rawNames) >= MaxDepth {
+			if len(s.open)-1 >= MaxDepth {
 				return StreamEvent{}, errTooDeep
 			}
 			el := s.startElement(t)
-			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.stack) - 1}, nil
+			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.open) - 1}, nil
 
 		case tokEnd:
 			el, err := s.endElement(xml.EndElement{Name: tz.name})
 			if err != nil {
 				return StreamEvent{}, err
 			}
-			return StreamEvent{Kind: StreamExit, Node: el, Depth: len(s.stack)}, nil
+			return StreamEvent{Kind: StreamExit, Node: el, Depth: len(s.open)}, nil
 
 		case tokText:
 			text := s.text()
@@ -304,14 +311,14 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 				return StreamEvent{}, err
 			}
 			if n := s.charData(text); n != nil {
-				return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
+				return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.open) - 1}, nil
 			}
 
 		case tokComment:
 			n := &Node{Kind: KindComment, Value: tz.str}
 			s.stamp(n)
 			s.top().Append(n)
-			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
+			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.open) - 1}, nil
 
 		case tokPI:
 			if tz.target == "xml" {
@@ -320,7 +327,7 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			n := &Node{Kind: KindPI, Name: Name{Local: tz.target}, Value: tz.str}
 			s.stamp(n)
 			s.top().Append(n)
-			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.stack) - 1}, nil
+			return StreamEvent{Kind: StreamLeaf, Node: n, Depth: len(s.open) - 1}, nil
 
 		case tokDirective:
 			if err := s.directive(xml.Directive(tz.data)); err != nil {
@@ -371,7 +378,7 @@ func (s *StreamReader) countAttrs(attrs []xml.Attr) error {
 	return s.countText(n)
 }
 
-func (s *StreamReader) top() *Node { return s.stack[len(s.stack)-1] }
+func (s *StreamReader) top() *Node { return s.open[len(s.open)-1].node }
 
 // directive handles the DOCTYPE, the only directive that carries information
 // the tree needs. Everything it reads comes from the INTERNAL subset: an
@@ -453,7 +460,7 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 	// Lazy-clone, same reasoning as the buffered parser's identical gate in
 	// parse.go: most elements declare no namespace of their own, so reuse the
 	// parent's frame reference until a decl actually forces a copy.
-	frame := s.nsStack[len(s.nsStack)-1]
+	frame := s.open[len(s.open)-1].frame
 	cloned := false
 	var decls []*Node
 	if d := s.attrDefaults[t.Name.Local]; len(d) > 0 {
@@ -485,9 +492,9 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 	// longer than before, and a record of a few attributes costs one
 	// allocation instead of one per node plus the regrowth of Attrs.
 	nAttrs := len(t.Attr) - len(decls)
-	slab, attrs := streamElementSlab(nAttrs)
+	slab, attrs, kids := streamElementSlab(nAttrs)
 	el := &slab[0]
-	el.Kind, el.Name = KindElement, resolveRawName(frame, t.Name, false)
+	el.Kind, el.Name, el.Children = KindElement, resolveRawName(frame, t.Name, false), kids
 	el.SetNSDecls(decls)
 	// Stamping order is element, then its namespace nodes, then its
 	// attributes, then (as they arrive) its children — exactly assignOrder's
@@ -539,55 +546,68 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 		}
 	}
 	s.appendChild(s.top(), el)
-	s.stack = append(s.stack, el)
-	s.nsStack = append(s.nsStack, frame)
-	s.rawNames = append(s.rawNames, t.Name)
+	s.open = append(s.open, streamFrame{node: el, frame: frame, raw: t.Name})
 	return el
 }
 
-// Element records with one to three attributes, the common shapes, come
-// from one allocation holding the attribute pointer list as well; the
-// pointers stay in the element's own allocation, which its attributes keep
-// alive through Parent anyway, so nothing lives longer than before.
+// Element records with up to three attributes, the common shapes, come
+// from one allocation holding the attribute pointer list and the slot for
+// the first child as well; the pointers stay in the element's own
+// allocation, which its attributes and children keep alive through Parent
+// anyway, so nothing lives longer than before. The child slot is free: a
+// node is 152 bytes, so each of these shapes ends 8 bytes short of its
+// allocation size class (160, 320, 480, 640), and most elements are leaves
+// holding one text node, which then needs no child list of its own.
+type streamElem0 struct {
+	nodes [1]Node
+	kid   [1]*Node
+}
+
 type streamElem1 struct {
 	nodes [2]Node
 	ptrs  [1]*Node
+	kid   [1]*Node
 }
 
 type streamElem2 struct {
 	nodes [3]Node
 	ptrs  [2]*Node
+	kid   [1]*Node
 }
 
 type streamElem3 struct {
 	nodes [4]Node
 	ptrs  [3]*Node
+	kid   [1]*Node
 }
 
 // streamElementSlab allocates an element node followed by nAttrs attribute
-// nodes, and the empty attribute list to append them to (nil for none).
-func streamElementSlab(nAttrs int) (nodes []Node, attrs []*Node) {
+// nodes, the empty attribute list to append them to (nil for none), and the
+// empty child list to append the first child to (nil for the shapes that
+// have no slot of their own).
+func streamElementSlab(nAttrs int) (nodes []Node, attrs, kids []*Node) {
 	switch nAttrs {
 	case 0:
-		return make([]Node, 1), nil
+		e := &streamElem0{}
+		return e.nodes[:], nil, e.kid[:0]
 	case 1:
 		e := &streamElem1{}
-		return e.nodes[:], e.ptrs[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0]
 	case 2:
 		e := &streamElem2{}
-		return e.nodes[:], e.ptrs[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0]
 	case 3:
 		e := &streamElem3{}
-		return e.nodes[:], e.ptrs[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0]
 	}
-	return make([]Node, 1+nAttrs), make([]*Node, 0, nAttrs)
+	return make([]Node, 1+nAttrs), make([]*Node, 0, nAttrs), nil
 }
 
 func (s *StreamReader) endElement(t xml.EndElement) (*Node, error) {
-	if len(s.rawNames) == 0 {
+	if len(s.open) == 1 {
 		return nil, errors.New("unexpected end element </" + rawQName(t.Name) + ">")
 	}
-	if open := s.rawNames[len(s.rawNames)-1]; open != t.Name {
+	if open := s.open[len(s.open)-1].raw; open != t.Name {
 		return nil, errors.New("element <" + rawQName(open) + "> closed by </" + rawQName(t.Name) + ">")
 	}
 	el := s.top()
@@ -596,9 +616,8 @@ func (s *StreamReader) endElement(t xml.EndElement) (*Node, error) {
 }
 
 func (s *StreamReader) pop() {
-	s.rawNames = s.rawNames[:len(s.rawNames)-1]
-	s.stack = s.stack[:len(s.stack)-1]
-	s.nsStack = s.nsStack[:len(s.nsStack)-1]
+	s.open[len(s.open)-1] = streamFrame{} // the frame's map may be the only reference to it
+	s.open = s.open[:len(s.open)-1]
 }
 
 // charData appends character data, returning the node to report — or nil when
@@ -625,9 +644,10 @@ func (s *StreamReader) charData(t string) *Node {
 
 // appendChild is Node.Append with the growth a streamed record is built by:
 // an element's first child gets a list of one (most elements are a leaf
-// holding one text node), the second a list of four, then doubling — so
-// an element of three or four children costs two list allocations, not
-// three (1, 2, 4), for the same bytes.
+// holding one text node; the common shapes carry that slot in their own
+// allocation, see streamElementSlab), the second a list of four, then
+// doubling — so an element of three or four children costs two list
+// allocations, not three (1, 2, 4), for the same bytes.
 func (s *StreamReader) appendChild(parent, child *Node) {
 	child.Parent = parent
 	if n := len(parent.Children); n == cap(parent.Children) {
@@ -668,8 +688,12 @@ func (s *StreamReader) textString(t string) string {
 }
 
 // internCopy is intern (parse.go) for strings cut from a tokenizer window:
-// the kept string is a copy, so the table never holds a window.
+// the kept string is a copy, so the table never holds a window. The empty
+// string (most elements' namespace prefix) holds nothing and is not looked up.
 func internCopy(m map[string]string, s string) string {
+	if s == "" {
+		return ""
+	}
 	if v, ok := m[s]; ok {
 		return v
 	}
@@ -732,7 +756,7 @@ func (s *StreamReader) Drop(n *Node) {
 // pass over an irrelevant subtree in bounded memory: dropping it after the
 // fact would mean materializing it first.
 func (s *StreamReader) SkipSubtree() error {
-	if len(s.stack) < 2 {
+	if len(s.open) < 2 {
 		return errors.New("SkipSubtree: no element is open")
 	}
 	el := s.top()
@@ -761,7 +785,7 @@ func (s *StreamReader) SkipSubtree() error {
 				nested--
 				continue
 			}
-			if open := s.rawNames[len(s.rawNames)-1]; open != tz.name {
+			if open := s.open[len(s.open)-1].raw; open != tz.name {
 				return errors.New("element <" + rawQName(open) + "> closed by </" + rawQName(tz.name) + ">")
 			}
 			s.pop()

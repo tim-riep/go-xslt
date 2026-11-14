@@ -73,7 +73,12 @@ dragging in the GUI's Wails/CGo dependencies:
   in, so anything the reader keeps for the whole document — interned names,
   shared whitespace runs, namespace frames — must be `strings.Clone`d first
   or it pins a window; `TestStreamReaderWindowBoundaries` runs every window
-  size from one byte). `CopyTypeInfo(dst, src)` must be used at every
+  size from one byte). A streamed element with up to three attributes is
+  ONE allocation with its attribute nodes, their pointer list and the slot
+  for its first child (`streamElementSlab`): at 152 bytes a node each shape
+  ends exactly on a size class (160/320/480/640), which
+  `TestNodeSizeStaysInItsAllocatorClass` pins — a field added to `Node`
+  moves every shape up a class. `CopyTypeInfo(dst, src)` must be used at every
   node-rebuild/copy site to carry `TypeAnno`/`SchemaType`/`Nilled`/
   `ListTyped`/etc. forward.
 - `internal/xpath` — `lexer.go`, `parser.go`/`ast.go`, `eval.go` + `axes.go` +

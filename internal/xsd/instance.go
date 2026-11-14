@@ -166,14 +166,33 @@ func (s *Schema) checkLateHints(root *xmltree.Node) *Error {
 	var walk func(el *xmltree.Node) *Error
 	walk = func(el *xmltree.Node) *Error {
 		var addressed [][2]string
-		if v, ok := el.Attr(xsiNS, "schemaLocation"); ok {
-			f := strings.Fields(v)
+		// Both hint attributes in one pass over the attributes (each the
+		// first of its name, as el.Attr finds it), not one pass per hint for
+		// every element of the instance.
+		loc, hasLoc, noNS, hasNoNS := "", false, "", false
+		for _, a := range el.Attrs {
+			if a.Name.Space != xsiNS {
+				continue
+			}
+			switch a.Name.Local {
+			case "schemaLocation":
+				if !hasLoc {
+					loc, hasLoc = a.Value, true
+				}
+			case "noNamespaceSchemaLocation":
+				if !hasNoNS {
+					noNS, hasNoNS = a.Value, true
+				}
+			}
+		}
+		if hasLoc {
+			f := strings.Fields(loc)
 			for i := 0; i+1 < len(f); i += 2 {
 				addressed = append(addressed, [2]string{f[i], f[i+1]})
 			}
 		}
-		if v, ok := el.Attr(xsiNS, "noNamespaceSchemaLocation"); ok {
-			addressed = append(addressed, [2]string{"", strings.TrimSpace(v)})
+		if hasNoNS {
+			addressed = append(addressed, [2]string{"", strings.TrimSpace(noNS)})
 		}
 		for _, h := range addressed {
 			first := !hinted[h]
@@ -601,7 +620,24 @@ func (s *Schema) validateElement(el *xmltree.Node) (err error) {
 func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) (err error) {
 	defer stampLoc(&err, el)
 	typ := decl.typ
-	if xt, ok := el.Attr(xsiNS, "type"); ok {
+	// The two xsi attributes this function reads are found in one pass over
+	// the element's attributes (each the first of its name, as el.Attr finds
+	// it) instead of a pass per attribute for every element.
+	xt, hasType, hasNil := "", false, false
+	for _, a := range el.Attrs {
+		if a.Name.Space != xsiNS {
+			continue
+		}
+		switch a.Name.Local {
+		case "type":
+			if !hasType {
+				xt, hasType = a.Value, true
+			}
+		case "nil":
+			hasNil = true
+		}
+	}
+	if hasType {
 		t, err := s.resolveInstanceType(el, xt)
 		if err != nil {
 			return err
@@ -640,7 +676,7 @@ func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, sco
 	} else if alt != nil {
 		typ = alt // XSD 1.1 conditional type assignment
 	}
-	if _, hasNil := el.Attr(xsiNS, "nil"); hasNil {
+	if hasNil {
 		// cvc-elt.3.1: xsi:nil may APPEAR only on a nillable element — its
 		// value does not matter (elemO011, nillable00201m2).
 		if !decl.nillable {
@@ -1110,12 +1146,41 @@ func (s *Schema) baseChainContextType(ct *ComplexType, nn xname) Type {
 // it used to recompute (five maps and three walks of the particle tree) for
 // every element of the instance.
 type childModel struct {
-	p                       *particle
-	oc                      *openContent
-	decls                   map[xname]*ElementDecl
+	p     *particle
+	oc    *openContent
+	decls map[xname]*ElementDecl
+	// declList holds decls as a list when it is small (smallDeclList): most
+	// content models declare a handful of names, which a comparison per
+	// entry finds faster than hashing the two strings of every child's name.
+	// It lives in the childModel itself, so a model costs no allocation
+	// beyond the one it already is.
+	declList                [smallDeclList]declEntry
+	nDecls                  int // entries of declList in use; 0 when decls is larger (or empty)
 	fixedsByName            map[xname][]string
 	skipWc, laxWc, strictWc []*wildcard
 	asserts                 []*assertion // the type's effective assertions (1.1)
+}
+
+type declEntry struct {
+	name xname
+	decl *ElementDecl
+}
+
+// smallDeclList is the largest decls a childModel also keeps as a list.
+const smallDeclList = 8
+
+// decl is decls[nn] (see declList).
+func (cm *childModel) decl(nn xname) (*ElementDecl, bool) {
+	if cm.nDecls > 0 {
+		for i := range cm.declList[:cm.nDecls] {
+			if e := &cm.declList[i]; e.name == nn {
+				return e.decl, true
+			}
+		}
+		return nil, false
+	}
+	d, ok := cm.decls[nn]
+	return d, ok
 }
 
 // childModelOf returns ct's childModel, from the per-call cache when there is
@@ -1127,6 +1192,12 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 	cm := &childModel{p: s.effectiveParticle(ct), oc: s.effectiveOpenContent(ct)}
 	cm.decls = map[xname]*ElementDecl{}
 	s.contentDecls(cm.p, cm.decls)
+	if n := len(cm.decls); n > 0 && n <= smallDeclList {
+		for name, d := range cm.decls {
+			cm.declList[cm.nDecls] = declEntry{name, d}
+			cm.nDecls++
+		}
+	}
 	cm.fixedsByName = map[xname][]string{}
 	collectFixedsByName(cm.p, cm.fixedsByName, map[*modelGroup]bool{})
 	collectWildcards(cm.p, "skip", &cm.skipWc)
@@ -1185,7 +1256,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 		}
 		return errModelMismatch
 	}
-	decls, fixedsByName := cm.decls, cm.fixedsByName
+	fixedsByName := cm.fixedsByName
 	skipWc, laxWc, strictWc := cm.skipWc, cm.laxWc, cm.strictWc
 	// elemUsed counts the children attributed to each declared name, for the
 	// 1.1 dynamic EDC check below — which can only arise where the model
@@ -1196,7 +1267,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 	pinned := kids // lazily copied; wildcard-attributed children get probed out
 	for i, kid := range kids {
 		nn := nameOf(kid)
-		if d, ok := decls[nn]; ok {
+		if d, ok := cm.decl(nn); ok {
 			// XSD 1.1 dynamic Element Declarations Consistent: once the
 			// like-named element particles are EXHAUSTED, a further same-named
 			// child is attributed to a non-skip wildcard — its governing type
@@ -1269,7 +1340,7 @@ func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xml
 			// attribution is not a wildcard match.
 			if s.version == Version11 &&
 				(matchesAnyWildcard(laxWc, nn) || matchesAnyWildcard(strictWc, nn)) &&
-				!substMatchesAnyDecl(s, decls, nn) {
+				!substMatchesAnyDecl(s, cm.decls, nn) {
 				if tc := s.baseChainContextType(ct, nn); tc != nil {
 					tg := g.typ
 					if xt, ok := kid.Attr(xsiNS, "type"); ok {

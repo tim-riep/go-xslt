@@ -483,7 +483,39 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			doc.SetUnparsed(u)
 		}
 	}
-	stack := []*Node{doc}
+	// One frame per open element (and one for the document node under them)
+	// holds everything the parser keeps about it, in place of a stack per
+	// field: the node, its namespace scope and that scope's default
+	// namespace (so an unprefixed element name — nearly every name in most
+	// documents — is resolved without hashing "" into the frame's map), the
+	// name AS WRITTEN (prefix in Space) for the end-tag check the tokenizer
+	// leaves to its caller, where its children start in childBuf, and its
+	// xml:space scope.
+	// preserve: xml:space="preserve" on an element forces true for it and
+	// every descendant until overridden; any other explicit xml:space value
+	// (including "default") resets to false; absent, it's inherited
+	// unchanged. Needed here — not just by internal/xslt's own post-parse
+	// stripWalk, which does the identical thing — because the strip hook
+	// below must net out against it at the exact point a whitespace-only
+	// run would otherwise be discarded, before stripWalk ever gets a tree
+	// to walk.
+	// Element and attribute names are not interned (they were, while every
+	// tag's name was a fresh string from encoding/xml): the tokenizer hands
+	// them out as substrings of the source, which cost nothing, and the map
+	// lookups cost ~4% of a whole identity transform.
+	type openFrame struct {
+		node     *Node
+		frame    map[string]string // prefix -> uri (default prefix "")
+		def      string            // frame[""]
+		raw      xml.Name
+		mark     int
+		preserve bool
+	}
+	open := make([]openFrame, 1, 8) // sized for the usual depth in one allocation
+	open[0] = openFrame{node: doc, frame: map[string]string{
+		"xml": "http://www.w3.org/XML/1998/namespace",
+		"":    "",
+	}}
 	// Nodes are carved from slabs rather than allocated one by one: a parsed
 	// tree lives and dies as a whole, so individual collectability buys
 	// nothing, while one allocation per node was ~a third of the parser's
@@ -514,51 +546,22 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 		ptrSlab = ptrSlab[n:]
 		return s
 	}
-	// Children are collected on one shared stack (childBuf; marks[i] is where
-	// stack[i]'s children start) and copied into an exact-size slice when the
-	// element closes — one allocation per element instead of the 1-2-4-8
-	// regrowth of append, and no slack capacity retained.
+	// Children are collected on one shared stack (childBuf; a frame's mark
+	// is where its node's children start) and copied into an exact-size
+	// slice when the element closes — one allocation per element instead of
+	// the 1-2-4-8 regrowth of append, and no slack capacity retained.
 	var childBuf []*Node
-	marks := []int{0}
 	addChild := func(parent, child *Node) {
 		child.Parent = parent
 		childBuf = append(childBuf, child)
 	}
-	closeChildren := func(parent *Node) {
-		m := marks[len(marks)-1]
-		marks = marks[:len(marks)-1]
+	closeChildren := func(parent *Node, m int) {
 		if n := len(childBuf) - m; n > 0 {
 			parent.Children = ptrSlice(n)
 			copy(parent.Children, childBuf[m:])
 			childBuf = childBuf[:m]
 		}
 	}
-	// namespace scope stack: each frame maps prefix -> uri (default prefix "").
-	nsStack := []map[string]string{{
-		"xml": "http://www.w3.org/XML/1998/namespace",
-		"":    "",
-	}}
-	// defaultNS mirrors nsStack: the default namespace of each frame, so an
-	// unprefixed element name — nearly every name in most documents — is
-	// resolved without hashing "" into the frame's map for every element.
-	defaultNS := []string{""}
-	// rawNames holds each open element's name AS WRITTEN (prefix in Space),
-	// for the end-tag check the tokenizer leaves to its caller.
-	var rawNames []xml.Name
-	// Element and attribute names are not interned (they were, while every
-	// tag's name was a fresh string from encoding/xml): the tokenizer hands
-	// them out as substrings of the source, which cost nothing, and the map
-	// lookups cost ~4% of a whole identity transform.
-	// preserveSpace mirrors stack 1:1 (one entry per open element, plus the
-	// document-level seed): xml:space="preserve" on an element forces true
-	// for it and every descendant until overridden; any other explicit
-	// xml:space value (including "default") resets to false; absent, it's
-	// inherited unchanged. Needed here — not just by internal/xslt's own
-	// post-parse stripWalk, which does the identical thing — because the
-	// strip hook below must net out against it at the exact point a
-	// whitespace-only run would otherwise be discarded, before stripWalk
-	// ever gets a tree to walk.
-	preserveSpace := []bool{false}
 
 	// pendingText/pendingOpen/pendingLine/pendingCol accumulate consecutive
 	// CharData tokens (plain text and/or CDATA sections — the decoder reports
@@ -598,7 +601,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 		} else {
 			s = internText(&pendingBuf, wsRuns)
 		}
-		top := stack[len(stack)-1]
+		top := open[len(open)-1].node
 		// Whitespace outside the document element (prolog/epilog "Misc") is
 		// not character data in the infoset: a document node has no
 		// whitespace text children (fn-innermost-029: //text() counts).
@@ -622,7 +625,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// means here or a run they disagree about would be stripped by
 			// one and survive the other depending purely on which happened
 			// to run first.
-			if strip != nil && !preserveSpace[len(preserveSpace)-1] &&
+			if strip != nil && !open[len(open)-1].preserve &&
 				strip(top.Name) && strings.TrimSpace(s) == "" {
 				return
 			}
@@ -679,11 +682,15 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			tz.pos, tz.err, tz.needClose = startOff, nil, false
 			continue
 		}
-		line, col := lines.at(startOff)
-		top := stack[len(stack)-1]
+		// A token's line and column are looked up only where they are
+		// kept: an end tag needs them for an error message alone, and a
+		// text token only when it opens a run (lines.at scans forward, so
+		// the lookups stay in offset order).
+		top := open[len(open)-1].node
 
 		switch kind {
 		case tokStart:
+			line, col := lines.at(startOff)
 			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
 			// A new child starting is a run boundary: any pending text run
 			// belongs to the PARENT (top, before this element is pushed) and
@@ -699,8 +706,8 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// through this clone-before-first-write gate, so a shared frame is
 			// never mutated — a deeper element that itself needs to add a decl
 			// clones its own copy at that point instead.
-			frame := nsStack[len(nsStack)-1]
-			def := defaultNS[len(defaultNS)-1]
+			frame := open[len(open)-1].frame
+			def := open[len(open)-1].def
 			cloned := false
 			var decls []*Node
 			if d := attrDefaults[t.Name.Local]; len(d) > 0 {
@@ -746,6 +753,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			if n := len(t.Attr) - len(decls); n > 0 {
 				el.Attrs = ptrSlice(n)[:0]
 			}
+			// xml:space, if present, is noted here (the first match, as
+			// el.Attr would find it: a DTD-defaulted attribute, added after
+			// these, is never in a namespace) instead of by a second pass
+			// over the attributes of every element below.
+			spaceAttr, hasSpace := "", false
 			for _, a := range t.Attr {
 				if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 					continue
@@ -753,6 +765,9 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				an := newNode() // zeroed: see flushPending
 				an.Kind, an.Name, an.Value = KindAttribute, resolveRawName(frame, a.Name, true), a.Value
 				an.Line, an.Col = int32(line), int32(col)
+				if !hasSpace && an.Name.Local == "space" && an.Name.Space == xmlNS {
+					spaceAttr, hasSpace = an.Value, true
+				}
 				if m := idKinds[t.Name.Local]; m != nil {
 					if k := m[a.Name.Local]; k != 0 {
 						an.SetIDKind(k)
@@ -793,46 +808,39 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				}
 			}
 			addChild(top, el)
-			stack = append(stack, el)
-			marks = append(marks, len(childBuf))
-			nsStack = append(nsStack, frame)
-			defaultNS = append(defaultNS, def)
-			if len(stack) > MaxDepth+1 { // stack[0] is the document node
-				return nil, errTooDeep
-			}
-			rawNames = append(rawNames, t.Name)
 			// xml:space="preserve" forces true for this element and its
 			// descendants until overridden; any other explicit value
 			// (including "default") resets to false; absent, inherit the
 			// parent's scope unchanged. Checked via the RESOLVED namespace
-			// URI (el.Attr), exactly like internal/xslt's own stripWalk, not
-			// the written prefix — "xml" is reserved and always bound to
-			// this URI, but matching the same way the rest of this engine
-			// already does keeps the two checks provably in agreement.
-			preserve := preserveSpace[len(preserveSpace)-1]
-			if v, ok := el.Attr(xmlNS, "space"); ok {
-				preserve = v == "preserve"
+			// URI, exactly like internal/xslt's own stripWalk, not the
+			// written prefix — "xml" is reserved and always bound to this
+			// URI, but matching the same way the rest of this engine already
+			// does keeps the two checks provably in agreement.
+			preserve := open[len(open)-1].preserve
+			if hasSpace {
+				preserve = spaceAttr == "preserve"
 			}
-			preserveSpace = append(preserveSpace, preserve)
+			open = append(open, openFrame{node: el, frame: frame, def: def, raw: t.Name, mark: len(childBuf), preserve: preserve})
+			if len(open) > MaxDepth+1 { // open[0] is the document node
+				return nil, errTooDeep
+			}
 
 		case tokEnd:
 			t := xml.EndElement{Name: tz.name}
 			// The closing element's own pending text run must close before
-			// it does — flushPending reads stack's CURRENT top, so this must
-			// run before stack/preserveSpace are popped below.
+			// it does — flushPending reads the CURRENT top frame, so this
+			// must run before it is popped below.
 			flushPending()
-			if len(rawNames) == 0 {
+			if len(open) == 1 {
+				line, col := lines.at(startOff)
 				return nil, &ParseError{Line: line, Col: col, Msg: "unexpected end element </" + rawQName(t.Name) + ">"}
 			}
-			if open := rawNames[len(rawNames)-1]; open != t.Name {
-				return nil, &ParseError{Line: line, Col: col, Msg: "element <" + rawQName(open) + "> closed by </" + rawQName(t.Name) + ">"}
+			if o := open[len(open)-1].raw; o != t.Name {
+				line, col := lines.at(startOff)
+				return nil, &ParseError{Line: line, Col: col, Msg: "element <" + rawQName(o) + "> closed by </" + rawQName(t.Name) + ">"}
 			}
-			rawNames = rawNames[:len(rawNames)-1]
-			closeChildren(top)
-			stack = stack[:len(stack)-1]
-			nsStack = nsStack[:len(nsStack)-1]
-			defaultNS = defaultNS[:len(defaultNS)-1]
-			preserveSpace = preserveSpace[:len(preserveSpace)-1]
+			closeChildren(top, open[len(open)-1].mark)
+			open = open[:len(open)-1]
 
 		case tokText:
 			// Accumulate; the decision of whether/how this becomes a Node is
@@ -842,11 +850,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			switch {
 			case !pendingOpen && tz.raw:
 				pendingOpen, pendingIsStr, pendingStr = true, true, tz.str
-				pendingLine, pendingCol = line, col
+				pendingLine, pendingCol = lines.at(startOff)
 				continue
 			case !pendingOpen:
 				pendingOpen = true
-				pendingLine, pendingCol = line, col
+				pendingLine, pendingCol = lines.at(startOff)
 			case pendingIsStr: // a second token: the run moves to the buffer
 				pendingBuf = append(pendingBuf, pendingStr...)
 				pendingStr, pendingIsStr = "", false
@@ -859,6 +867,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 
 		case tokComment:
 			flushPending()
+			line, col := lines.at(startOff)
 			c := &Node{Kind: KindComment, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(c)
 			addChild(top, c)
@@ -868,6 +877,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			if tz.target == "xml" {
 				continue // XML declaration, not a PI node
 			}
+			line, col := lines.at(startOff)
 			pi := &Node{Kind: KindPI, Name: Name{Local: tz.target}, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(pi)
 			addChild(top, pi)
@@ -881,10 +891,10 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 	}
 	flushPending()
 
-	if len(stack) != 1 {
+	if len(open) != 1 {
 		return nil, &ParseError{Msg: "unexpected end of document: unclosed elements"}
 	}
-	closeChildren(doc)
+	closeChildren(doc, 0)
 	// XML 1.0 §2.1 [1]: document ::= prolog element Misc* — a root element,
 	// and no character data beside it (white space there was dropped above).
 	// More than one root element is still accepted: callers parse external
