@@ -6,7 +6,7 @@ package licenses
 var entries = []Entry{
 	{Name: "go-xslt", Version: "", License: "Apache-2.0", Kind: "project", URL: "https://github.com/tim-riep/go-xslt", path: "project/LICENSE"},
 	{Name: "FreeBSD msun e_exp.c (via Go math.Exp)", Version: "", License: "SunPro", Kind: "go", URL: "https://cgit.freebsd.org/src/tree/lib/msun/src/e_exp.c", path: "data/sun-fdlibm/LICENSE"},
-	{Name: "Go standard library", Version: "go1.26.10", License: "BSD-3-Clause", Kind: "go", URL: "https://go.dev/LICENSE", path: "data/go-stdlib/LICENSE"},
+	{Name: "Go standard library", Version: "go1.26.11", License: "BSD-3-Clause", Kind: "go", URL: "https://go.dev/LICENSE", path: "data/go-stdlib/LICENSE"},
 	{Name: "github.com/adrg/xdg", Version: "v0.5.3", License: "MIT", Kind: "go", URL: "https://pkg.go.dev/github.com/adrg/xdg", path: "go/github.com/adrg/xdg/LICENSE"},
 	{Name: "github.com/go-ole/go-ole", Version: "v1.3.0", License: "MIT", Kind: "go", URL: "https://pkg.go.dev/github.com/go-ole/go-ole", path: "go/github.com/go-ole/go-ole/LICENSE"},
 	{Name: "github.com/godbus/dbus/v5", Version: "v5.2.2", License: "BSD-2-Clause", Kind: "go", URL: "https://pkg.go.dev/github.com/godbus/dbus/v5", path: "go/github.com/godbus/dbus/v5/LICENSE"},
