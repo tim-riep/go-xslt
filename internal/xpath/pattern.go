@@ -751,7 +751,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 	fastOK := len(step.Preds) <= 1
 	for i := 0; fastOK && i < len(step.Preds); i++ {
 		pred := step.Preds[i]
-		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: n, CtxItem: n.RealItem(), Pos: pos, Size: len(cands), Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
+		sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: n, CtxItem: n.RealItem(), Pos: pos, Size: len(cands), Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals, ArgStack: ctx.ArgStack}
 		v, err := evalExpr(pred, sub)
 		if err != nil {
 			return false, err
@@ -772,7 +772,7 @@ func stepMatches(step *Step, n *xmltree.Node, ctx *Context) (bool, error) {
 		kept := cands[:0:0]
 		size := len(cands)
 		for i, s := range cands {
-			sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: s, CtxItem: s.RealItem(), Pos: i + 1, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals}
+			sub := &Context{SchemaTypes: ctx.SchemaTypes, Node: s, CtxItem: s.RealItem(), Pos: i + 1, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, locals: ctx.locals, ArgStack: ctx.ArgStack}
 			v, err := evalExpr(pred, sub)
 			if err != nil {
 				return false, err

@@ -45,6 +45,36 @@ func (eng *engine) checkCapturedFocus(local string, ctx *xpath.Context) error {
 	return errAt(nil, "err:XTDE3350: %s() has no context item: the focus of a streamed node cannot be saved in a function item", local)
 }
 
+// funcRef names a stylesheet function as a call sees it.
+type funcRef struct {
+	uri, local string
+	arity      int
+}
+
+// userFunc is Stylesheet.funcFor for a call, remembered per run by (uri,
+// local, arity) — funcFor's key is their concatenation, which was built (one
+// allocation for a namespaced name) on every call of a stylesheet function.
+// With package-local functions in play the answer depends on the calling
+// package, so it is looked up as before.
+func (eng *engine) userFunc(el *xmltree.Node, uri, local string, arity int) (*FuncDef, bool) {
+	if len(eng.sheet.pkgFuncs) > 0 {
+		return eng.sheet.funcFor(el, funcKey(uri, local, arity))
+	}
+	ref := funcRef{uri, local, arity}
+	if fd, seen := eng.userFuncs[ref]; seen {
+		return fd, fd != nil
+	}
+	fd, ok := eng.sheet.functions[funcKey(uri, local, arity)]
+	if !ok {
+		fd = nil
+	}
+	if eng.userFuncs == nil {
+		eng.userFuncs = map[funcRef]*FuncDef{}
+	}
+	eng.userFuncs[ref] = fd
+	return fd, ok
+}
+
 // an "unknown function" error.
 func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *evalEnv, ctx *xpath.Context) (xpath.Object, bool, error) {
 	// User-defined xsl:function (always namespace-qualified).
@@ -66,7 +96,7 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 				return eng.callUserFunc(fd, args, env)
 			}
 		}
-		if fd, ok := eng.sheet.funcFor(env.el, funcKey(uri, local, len(args))); ok {
+		if fd, ok := eng.userFunc(env.el, uri, local, len(args)); ok {
 			if len(eng.sheet.hiddenAt) > 0 && eng.sheet.hiddenRef(env.el, "function#"+clark(uri, local)+"#"+itoa(len(args))) {
 				return nil, false, nil // hidden by the used package: undeclared here (XPST0017)
 			}

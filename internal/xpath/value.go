@@ -42,6 +42,50 @@ func EffectiveBoolErr(o Object) (bool, error) {
 	if n > 1 {
 		return false, fmt.Errorf("err:FORG0006: effective boolean value of a %d-item sequence", n)
 	}
+	// (ebvAtomic, in line: the value of most predicates is a boolean.)
+	switch v := first.(type) {
+	case bool:
+		return v, nil
+	case string:
+		return v != "", nil
+	case float64:
+		return v != 0 && !math.IsNaN(v), nil
+	case *Atomic:
+		switch {
+		case v.T == XSboolean:
+			return ToBool(v), nil
+		case isStringType(v.T) || v.T == XSuntypedAtomic || v.T == XSanyURI:
+			return v.Lexical() != "", nil
+		case v.IsNumeric():
+			f := v.Float()
+			return f != 0 && !math.IsNaN(f), nil
+		}
+	}
+	return false, fmt.Errorf("err:FORG0006: no effective boolean value for this item type")
+}
+
+// nodeSetEBV is EffectiveBoolErr of ns without boxing it: a carrier node
+// (xmltree.Node.RealItem) counts as the item it stands for, as in itemAt.
+func nodeSetEBV(ns NodeSet) (bool, error) {
+	if len(ns) == 0 {
+		return false, nil
+	}
+	nd := ns[0]
+	if nd == nil || nd.RealItem() == nil {
+		return true, nil
+	}
+	first := nd.RealItem()
+	if _, isNode := first.(*xmltree.Node); isNode {
+		return true, nil
+	}
+	if len(ns) > 1 {
+		return false, fmt.Errorf("err:FORG0006: effective boolean value of a %d-item sequence", len(ns))
+	}
+	return ebvAtomic(first)
+}
+
+// ebvAtomic is the effective boolean value of a single non-node item.
+func ebvAtomic(first Item) (bool, error) {
 	switch v := first.(type) {
 	case bool:
 		return v, nil
@@ -131,11 +175,7 @@ func ToString(o Object) string {
 	case float64:
 		return formatNumber(v)
 	case NodeSet:
-		if len(v) == 0 {
-			return ""
-		}
-		first := v.first()
-		return nodeStringValue(first)
+		return NodeSetString(v)
 	case Sequence:
 		if len(v) == 0 {
 			return ""
@@ -147,6 +187,15 @@ func ToString(o Object) string {
 		return ""
 	}
 	return ""
+}
+
+// NodeSetString is ToString of a node set: the string value of its first
+// node in document order, or "" for an empty set.
+func NodeSetString(ns NodeSet) string {
+	if len(ns) == 0 {
+		return ""
+	}
+	return nodeStringValue(ns.first())
 }
 
 // formatNumber renders a float per XPath string(number) rules.

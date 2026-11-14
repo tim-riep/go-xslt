@@ -128,6 +128,7 @@ func Atomize(o Object) ([]Item, error) {
 	var err error
 	switch v := o.(type) {
 	case NodeSet:
+		// (atomizeNodes, kept in line here: this is the hottest shape.)
 		if len(v) == 0 {
 			return nil, nil
 		}
@@ -162,7 +163,26 @@ func Atomize(o Object) ([]Item, error) {
 	return out, nil
 }
 
-// atomizeItem appends the atomized value of one item to out.
+// atomizeNodes is Atomize of a node set: a carrier node unwraps to the item
+// it stands for, exactly as in Items.
+func atomizeNodes(v NodeSet) ([]Item, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	out := make([]Item, 0, len(v))
+	var err error
+	for _, n := range v {
+		var it Item = n
+		if n != nil && n.RealItem() != nil {
+			it = n.RealItem()
+		}
+		if out, err = atomizeItem(out, it); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // atomizeOne atomizes o when that yields at most one atomic value, without
 // the slice Atomize builds: n is 0 (empty) or 1 (a is the value), or 2 when o
 // has more than one item or atomizes to something this shortcut does not
@@ -217,6 +237,42 @@ func atomizeOperand(o Object) (Item, int, error) {
 		return a, n, err
 	}
 	items, err := Atomize(o)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(items) != 1 {
+		return nil, len(items), nil
+	}
+	return items[0], 1, nil
+}
+
+// AtomizeOperand atomizes o when that yields at most one atomic value, which
+// it returns with n = 1 (n = 0 for the empty sequence), without the sequence
+// Atomize builds; for more than one value n is their count and the item is
+// nil. An atomization error is reported as Atomize reports it.
+func AtomizeOperand(o Object) (Item, int, error) { return atomizeOperand(o) }
+
+// atomizeOneNodes is atomizeOne of a node set: its one node (a carrier node
+// unwrapped to the item it stands for) is atomized as a one-item Object, which
+// boxes a pointer and so allocates nothing.
+func atomizeOneNodes(v NodeSet) (a Item, n int, err error) {
+	if len(v) != 1 {
+		return nil, min(len(v), 2), nil
+	}
+	var it Item = v[0]
+	if nd := v[0]; nd != nil && nd.RealItem() != nil {
+		it = nd.RealItem()
+	}
+	return atomizeOne(it)
+}
+
+// atomizeOperandNodes is atomizeOperand of a node set.
+func atomizeOperandNodes(v NodeSet) (Item, int, error) {
+	a, n, err := atomizeOneNodes(v)
+	if err != nil || n != 2 {
+		return a, n, err
+	}
+	items, err := atomizeNodes(v)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -880,11 +936,10 @@ func CallConstructor(local string, arg Object) (Object, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	items := Items(arg)
-	if len(items) == 0 {
+	if itemCount(arg) == 0 {
 		return Sequence{}, true, nil
 	}
-	res, err := CastTo(items[0], t)
+	res, err := CastTo(itemAt(arg, 0), t)
 	if err != nil {
 		return nil, true, err
 	}

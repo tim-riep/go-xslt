@@ -206,6 +206,40 @@ type Context struct {
 	nowCache        *nowBox     // ONE current instant per evaluation (fn:current-*)
 	locals          *localScope // for/let/quantified/inline-function bindings
 	evalDepth       int         // recursion guard for evalExpr (prevents stack overflow)
+	// ArgStack, when a host sets it on the root context of an evaluation
+	// (every derived context shares the pointer), is the stack the argument
+	// slices of the built-in calls listed in argStackSafe are carved from
+	// instead of being allocated per call. Nil: every call allocates.
+	ArgStack *ArgStack
+}
+
+// ArgStack is a stack of argument slices for built-in function calls (see
+// Context.ArgStack and evalFunc): a call pushes its arguments and pops them
+// when it returns, so a slice lives exactly as long as the call. Only the
+// functions in argStackSafe, which never keep their argument slice, are
+// called with one; any other call allocates its slice as before.
+type ArgStack struct{ buf []Object }
+
+// NewArgStack returns an empty stack for a root Context.
+func NewArgStack() *ArgStack { return &ArgStack{buf: make([]Object, 0, 32)} }
+
+// push reserves n slots on top of the stack, capacity-limited to the slots.
+func (s *ArgStack) push(n int) []Object {
+	l := len(s.buf)
+	if cap(s.buf)-l < n {
+		nb := make([]Object, l, 2*cap(s.buf)+n)
+		copy(nb, s.buf)
+		s.buf = nb
+	}
+	s.buf = s.buf[:l+n]
+	return s.buf[l : l+n : l+n]
+}
+
+// pop releases the n slots on top, clearing them so they keep nothing alive.
+func (s *ArgStack) pop(n int) {
+	l := len(s.buf)
+	clear(s.buf[l-n : l])
+	s.buf = s.buf[:l-n]
 }
 
 // maxEvalDepth bounds the static recursion of one expression evaluation. Real
@@ -373,6 +407,36 @@ func positionalIndex(f float64) int {
 
 // Eval evaluates the parsed expression in ctx.
 func (p *Parsed) Eval(ctx *Context) (Object, error) {
+	if err := p.checkPrefixedVarRefs(ctx); err != nil {
+		return nil, err
+	}
+	return evalExpr(p.root, ctx)
+}
+
+// EvalNodes is Eval returning a path's node set as it is: isNodes reports
+// that ns is the value (v is then nil); otherwise v is the value exactly as
+// Eval returns it. A host that only reads the nodes of a select, test or
+// key expression saves the boxing of the set into an Object this way.
+func (p *Parsed) EvalNodes(ctx *Context) (ns NodeSet, v Object, isNodes bool, err error) {
+	if err := p.checkPrefixedVarRefs(ctx); err != nil {
+		return nil, nil, false, err
+	}
+	ns, v, isPath, err := evalNodes(p.root, ctx)
+	if !isPath {
+		v, err = evalExpr(p.root, ctx)
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if isPath && v == nil {
+		return ns, nil, true, nil
+	}
+	return nil, v, false, nil
+}
+
+// checkPrefixedVarRefs is Eval's static check of the namespace prefixes of
+// the variable references, decided once per parsed expression.
+func (p *Parsed) checkPrefixedVarRefs(ctx *Context) error {
 	pv := p.prefVars.Load()
 	if pv == 0 {
 		pv = 1
@@ -382,11 +446,9 @@ func (p *Parsed) Eval(ctx *Context) (Object, error) {
 		p.prefVars.Store(pv)
 	}
 	if pv == 2 {
-		if err := checkStaticVarRefPrefixes(p.root, ctx); err != nil {
-			return nil, err
-		}
+		return checkStaticVarRefPrefixes(p.root, ctx)
 	}
-	return evalExpr(p.root, ctx)
+	return nil
 }
 
 // hasPrefixedVarRef reports whether the tree holds a variable reference that
@@ -529,7 +591,14 @@ func evalExprNode(e Expr, ctx *Context) (Object, error) {
 	case *FilterExpr:
 		return evalFilter(n, ctx)
 	case *PathExpr:
-		return evalPath(n, ctx)
+		ns, v, err := evalPathNodes(n, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if v != nil {
+			return v, nil
+		}
+		return ns, nil
 	case *ContextItemExpr:
 		if ctx.CtxItem != nil {
 			return FromItems([]Item{ctx.CtxItem}), nil
@@ -951,13 +1020,23 @@ func evalFor(binds []VarBind, i int, ctx *Context, body Expr) (Object, error) {
 	}
 	key := varKey(ctx, binds[i].Prefix, binds[i].Local)
 	var out []Item
+	// The items are read in place (itemAt; Items copied a node set), and the
+	// result starts with room for one item per input item, up to a small
+	// cap: most loops are a few items long and yield one item each, so that
+	// is one allocation in place of append's doubling, while a long loop
+	// that yields little does not reserve the length of its input.
+	n := itemCount(seqV)
+	if n > 1 {
+		out = make([]Item, 0, min(n, 16))
+	}
 	// One scratch context per loop (a copy of ctx, as withLocal makes),
 	// overwritten per item and replaced only once an evaluation captured it
 	// (as in applyPredicateOrdered). The binding itself is a fresh localScope
 	// per item: copies of the context made inside the body share it by
 	// pointer, so it is never overwritten.
 	var sub *Context
-	for _, it := range Items(seqV) {
+	for idx := 0; idx < n; idx++ {
+		it := itemAt(seqV, idx)
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
@@ -1272,6 +1351,7 @@ func evalFilter(n *FilterExpr, ctx *Context) (Object, error) {
 func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error) {
 	size := len(items)
 	var out []Item
+	pathPred, _ := pred.(*PathExpr)
 	// One scratch context serves every item, as in applyPredicateOrdered:
 	// overwritten per item, replaced only once an evaluation captured it.
 	sub := new(Context)
@@ -1283,7 +1363,7 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 		if sub.captured {
 			sub = new(Context)
 		}
-		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 		switch it.(type) {
 		case *xmltree.Node:
 			sub.Node = it.(*xmltree.Node)
@@ -1294,9 +1374,30 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 			// predicate lookups over maps/arrays (Lookup-001).
 			sub.CtxItem = it
 		}
-		v, err := evalExpr(pred, sub)
-		if err != nil {
-			return nil, err
+		// A path predicate: an existence test, as in applyPredicateOrdered.
+		var v Object
+		var err error
+		if pathPred != nil {
+			var ns NodeSet
+			ns, v, err = evalPathCounted(pathPred, sub)
+			if err != nil {
+				return nil, err
+			}
+			if v == nil {
+				vb, err := nodeSetEBV(ns)
+				if err != nil {
+					return nil, err
+				}
+				if vb {
+					out = append(out, it)
+				}
+				continue
+			}
+		} else {
+			v, err = evalExpr(pred, sub)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if num, ok := asPositionalInt(v); ok {
 			if num == pos {
@@ -1315,7 +1416,42 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 	return out, nil
 }
 
-func evalPath(n *PathExpr, ctx *Context) (Object, error) {
+// evalNodes evaluates e to its node set without boxing it into an Object
+// when e is a path expression — the one allocation a path's value costs as
+// an Object, paid by every operand, predicate and argument of that shape —
+// with evalExpr's own nesting count. isPath is false, and nothing has been
+// evaluated, for any other expression: the caller then evaluates it as
+// before. A path ending in a postfix step may yield items that are not
+// nodes: that value comes back as v (ns is then unused), as evalExpr would
+// return it.
+func evalNodes(e Expr, ctx *Context) (ns NodeSet, v Object, isPath bool, err error) {
+	p, ok := e.(*PathExpr)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	ns, v, err = evalPathCounted(p, ctx)
+	return ns, v, true, err
+}
+
+// evalPathCounted is evalPathNodes under evalExpr's nesting count: what
+// evalExpr does for a path, without the Object.
+func evalPathCounted(p *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) {
+	if ctx == nil {
+		return evalPathNodes(p, ctx)
+	}
+	ctx.evalDepth++
+	if ctx.evalDepth > maxEvalDepth {
+		ctx.evalDepth--
+		return nil, nil, fmt.Errorf("err:XPDY0001: expression nesting too deep")
+	}
+	defer func() { ctx.evalDepth-- }()
+	return evalPathNodes(p, ctx)
+}
+
+// evalPathNodes evaluates the path n to its node set; v is set instead (and
+// ns is nil) when the last step is a postfix step whose items are not all
+// nodes, the one case a path's value is not a node set.
+func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) {
 	// XPST0081 is STATIC: a name-test prefix with no binding is an error
 	// regardless of whether any node is selected (K2-NameTest-11/41/42, an
 	// empty input must still raise it). "xmlns" is never a legal name-test
@@ -1325,16 +1461,16 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 		if step.Test.Braced && step.Test.URI == "http://www.w3.org/2000/xmlns/" {
 			// The xmlns namespace can never be the namespace of a name test
 			// (eqname-910: XQST0070).
-			return nil, fmt.Errorf("err:XQST0070: the xmlns namespace URI cannot be used in a name")
+			return nil, nil, fmt.Errorf("err:XQST0070: the xmlns namespace URI cannot be used in a name")
 		}
 		if p == "" || step.Test.URI != "" {
 			continue
 		}
 		if p == "xmlns" {
-			return nil, fmt.Errorf("err:XPST0081: xmlns is not a valid namespace prefix")
+			return nil, nil, fmt.Errorf("err:XPST0081: xmlns is not a valid namespace prefix")
 		}
 		if _, err := resolvePrefix(ctx, p); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	var current NodeSet
@@ -1344,13 +1480,13 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 	// path like "@*" or "node()" otherwise allocated on every evaluation.
 	var one *xmltree.Node
 	if n.Start != nil {
-		v, err := evalExpr(n.Start, ctx)
+		sv, err := evalExpr(n.Start, ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		ns, ok := ToNodeSet(v)
+		ns, ok := ToNodeSet(sv)
 		if !ok {
-			return nil, fmt.Errorf("path step applied to non-node-set")
+			return nil, nil, fmt.Errorf("path step applied to non-node-set")
 		}
 		current = ns
 	} else if n.Absolute {
@@ -1359,10 +1495,10 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 			if nd, ok := ctx.CtxItem.(*xmltree.Node); ok {
 				cn = nd
 			} else if ctx.CtxItem != nil {
-				return nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
+				return nil, nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
 			} else if ctx.NoFocus {
 				// '/' with no focus at all is XPDY0002 (K2-Axes-45).
-				return nil, fmt.Errorf("err:XPDY0002: the context item is absent for '/'")
+				return nil, nil, fmt.Errorf("err:XPDY0002: the context item is absent for '/'")
 			}
 		}
 		if cn != nil && cn.SynthCtx() {
@@ -1370,7 +1506,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 			// (xsl:for-each / xsl:analyze-string over a non-node sequence):
 			// a path expression rooted at it has no tree to navigate
 			// (error-XPTY0020a/b).
-			return nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
+			return nil, nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
 		}
 		if cn != nil {
 			root := cn.Root()
@@ -1384,7 +1520,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 				root = effectiveRoot(cn)
 				if root.Kind != xmltree.KindDocument {
 					// XPDY0050: '/' requires a tree rooted at a document node.
-					return nil, fmt.Errorf("XPDY0050: the tree has no document root")
+					return nil, nil, fmt.Errorf("XPDY0050: the tree has no document root")
 				}
 			}
 			one = root
@@ -1392,7 +1528,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 	} else {
 		if ctx.Node != nil {
 			if ctx.Node.SynthCtx() {
-				return nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
+				return nil, nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
 			}
 			one = ctx.Node
 		} else if nd, ok := ctx.CtxItem.(*xmltree.Node); ok {
@@ -1401,11 +1537,11 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 		} else if ctx.CtxItem != nil {
 			// An axis step with an atomic (or function) context item is
 			// XPTY0020 (K2-Axes-38/39: 123[..], 1[element()]).
-			return nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
+			return nil, nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
 		} else if ctx.CtxItem == nil {
 			// A relative path with no context item at all is XPDY0002
 			// (format-integer-019 in the "empty" environment), not empty.
-			return nil, fmt.Errorf("err:XPDY0002: the context item is absent")
+			return nil, nil, fmt.Errorf("err:XPDY0002: the context item is absent")
 		}
 	}
 
@@ -1428,7 +1564,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 				var pc prefixCache
 				matched, err := evalStep(step, cn, ctx, &pc)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				current = matched.normalize()
 				continue
@@ -1447,12 +1583,12 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 				if sub.captured {
 					sub = new(Context)
 				}
-				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
-				v, err := evalExpr(step.Postfix, sub)
+				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
+				pv, err := evalExpr(step.Postfix, sub)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				items = appendItems(items, v)
+				items = appendItems(items, pv)
 			}
 			// XPath 3.1 §3.3.3: when E1/E2 yields NODES the result is returned
 			// in document order with duplicates eliminated. That applies to a
@@ -1464,16 +1600,25 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 			// not itself subject to the last-step mixed node/atomic check.
 			isPathStep := i > 0 || n.Absolute || n.Start != nil
 			if i == len(n.Steps)-1 {
+				var res Object
 				if isPathStep {
-					return pathStepResult(items)
+					res, err = pathStepResult(items)
+					if err != nil {
+						return nil, nil, err
+					}
+				} else {
+					res = FromItems(items)
 				}
-				return FromItems(items), nil
+				if ns, isNodes := res.(NodeSet); isNodes {
+					return ns, nil, nil
+				}
+				return nil, res, nil
 			}
 			result := FromItems(items)
 			// Only nodes can be navigated further.
 			ns, ok := ToNodeSet(result)
 			if !ok {
-				return nil, fmt.Errorf("path step after a non-node value")
+				return nil, nil, fmt.Errorf("path step after a non-node value")
 			}
 			current = ns.normalize()
 			continue
@@ -1483,7 +1628,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 		for _, cn := range current {
 			matched, err := evalStep(step, cn, ctx, &pc)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if len(current) == 1 {
 				// The step's result is taken as is rather than copied: evalStep
@@ -1501,7 +1646,7 @@ func evalPath(n *PathExpr, ctx *Context) (Object, error) {
 	if one != nil {
 		current = NodeSet{one} // a path without steps: its starting node
 	}
-	return current, nil
+	return current, nil, nil
 }
 
 // unionStep returns e's step when e is a relative path of one predicate-free
@@ -1738,6 +1883,7 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 		}
 	}
 	var out NodeSet
+	pathPred, _ := pred.(*PathExpr)
 	// One scratch context serves every item: it is overwritten wholesale per
 	// item, and replaced by a fresh one only when an evaluation CAPTURED it
 	// (Context.captured — a function item holding the pointer could otherwise
@@ -1751,10 +1897,33 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 		if sub.captured {
 			sub = new(Context)
 		}
-		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
-		v, err := evalExpr(pred, sub)
-		if err != nil {
-			return nil, err
+		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
+		// A path predicate ([@b], [item]) is an existence test: its node
+		// set is never a position (asPositionalInt), so only its effective
+		// boolean value is needed, taken without boxing the set.
+		var v Object
+		var err error
+		if pathPred != nil {
+			var ns NodeSet
+			ns, v, err = evalPathCounted(pathPred, sub)
+			if err != nil {
+				return nil, err
+			}
+			if v == nil {
+				vb, err := nodeSetEBV(ns)
+				if err != nil {
+					return nil, err
+				}
+				if vb {
+					out = append(out, node)
+				}
+				continue
+			}
+		} else {
+			v, err = evalExpr(pred, sub)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if num, ok := asPositionalInt(v); ok {
 			if num == pos {
@@ -2127,7 +2296,7 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 			if sub.captured {
 				sub = new(Context)
 			}
-			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10}
+			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 			if nd, ok := it.(*xmltree.Node); ok {
 				sub.Node = nd
 			}

@@ -22,25 +22,135 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 			return v, err
 		}
 	}
-	l, err := evalExpr(n.L, ctx)
+	// Each operand that is a path keeps its node set unboxed (operand.isNodes);
+	// written out for both sides rather than through a helper, since this is
+	// the hottest expression after the path itself.
+	var l, r operand
+	var err error
+	if p, ok := n.L.(*PathExpr); ok {
+		l.nodes, l.v, err = evalPathCounted(p, ctx)
+		l.isNodes = l.v == nil
+	} else {
+		l.v, err = evalExpr(n.L, ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
-	r, err := evalExpr(n.R, ctx)
+	if p, ok := n.R.(*PathExpr); ok {
+		r.nodes, r.v, err = evalPathCounted(p, ctx)
+		r.isNodes = r.v == nil
+	} else {
+		r.v, err = evalExpr(n.R, ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
 	switch n.Kind {
 	case compNode:
-		return nodeComparison(n.Op, l, r)
+		return nodeComparison(n.Op, l.object(), r.object())
 	case compValue:
-		return valueComparison(n.Op, l, r, ctx)
-	default:
-		if v, ok := n.fastGeneralEq(l, r, ctx); ok {
-			return v, nil
+		var la, ra Item
+		var ln, rn int
+		if l.isNodes {
+			la, ln, err = atomizeOperandNodes(l.nodes)
+		} else {
+			la, ln, err = atomizeOperand(l.v)
 		}
-		return generalComparison(n.Op, l, r, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if r.isNodes {
+			ra, rn, err = atomizeOperandNodes(r.nodes)
+		} else {
+			ra, rn, err = atomizeOperand(r.v)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return valueComparisonAtoms(n.Op, la, ln, ra, rn, ctx)
+	default:
+		if l.isLongSequence() || r.isLongSequence() {
+			if v, ok := n.fastGeneralEq(l.object(), r.object(), ctx); ok {
+				return v, nil
+			}
+		}
+		if ctx != nil && ctx.BC10 {
+			return generalComparisonBC10Op(n.Op, &l, &r)
+		}
+		var la, ra []Item
+		if l.isNodes {
+			la, err = atomizeNodes(l.nodes)
+		} else {
+			la, err = Atomize(l.v)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if r.isNodes {
+			ra, err = atomizeNodes(r.nodes)
+		} else {
+			ra, err = Atomize(r.v)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return generalComparisonItems(n.Op, la, ra, ctx)
 	}
+}
+
+// operand is an evaluated comparison operand: a path's node set kept as it
+// is (nodes, isNodes), or any other value (v). Boxing the set into an Object
+// was one allocation per node-set operand of every comparison, so the
+// comparisons read their operands through the methods here instead.
+type operand struct {
+	v       Object
+	nodes   NodeSet
+	isNodes bool
+}
+
+// object is the operand as an Object (boxing a node set).
+func (o *operand) object() Object {
+	if o.isNodes {
+		return o.nodes
+	}
+	return o.v
+}
+
+// count is itemCount of the operand.
+func (o *operand) count() int {
+	if o.isNodes {
+		return len(o.nodes)
+	}
+	return itemCount(o.v)
+}
+
+// at is itemAt of the operand.
+func (o *operand) at(i int) Item {
+	if o.isNodes {
+		if n := o.nodes[i]; n != nil && n.RealItem() != nil {
+			return n.RealItem()
+		}
+		return o.nodes[i]
+	}
+	return itemAt(o.v, i)
+}
+
+// nodeSet is ToNodeSet of the operand.
+func (o *operand) nodeSet() (NodeSet, bool) {
+	if o.isNodes {
+		return o.nodes, true
+	}
+	return ToNodeSet(o.v)
+}
+
+// isLongSequence reports whether the operand is a Sequence fastGeneralEq
+// could index (a node set never is).
+func (o *operand) isLongSequence() bool {
+	if o.isNodes {
+		return false
+	}
+	s, ok := o.v.(Sequence)
+	return ok && len(s) >= eqIndexMin
 }
 
 // rangeComparison evaluates a general comparison one of whose operands is a
@@ -271,6 +381,12 @@ func valueComparison(op string, l, r Object, ctx *Context) (Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	return valueComparisonAtoms(op, la, ln, ra, rn, ctx)
+}
+
+// valueComparisonAtoms is valueComparison on the atomized operands: la with
+// ln items (0, 1, or more than one), ra with rn.
+func valueComparisonAtoms(op string, la Item, ln int, ra Item, rn int, ctx *Context) (Object, error) {
 	if ln == 0 || rn == 0 {
 		return Sequence{}, nil
 	}
@@ -407,6 +523,11 @@ func generalComparison(op string, l, r Object, ctx *Context) (Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	return generalComparisonItems(op, la, ra, ctx)
+}
+
+// generalComparisonItems is generalComparison on the atomized operands.
+func generalComparisonItems(op string, la, ra []Item, ctx *Context) (Object, error) {
 	coll := ctxCollation(ctx)
 	for _, ai := range la {
 		for _, bi := range ra {
@@ -665,23 +786,28 @@ var _ = xmltree.KindElement
 // fragment — which is why the PER-PAIR rule below is what actually branches
 // on kind, not a whole-operand classification).
 func generalComparisonBC10(op string, l, r Object) (Object, error) {
+	return generalComparisonBC10Op(op, &operand{v: l}, &operand{v: r})
+}
+
+// generalComparisonBC10Op is generalComparisonBC10 on evaluated operands.
+func generalComparisonBC10Op(op string, l, r *operand) (Object, error) {
 	// A node-set — EMPTY included — compared against a boolean is
 	// boolean(node-set) op otherBoolean, checked before the existential loop
 	// below because an empty node-set contributes no items to it at all, and
 	// existing over zero pairs would wrongly report "no match" instead of
 	// the definite value boolean(()) = false demands (backwards-045's own
 	// b1: $s/j, no "j" children anywhere, = false() is true).
-	if ln, ok := ToNodeSet(l); ok && bc10ObjIsBoolean(r) {
-		return bc10BoolCompare(op, len(ln) > 0, ToBool(r)), nil
+	if ln, ok := l.nodeSet(); ok && bc10OperandIsBoolean(r) {
+		return bc10BoolCompare(op, len(ln) > 0, ToBool(r.object())), nil
 	}
-	if rn, ok := ToNodeSet(r); ok && bc10ObjIsBoolean(l) {
-		return bc10BoolCompare(bc10FlipOp(op), len(rn) > 0, ToBool(l)), nil
+	if rn, ok := r.nodeSet(); ok && bc10OperandIsBoolean(l) {
+		return bc10BoolCompare(bc10FlipOp(op), len(rn) > 0, ToBool(l.object())), nil
 	}
-	nl, nr := itemCount(l), itemCount(r)
+	nl, nr := l.count(), r.count()
 	for i := 0; i < nl; i++ {
-		li := itemAt(l, i)
+		li := l.at(i)
 		for j := 0; j < nr; j++ {
-			if bc10ItemCompare(op, li, itemAt(r, j)) {
+			if bc10ItemCompare(op, li, r.at(j)) {
 				return true, nil
 			}
 		}
@@ -689,14 +815,14 @@ func generalComparisonBC10(op string, l, r Object) (Object, error) {
 	return false, nil
 }
 
-// bc10ObjIsBoolean reports whether o's first item (BC10's lenient,
+// bc10OperandIsBoolean reports whether o's first item (BC10's lenient,
 // first-item classification, matching every other conversion in this file)
 // is boolean-kind.
-func bc10ObjIsBoolean(o Object) bool {
-	if itemCount(o) == 0 {
+func bc10OperandIsBoolean(o *operand) bool {
+	if o.count() == 0 {
 		return false
 	}
-	return bc10ItemKind(itemAt(o, 0)) == "bool"
+	return bc10ItemKind(o.at(0)) == "bool"
 }
 
 // bc10ItemCompare implements the XPath 1.0 rule table (§3.4) for one pair of

@@ -479,6 +479,47 @@ Desktop GUI (**run from `desktop/`**):
   `key()`'s result) must be a COPY, as `callFunc`'s key() lookup makes —
   returning the index list itself, even capacity-cut, corrupted the index
   (round 11A, dropped; the writer was not pinned down).
+- **A path's node set travels unboxed where only its nodes are read.**
+  `evalPathNodes` (eval.go) is the path evaluator; `evalPathCounted` adds
+  evalExpr's nesting count, `evalNodes(e)` the type test, and
+  `Parsed.EvalNodes`/`engine.evalNodes` the host side. The second result
+  (`v Object`) is non-nil ONLY when the last step is a postfix step whose
+  items are not all nodes — then `v` is the value evalExpr would return and
+  the set is nil; every consumer checks `v == nil` before reading the set.
+  The consumers (predicates, comparison operands, built-in arguments,
+  xsl:for-each/apply-templates selects, xsl:if/when tests, value-of, AVTs,
+  xsl:key use) take exactly the branch the boxed value took — a node set's
+  EBV is `nodeSetEBV` (carrier nodes unwrapped as in `itemAt`), its
+  atomization `atomizeNodes`/`atomizeOneNodes` — so a change to
+  `EffectiveBoolErr`/`Atomize`/`atomizeOne`/`joinSeq` must be mirrored in
+  its node-set twin. Those twins are deliberately written out, not shared
+  through a helper: every extra call frame on these paths showed up in the
+  instruction counts (snap1 of round 12A: +1.7 % on the string workload).
+- **Built-in call plans are per `FuncCall` node** (`fnPlan`, functions.go):
+  `plan` (atomic.Uint32), `sig` and `form` are decided once from the
+  catalogue and the argument expressions, and cached only for a call with
+  NO prefix — an `fn` prefix may be bound to the XML Schema namespace by
+  the context, so such a call is planned afresh each time. A call that can
+  do nothing of this costs one load (`plan == planDecided`). The fused
+  argument conversion (`argSpec.convertNodes`) is `convert`'s one-item
+  branch for a node set: keep the two in step, and keep it falling back
+  (boxing the set) on anything it does not handle, so `convert` reports
+  every error as before. `fusedSetFunc` answers count/exists/empty/boolean/
+  not from the set with the implementations' own result values.
+- **`Context.ArgStack` is LIFO and only for `argStackSafe` built-ins.** The
+  XSLT evaluation scratch owns one (`evalScratch.args`); every derived
+  context literal copies the pointer (the four in eval.go, two in
+  pattern.go — like `Interrupt`). A listed function's implementation must
+  read its `a []Object` during the call only: never return `Sequence(a)`,
+  wrap `a` in an array/map, keep a sub-slice, or close over it; add a name
+  only after reading the implementation AND the helpers it hands `a` to
+  (`convert` copies the slice before changing a value, so a converted
+  argument is heap-allocated anyway). Every return path of `evalFunc` pops
+  what it pushed; a context without a stack (XSD assertions, a bare
+  `Context`) allocates as before.
+- `itrNext` (xsl:next-iteration) carries `keys`/`vals` slices aligned to the
+  instruction's with-params (`itrNext.value`), not a map; it is still an
+  uncomparable error value (see `sameErr`).
 - **Results must not depend on the platform.** The nightly job runs on
   linux/amd64, the maintainer's Mac is darwin/arm64, and two classes of
   difference have bitten: converting a NaN/huge float64 to int is

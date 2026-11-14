@@ -255,6 +255,35 @@ libxslt's time to where it is now:
   HTML output workload: 4 %). No workload executes more instructions than
   before, and every output is byte-identical.
 
+- a twelfth round, part A, on the evaluator and the XSLT instructions,
+  under the same harness and rule: a path expression's node set was boxed
+  into an interface value every time it was evaluated — one allocation per
+  predicate, comparison operand, function argument, select, test, value-of
+  and attribute value template, 16 % of all allocations of an XSD 1.1
+  validation and 29 % of the XPath 1.0 predicate workload — and the
+  consumers that only read the nodes now take the set itself (a predicate
+  that is a path is an existence test; a comparison atomizes the set
+  directly; a built-in's path argument is converted to the declared atomic
+  type on the spot, exactly as the argument check would convert the boxed
+  set, so the check then finds it matching; count, exists, empty, boolean
+  and not are answered from the set; xsl:for-each runs over the set without
+  copying it twice; a key index takes each node's key string from it); the
+  arguments of the string, number, date-component, aggregate and node-name
+  built-ins live on a per-evaluation stack instead of a slice allocated per
+  call (the implementations were read one by one: none keeps its argument
+  slice); five one-item argument helpers (string-length and friends,
+  fn:string, the xs: constructors, a plain Go string argument, string-join
+  over tokenize's strings) no longer build a sequence or an Atomic to read
+  one value from it; a `for` expression reads its binding sequence in place
+  and starts its result at the right size; a 1.0-compatible arithmetic
+  operand and an xsl:sort key are atomized without a one-item sequence; and
+  xsl:next-iteration hands its values on in a slice, not a map. What a call
+  can do without boxing is decided once per call node, so a call that can
+  do nothing of it costs one load — the first version decided it per call
+  and added call frames on the hottest paths, which cachegrind showed as
+  1.7 % more instructions on the string workload with no allocation saved;
+  every such frame was removed before anything was kept. The function-call workload: 10 % fewer instructions, 31 % fewer allocations, 18 % fewer bytes allocated; the string workload: 6 % fewer instructions, 31 % fewer allocations; key lookups: 5 % fewer instructions, 23 % fewer allocations, 9 % less peak memory; XSD 1.1 assertions over the 200,000-order document: 4 % fewer instructions, 20 % fewer allocations; the XPath 1.0 predicate workload: 28 % fewer allocations; HTML output: 16 % fewer allocations. No workload allocates more or executes more instructions beyond the counter's spread, and every output is byte-identical.
+
 - a twelfth round, part B, on the readers, the validator and the compiler
   (part A, in parallel, took the evaluator). The streaming reader allocated
   a child list for every element that had any children, most of them leaves

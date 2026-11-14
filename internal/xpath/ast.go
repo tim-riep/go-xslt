@@ -1,6 +1,10 @@
 package xpath
 
-import "github.com/tim-riep/go-xslt/internal/xmltree"
+import (
+	"sync/atomic"
+
+	"github.com/tim-riep/go-xslt/internal/xmltree"
+)
 
 // Expr is a parsed XPath expression node.
 type Expr interface{ expr() }
@@ -19,6 +23,15 @@ type FuncCall struct {
 	Prefix string
 	Local  string
 	Args   []Expr
+	// sig remembers the catalogued fn: signature of a call written with no
+	// prefix or the fn prefix (fnSig), once looked up; noFnSig when there is
+	// none. The catalogue never changes, so the answer is the same for every
+	// evaluation of the node. plan is what evalFunc can do for the call
+	// without boxing an argument (fnPlan), decided once from sig and the
+	// argument expressions.
+	sig  atomic.Pointer[builtinSig]
+	plan atomic.Uint32
+	form atomic.Pointer[sigForm] // the signature of the call's arity, with planFuseArgs
 }
 
 // BinaryExpr is an infix operation: and, or, =, !=, <, <=, >, >=, +, -, *, div, mod.

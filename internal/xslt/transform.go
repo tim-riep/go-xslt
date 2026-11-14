@@ -1553,6 +1553,12 @@ type engine struct {
 	// bcScopes memoizes inBackwardsCompatScope per stylesheet element (see
 	// bcScope).
 	bcScopes map[*xmltree.Node]bool
+	// userFuncs remembers the stylesheet function each (uri, local, arity)
+	// names, nil for none (engine.userFunc).
+	userFuncs map[funcRef]*FuncDef
+	// argStack is the run's one stack for built-in call arguments
+	// (xpath.Context.ArgStack), handed to every evaluation scratch.
+	argStack *xpath.ArgStack
 	// asCtxs memoizes asTypeCtx per stylesheet element: the context a
 	// declared type is matched in is built from the element alone (its
 	// namespaces, xpath-default-namespace and schema), which a compiled
@@ -2285,6 +2291,7 @@ type evalScratch struct {
 	ctx    xpath.Context
 	named  func(ns, local string, arity int) (*xpath.Function, bool)
 	lookup func(ns, local string, arity int) (*xpath.Function, bool)
+	args   *xpath.ArgStack // the run's built-in call argument stack (engine.argStack)
 }
 
 // checkoutEvalScratch takes a pair off the free list, or builds one.
@@ -2297,6 +2304,14 @@ func (eng *engine) checkoutEvalScratch() *evalScratch {
 	sc := new(evalScratch)
 	sc.named = eng.resolveNamedFunction(&sc.env)
 	sc.lookup = eng.resolveLookupFunction(&sc.env)
+	// One argument stack serves the whole run: every evaluation of a run
+	// nests on the one goroutine, so pushes and pops stay LIFO across
+	// scratches, captured ones included, and a scratch dropped because a
+	// function item captured it costs no stack of its own.
+	if eng.argStack == nil {
+		eng.argStack = xpath.NewArgStack()
+	}
+	sc.args = eng.argStack
 	return sc
 }
 
@@ -2314,6 +2329,21 @@ func (eng *engine) releaseEvalScratch(sc *evalScratch) {
 
 // evalWith is eval with explicit static-context overrides.
 func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOverride) (xpath.Object, error) {
+	_, v, _, err := eng.evalWithNodes(p, el, r, ov, false)
+	return v, err
+}
+
+// evalNodes is eval keeping a path's node set as it is (xpath.Parsed.EvalNodes):
+// isNodes reports that ns is the value, otherwise v is. For the instructions
+// that only read the nodes a select or test expression yields.
+func (eng *engine) evalNodes(p *xpath.Parsed, el *xmltree.Node, r rt) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
+	return eng.evalWithNodes(p, el, r, evalOverride{}, true)
+}
+
+// evalWithNodes evaluates p in the static and dynamic context of el and r;
+// with nodes set, through EvalNodes (isNodes then says which result holds
+// the value), otherwise through Eval into v.
+func (eng *engine) evalWithNodes(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOverride, nodes bool) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
 	eng.depth++
 	sc := eng.checkoutEvalScratch()
 	defer func() {
@@ -2321,7 +2351,7 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 		eng.releaseEvalScratch(sc)
 	}()
 	if eng.tooDeep() {
-		return nil, fmt.Errorf("err:XPDY0130: evaluation recursion too deep (possible non-terminating stylesheet)")
+		return nil, nil, false, fmt.Errorf("err:XPDY0130: evaluation recursion too deep (possible non-terminating stylesheet)")
 	}
 	env := &sc.env
 	*env = evalEnv{eng: eng, el: el, current: r.node, snapScopes: true}
@@ -2385,16 +2415,20 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 		}
 	}
 	ctx := &sc.ctx
-	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt()}
-	v, err := p.Eval(ctx)
+	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt(), ArgStack: sc.args}
+	if nodes {
+		ns, v, isNodes, err = p.EvalNodes(ctx)
+	} else {
+		v, err = p.Eval(ctx)
+	}
 	if err != nil && eng.errEl == nil {
 		eng.errEl = el
 	}
 	if eng.pendingErr != nil {
 		err, eng.pendingErr = eng.pendingErr, nil
-		return nil, err
+		return nil, nil, false, err
 	}
-	return v, err
+	return ns, v, isNodes, err
 }
 
 // bcScope is inBackwardsCompatScope for the stylesheet element an ordinary
@@ -2828,7 +2862,7 @@ type errSite struct {
 
 // sameErr compares two errors by identity without panicking on an
 // uncomparable dynamic type. Two errors of different dynamic types are never
-// equal, and two of one uncomparable type (itrNext, which carries a map)
+// equal, and two of one uncomparable type (itrNext, which carries slices)
 // cannot be compared, so both answers are given without the comparison:
 // comparing them used to raise and recover a panic for every
 // xsl:next-iteration. The deferred recovery stays for a comparable type
@@ -2949,9 +2983,24 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 			out.Append(textNode(s, n.doe))
 			return nil
 		}
-		v, err := eng.eval(n.sel, n.el, r)
+		ns, v, isNodes, err := eng.evalNodes(n.sel, n.el, r)
 		if err != nil {
 			return err
+		}
+		if isNodes {
+			// A path's nodes, as they are (the usual select): the carrier
+			// check and both renderings below, on the set itself.
+			if hasCarrier(ns) {
+				if err := rejectValueOfItems(n.el, ns); err != nil {
+					return err
+				}
+			}
+			if !hasExplicitSep && eng.bc10At(n.el) {
+				out.Append(textNode(xpath.NodeSetString(ns), n.doe))
+				return nil
+			}
+			out.Append(textNode(joinNodes(ns, sep), n.doe))
+			return nil
 		}
 		// xsl:value-of computes the STRING VALUE of its selected sequence —
 		// atomizing a map or function item (an array is flattened into its
@@ -2993,11 +3042,11 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 	case *forEach:
 		return eng.execForEach(n, r, out)
 	case *ifInstr:
-		v, err := eng.eval(n.test, n.el, r)
+		ok, err := eng.evalTest(n.test, n.el, r)
 		if err != nil {
 			return err
 		}
-		if xpath.ToBool(v) {
+		if ok {
 			return eng.execSequence(n.body, r, out)
 		}
 		return nil
@@ -3194,13 +3243,26 @@ func stripEmptyLiteralText(el *xmltree.Node) {
 	el.Children = kept
 }
 
+// evalTest is the boolean of an xsl:if or xsl:when test expression
+// (xpath.ToBool of its value: a node set is true when it has a node).
+func (eng *engine) evalTest(p *xpath.Parsed, el *xmltree.Node, r rt) (bool, error) {
+	ns, v, isNodes, err := eng.evalNodes(p, el, r)
+	if err != nil {
+		return false, err
+	}
+	if isNodes {
+		return len(ns) > 0, nil
+	}
+	return xpath.ToBool(v), nil
+}
+
 func (eng *engine) execChoose(n *chooseInstr, r rt, out *xmltree.Node) error {
 	for _, w := range n.whens {
-		v, err := eng.eval(w.test, w.el, r)
+		ok, err := eng.evalTest(w.test, w.el, r)
 		if err != nil {
 			return err
 		}
-		if xpath.ToBool(v) {
+		if ok {
 			return eng.execSequence(w.body, r, out)
 		}
 	}
@@ -3231,10 +3293,57 @@ func attachRealItem(nd *xmltree.Node, it xpath.Item) {
 }
 
 func (eng *engine) execForEach(n *forEach, r rt, out *xmltree.Node) error {
-	v, err := eng.eval(n.sel, n.el, r)
+	ns, v, isNodes, err := eng.evalNodes(n.sel, n.el, r)
 	if err != nil {
 		return err
 	}
+	var nodes []*xmltree.Node
+	if isNodes && !hasCarrier(ns) {
+		// A path's nodes, as they are: the loop below only reads the list
+		// (sortNodes builds a new one), so it needs neither the items copy
+		// nor the nodes copy the general sequence takes.
+		nodes = ns
+	} else {
+		if isNodes {
+			v = ns
+		}
+		nodes, err = eng.forEachNodes(n, v, out)
+		if err != nil || nodes == nil {
+			return err
+		}
+	}
+	if len(n.sorts) > 0 {
+		nodes, err = eng.sortNodes(nodes, n.sorts, n.el, r)
+		if err != nil {
+			return err
+		}
+	}
+	// The current template rule is ABSENT inside xsl:for-each (XSLT 3.0
+	// §6.7), so xsl:apply-imports / xsl:next-match there is XTDE0560 rather
+	// than a continuation of the enclosing template's search (error-0560a).
+	savedApply := eng.applyStack
+	eng.applyStack = nil
+	defer func() { eng.applyStack = savedApply }()
+	size := len(nodes)
+	for i, node := range nodes {
+		// Each iteration is its OWN sequence constructor and so gets its own
+		// variable scope. Sharing one scope across the whole loop let each
+		// iteration overwrite the previous iteration's xsl:variable in the
+		// same map — invisible while the value is read immediately, but fatal
+		// for a closure that captures it: eng.eval snapshots the scope stack
+		// by copying map POINTERS, so every closure built in the loop saw the
+		// LAST iteration's value (higher-order-functions-042).
+		if err := eng.forEachIteration(n.body, rt{node: node, pos: i + 1, size: size}, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// forEachNodes turns the selected sequence v of an xsl:for-each into the
+// nodes its body runs over — or runs the body itself, through forEachItems,
+// and returns nil nodes, for a sequence with an item no node can stand for.
+func (eng *engine) forEachNodes(n *forEach, v xpath.Object, out *xmltree.Node) ([]*xmltree.Node, error) {
 	// XSLT 2.0+: for-each iterates any sequence. Atomic items are modelled as
 	// synthetic text nodes so "." yields their value.
 	items := xpath.Items(v)
@@ -3245,7 +3354,7 @@ func (eng *engine) execForEach(n *forEach, r rt, out *xmltree.Node) error {
 	// item carried in rt.item. Sorting is not supported in that shape — a sort
 	// key over a function item is a type error anyway.
 	if len(n.sorts) == 0 && hasOpaqueItem(items) {
-		return eng.forEachItems(n, items, out)
+		return nil, eng.forEachItems(n, items, out)
 	}
 	nodes := make([]*xmltree.Node, len(items))
 	for i, it := range items {
@@ -3275,32 +3384,7 @@ func (eng *engine) execForEach(n *forEach, r rt, out *xmltree.Node) error {
 			nodes[i] = nd
 		}
 	}
-	if len(n.sorts) > 0 {
-		nodes, err = eng.sortNodes(nodes, n.sorts, n.el, r)
-		if err != nil {
-			return err
-		}
-	}
-	// The current template rule is ABSENT inside xsl:for-each (XSLT 3.0
-	// §6.7), so xsl:apply-imports / xsl:next-match there is XTDE0560 rather
-	// than a continuation of the enclosing template's search (error-0560a).
-	savedApply := eng.applyStack
-	eng.applyStack = nil
-	defer func() { eng.applyStack = savedApply }()
-	size := len(nodes)
-	for i, node := range nodes {
-		// Each iteration is its OWN sequence constructor and so gets its own
-		// variable scope. Sharing one scope across the whole loop let each
-		// iteration overwrite the previous iteration's xsl:variable in the
-		// same map — invisible while the value is read immediately, but fatal
-		// for a closure that captures it: eng.eval snapshots the scope stack
-		// by copying map POINTERS, so every closure built in the loop saw the
-		// LAST iteration's value (higher-order-functions-042).
-		if err := eng.forEachIteration(n.body, rt{node: node, pos: i + 1, size: size}, out); err != nil {
-			return err
-		}
-	}
-	return nil
+	return nodes, nil
 }
 
 // forEachIteration runs one iteration of a loop body in its own variable scope.
@@ -3385,14 +3469,16 @@ func (eng *engine) execApplyTemplates(n *applyTemplates, r rt, out *xmltree.Node
 	if isStatic {
 		nodes = static
 	} else if n.sel != nil {
-		v, err := eng.eval(n.sel, n.el, r)
+		ns, v, isNodes, err := eng.evalNodes(n.sel, n.el, r)
 		if err != nil {
 			return err
 		}
-		ns, ok := xpath.ToNodeSet(v)
-		if !ok {
-			// XSLT 3.0: apply-templates processes a general sequence.
-			ns = itemsAsNodes(xpath.Items(v))
+		if !isNodes {
+			var ok bool
+			if ns, ok = xpath.ToNodeSet(v); !ok {
+				// XSLT 3.0: apply-templates processes a general sequence.
+				ns = itemsAsNodes(xpath.Items(v))
+			}
 		}
 		nodes = ns
 	} else {
@@ -5406,6 +5492,14 @@ func (eng *engine) keyIndexFor(name string) map[string][]*xmltree.Node {
 // body, executed exactly like an @as-typed xsl:variable body — a raw
 // SEQUENCE of the constructed items, not a document-fragment/string
 // (key-073/074: xsl:for-each/xsl:sequence content computing the values).
+// evalKeyUseNodes is evalKeyUse for a key with a @use expression, keeping a
+// path's node set as it is (evalNodes).
+func (eng *engine) evalKeyUseNodes(kd *KeyDef, r rt) (xpath.NodeSet, xpath.Object, bool, error) {
+	eng.tempOutputDepth++
+	defer func() { eng.tempOutputDepth-- }()
+	return eng.evalNodes(kd.use, kd.el, r)
+}
+
 func (eng *engine) evalKeyUse(kd *KeyDef, r rt) (xpath.Object, error) {
 	// XSLT 3.0 "temporary output state" (5.7.1): xsl:result-document is not
 	// allowed while evaluating an xsl:key's value (err:XTDE1480).
@@ -5508,7 +5602,14 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 			if !ok {
 				return
 			}
-			val, err := eng.evalKeyUse(kd, rt{node: node, pos: 1, size: 1})
+			var val xpath.Object
+			var useNodes xpath.NodeSet
+			var isNodes bool
+			if kd.use != nil && !kd.composite {
+				useNodes, val, isNodes, err = eng.evalKeyUseNodes(kd, rt{node: node, pos: 1, size: 1})
+			} else {
+				val, err = eng.evalKeyUse(kd, rt{node: node, pos: 1, size: 1})
+			}
 			if err != nil {
 				// A circular key definition (XTDE0640) or an attempt to use
 				// xsl:result-document while evaluating the key's value
@@ -5530,8 +5631,11 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 				idx[k] = append(idx[k], node)
 				return
 			}
-			if ns, ok := xpath.ToNodeSet(val); ok {
-				for _, u := range ns {
+			if !isNodes {
+				useNodes, isNodes = xpath.ToNodeSet(val)
+			}
+			if isNodes {
+				for _, u := range useNodes {
 					k := canonKeyString(keyNodeString(u), kd.collURI)
 					idx[k] = append(idx[k], node)
 				}
@@ -5637,13 +5741,18 @@ func (eng *engine) evalAVT(a *avt, el *xmltree.Node, r rt) (string, error) {
 			// XSLT 1.0 backwards-compatible processing reverts this to the
 			// FIRST item's string value only (backwards-010's own point:
 			// "effect of BC on AVTs").
-			v, err := eng.eval(part.expr, elOrDoc(el, eng.doc), r)
+			ns, v, isNodes, err := eng.evalNodes(part.expr, elOrDoc(el, eng.doc), r)
 			if err != nil {
 				return "", err
 			}
-			if eng.bc10At(el) {
+			switch {
+			case isNodes && eng.bc10At(el):
+				s = xpath.NodeSetString(ns)
+			case isNodes:
+				s = joinNodes(ns, " ")
+			case eng.bc10At(el):
 				s = xpath.ToString(v)
-			} else {
+			default:
 				s = joinSeq(v, " ")
 			}
 		}
@@ -6042,9 +6151,20 @@ func (eng *engine) sortNodes(nodes []*xmltree.Node, sorts []sortKey, el *xmltree
 			// surfaced before as well: the inference checks that used to
 			// atomize first treated an error as an empty key, changing no
 			// state, so nothing observable happened between there and here.
-			atoms, aerr := xpath.Atomize(v)
+			// The usual one value is held in a stack array, not a sequence
+			// allocated per key; a plural key only needs its count, for the
+			// XTTE1020 below.
+			var oneAtom [1]xpath.Item
+			atoms := oneAtom[:0]
+			atom, nAtoms, aerr := xpath.AtomizeOperand(v)
 			if aerr != nil {
 				return nil, aerr
+			}
+			if nAtoms == 1 {
+				oneAtom[0] = atom
+				atoms = oneAtom[:1]
+			} else if nAtoms > 1 {
+				return nil, errAt(sk.el, "err:XTTE1020: the xsl:sort key value is a sequence of %d items", nAtoms)
 			}
 			if allNumeric[si] {
 				if num, empty := sortKeyIsNumeric(atoms); !empty {
@@ -6278,13 +6398,7 @@ func joinSeq(o xpath.Object, sep string) string {
 	case nil:
 		return ""
 	case xpath.NodeSet:
-		if len(v) != 1 {
-			return simpleContentJoin(xpath.Flatten(xpath.Items(o)), sep, false)
-		}
-		it = v[0]
-		if nd := v[0]; nd != nil && nd.RealItem() != nil {
-			it = nd.RealItem()
-		}
+		return joinNodes(v, sep)
 	case xpath.Sequence:
 		if len(v) != 1 {
 			return simpleContentJoin(xpath.Flatten(xpath.Items(o)), sep, false)
@@ -6293,6 +6407,23 @@ func joinSeq(o xpath.Object, sep string) string {
 	default:
 		it = v
 	}
+	return joinItem(it, sep)
+}
+
+// joinNodes is joinSeq of a node set.
+func joinNodes(ns xpath.NodeSet, sep string) string {
+	if len(ns) != 1 {
+		return simpleContentJoin(xpath.Flatten(xpath.Items(ns)), sep, false)
+	}
+	var it xpath.Item = ns[0]
+	if nd := ns[0]; nd != nil && nd.RealItem() != nil {
+		it = nd.RealItem()
+	}
+	return joinItem(it, sep)
+}
+
+// joinItem is joinSeq of the one item it.
+func joinItem(it xpath.Item, sep string) string {
 	if nd, ok := it.(*xmltree.Node); ok {
 		if nd.Kind == xmltree.KindText && !nd.Atomic() {
 			return nd.Value

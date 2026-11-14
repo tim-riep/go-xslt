@@ -65,15 +65,230 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		}}, nil
 	}
 
-	args := make([]Object, len(n.Args))
+	// A built-in's argument written as a path expression is evaluated to its
+	// node set and converted to the declared atomic type here, without first
+	// boxing the set into an Object (the allocation every such argument
+	// cost); fn:count and the other node-set tests of one argument are
+	// answered from the set itself. Everything else is as before: the
+	// conversion is exactly argSpec.convert's, done before dispatchFunc
+	// repeats the check (which then finds the argument matching), and any
+	// value it does not handle is passed on for that check to decide.
+	var fuse uint32 // bit i: argument i is a path to convert here
+	var args []Object
+	var stack *ArgStack // the arguments' stack, when they live on one
+	if plan := n.plan.Load(); plan != planDecided {
+		// (A call that can do nothing of this is one load and one test.)
+		if plan == 0 {
+			plan = n.fnPlan(ctx)
+		}
+		if plan&planSetFunc != 0 {
+			return fusedSetFunc(n.Prefix, n.Local, n.Args[0], ctx)
+		}
+		if plan&planFuseArgs != 0 && (ctx == nil || !ctx.BC10) {
+			// (1.0 compatibility passes every argument as it is.)
+			fuse = plan >> planArgShift
+		}
+		if plan&planStackArgs != 0 && ctx != nil && ctx.ArgStack != nil {
+			stack = ctx.ArgStack
+			args = stack.push(len(n.Args))
+		}
+	}
+	if stack == nil {
+		args = make([]Object, len(n.Args))
+	}
 	for i, a := range n.Args {
+		if fuse&(1<<i) != 0 {
+			p := n.form.Load().spec(i)
+			ns, v, _, err := evalNodes(a, ctx)
+			if err != nil {
+				if stack != nil {
+					stack.pop(len(n.Args))
+				}
+				return nil, err
+			}
+			if v != nil {
+				args[i] = v
+			} else if c, ok := p.convertNodes(ns, ctx); ok {
+				args[i] = c
+			} else {
+				args[i] = ns
+			}
+			continue
+		}
 		v, err := evalExpr(a, ctx)
 		if err != nil {
+			if stack != nil {
+				stack.pop(len(n.Args))
+			}
 			return nil, err
 		}
 		args[i] = v
 	}
-	return dispatchFunc(n.Prefix, n.Local, args, ctx)
+	v, err := dispatchFunc(n.Prefix, n.Local, args, ctx)
+	if stack != nil {
+		stack.pop(len(n.Args))
+	}
+	return v, err
+}
+
+// argStackSafe lists the fn: built-ins whose implementations read their
+// argument slice during the call only — through arg, len, the argument
+// helpers and the conversion check, which copies the slice before changing a
+// value — and never keep it, a sub-slice of it, or a closure over it: their
+// arguments may live on the Context's ArgStack (planStackArgs). A function is
+// added here only after reading its implementation (and the helpers it hands
+// the slice to); one that returns Sequence(a), wraps a in an array or map, or
+// builds a function item over it never qualifies.
+var argStackSafe = map[string]bool{
+	"concat": true, "contains": true, "starts-with": true, "ends-with": true,
+	"substring": true, "substring-before": true, "substring-after": true,
+	"string-length": true, "normalize-space": true, "translate": true,
+	"upper-case": true, "lower-case": true, "matches": true, "replace": true,
+	"string-join": true, "tokenize": true, "compare": true,
+	"string-to-codepoints": true, "codepoints-to-string": true,
+	"string": true, "number": true, "data": true,
+	"sum": true, "avg": true, "min": true, "max": true,
+	"floor": true, "ceiling": true, "round": true, "abs": true,
+	"format-number": true, "format-integer": true,
+	"format-date": true, "format-dateTime": true, "format-time": true,
+	"year-from-date": true, "month-from-date": true, "day-from-date": true,
+	"year-from-dateTime": true, "month-from-dateTime": true, "day-from-dateTime": true,
+	"hours-from-dateTime": true, "minutes-from-dateTime": true, "seconds-from-dateTime": true,
+	"hours-from-time": true, "minutes-from-time": true, "seconds-from-time": true,
+	"local-name": true, "name": true, "namespace-uri": true, "generate-id": true,
+	"position": true, "last": true,
+}
+
+// The bits of FuncCall.plan.
+const (
+	planDecided   uint32 = 1 << iota // the plan has been computed
+	planSetFunc                      // fusedSetFunc answers the call
+	planFuseArgs                     // some argument bit is set
+	planStackArgs                    // the arguments may live on the Context's ArgStack (argStackSafe)
+	// bit planArgShift+i: argument i is a path for an atomic parameter.
+	planArgShift = 8
+	planMaxArgs  = 32 - planArgShift
+)
+
+// fnPlan decides, once per call node, what evalFunc can do for a call of a
+// catalogued fn: built-in — one written with no prefix (the only kind the
+// plan is kept for: an fn prefix may be bound to the XML Schema namespace
+// by the context, so such a call is planned afresh each time) — without
+// boxing an argument: answer it as a node-set test (planSetFunc), or
+// evaluate the arguments that are paths written for atomic parameters to
+// their node sets (planFuseArgs, one bit per argument; the form is kept in
+// n.form). The plan is planDecided alone for a call that can do neither.
+func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
+	plan = planDecided
+	if n.Prefix != "" && n.Prefix != "fn" {
+		n.plan.Store(plan)
+		return plan
+	}
+	sig := n.fnSig(ctx)
+	if sig == nil {
+		if n.Prefix == "" {
+			n.plan.Store(plan)
+		}
+		return plan
+	}
+	if len(n.Args) == 1 && isSetFunc(n.Local) {
+		plan |= planSetFunc
+	} else if f := sig.form(len(n.Args)); f != nil && len(n.Args) <= planMaxArgs {
+		if len(n.Args) > 0 && argStackSafe[n.Local] {
+			plan |= planStackArgs
+		}
+		for i, a := range n.Args {
+			if _, isPath := a.(*PathExpr); isPath {
+				if p := f.spec(i); p != nil && p.kind == akAtomic {
+					plan |= planFuseArgs | 1<<(planArgShift+i)
+				}
+			}
+		}
+		if plan&planFuseArgs != 0 {
+			n.form.Store(f)
+		}
+	}
+	if n.Prefix == "" {
+		n.plan.Store(plan)
+	}
+	return plan
+}
+
+// noFnSig marks a FuncCall looked up in the fn: catalogue without result.
+var noFnSig builtinSig
+
+// fnSig returns the catalogued, implemented fn: signature of a call written
+// with no prefix or the fn prefix — dispatchFunc takes both to the fn:
+// catalogue unconditionally, except an fn prefix bound to the XML Schema
+// namespace, which names the constructors — or nil.
+func (n *FuncCall) fnSig(ctx *Context) *builtinSig {
+	if n.Prefix == "fn" && ctx != nil && ctx.NS != nil {
+		if uri, ok := ctx.NS.ResolveNS("fn"); ok && uri == "http://www.w3.org/2001/XMLSchema" {
+			return nil
+		}
+	}
+	if s := n.sig.Load(); s != nil {
+		if s == &noFnSig {
+			return nil
+		}
+		return s
+	}
+	ensureCatalog()
+	s := sigFn[n.Local]
+	if s == nil || s.fn == nil {
+		n.sig.Store(&noFnSig)
+		return nil
+	}
+	n.sig.Store(s)
+	return s
+}
+
+// isSetFunc reports whether local is one of the fn: functions of one
+// argument fusedSetFunc answers.
+func isSetFunc(local string) bool {
+	switch local {
+	case "count", "exists", "empty", "boolean", "not":
+		return true
+	}
+	return false
+}
+
+// fusedSetFunc answers fn:count, exists, empty, boolean and not of the
+// argument e when that evaluates to a node set — unboxed for a path, or as
+// a NodeSet value — as the implementations do (count counts the items of
+// the set, which it did through a copy of them as a slice; the others take
+// its effective boolean value). Any other value takes the ordinary call.
+func fusedSetFunc(prefix, local string, e Expr, ctx *Context) (Object, error) {
+	ns, v, isPath, err := evalNodes(e, ctx)
+	if !isPath {
+		v, err = evalExpr(e, ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !isPath || v != nil {
+		set, isSet := v.(NodeSet)
+		if !isSet {
+			return dispatchFunc(prefix, local, []Object{v}, ctx)
+		}
+		ns = set
+	}
+	switch local {
+	case "count":
+		return NewInteger(int64(len(ns))), nil
+	case "exists":
+		return len(ns) > 0, nil
+	case "empty":
+		return len(ns) == 0, nil
+	}
+	b, err := nodeSetEBV(ns)
+	if err != nil {
+		return nil, err
+	}
+	if local == "not" {
+		b = !b
+	}
+	return b, nil
 }
 
 // dispatchFunc resolves and invokes a function by (prefix, local) with already
@@ -117,9 +332,9 @@ func dispatchFunc(prefix, local string, args []Object, ctx *Context) (Object, er
 			}
 		}
 		if len(args) == 1 {
-			if items := Items(args[0]); len(items) > 1 {
+			if n := itemCount(args[0]); n > 1 {
 				if _, isType := AtomTypeByName(local); isType || local == "QName" {
-					return nil, fmt.Errorf("err:XPTY0004: %s() requires a single atomic value, got %d items", local, len(items))
+					return nil, fmt.Errorf("err:XPTY0004: %s() requires a single atomic value, got %d items", local, n)
 				}
 			}
 		}
@@ -585,21 +800,22 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	if len(a) == 0 {
 		return ToString(o), nil
 	}
-	items, err := Atomize(o)
+	// The one atomic value without the sequence Atomize builds for it.
+	item, n, err := atomizeOperand(o)
 	if err != nil {
 		return "", err
 	}
-	switch len(items) {
+	switch n {
 	case 0:
 		return "", nil
 	case 1:
-		at, ok := items[0].(*Atomic)
+		at, ok := item.(*Atomic)
 		if !ok || !isComparableAsString(at) {
 			return "", fmt.Errorf("err:XPTY0004: a single xs:string is required")
 		}
 		return at.Lexical(), nil
 	}
-	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", len(items))
+	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", n)
 }
 
 // stringArgStrict returns the xs:string value of argument i under the function
@@ -608,6 +824,11 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
+	if s, ok := arg(a, i).(string); ok {
+		// A plain Go string (fn:tokenize's items, for one) is the single
+		// xs:string itself, without the Atomic toAtomic would build for it.
+		return s, nil
+	}
 	item, n, err := atomizeOperand(arg(a, i))
 	if err != nil {
 		return "", err
@@ -1462,10 +1683,17 @@ func fnStringJoin(c *Context, a []Object) (Object, error) {
 			return joinNodeStrings(v, sep), nil
 		}
 	case Sequence:
+		// Typed atomic values, and plain Go strings (fn:tokenize's items),
+		// whose string is the item itself: atomizing them built an Atomic
+		// per string only to read its lexical form back.
 		atomic := true
 		for _, it := range v {
-			if _, ok := it.(*Atomic); !ok {
+			switch it.(type) {
+			case *Atomic, string:
+			default:
 				atomic = false
+			}
+			if !atomic {
 				break
 			}
 		}
@@ -2095,7 +2323,7 @@ func fnString(c *Context, a []Object) (Object, error) {
 	}
 	// $arg is item()?: a sequence of two or more items is XPTY0004
 	// (K-StringFunc-6, fo-test-fn-string-004).
-	if n := len(Items(a[0])); n > 1 {
+	if n := itemCount(a[0]); n > 1 {
 		return nil, fmt.Errorf("err:XPTY0004: fn:string requires at most one item, got %d", n)
 	}
 	return ToString(a[0]), nil

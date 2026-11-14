@@ -702,6 +702,48 @@ func (p *argSpec) convert(fname string, idx int, a Object, ctx *Context) (v Obje
 	return FromItems(out), true, nil
 }
 
+// convertNodes is convert for an atomic parameter whose argument is the node
+// set ns, as evalFunc evaluates a path argument: the converted value, exactly
+// as convert would replace a boxed ns, when ns is one node whose typed value
+// convert handles on its own — a plain element, attribute or text node for a
+// non-string parameter (converting the string value is the whole conversion),
+// or an annotated node with one typed value. ok is false for every other
+// shape, and for a conversion error: the caller then passes the set on, and
+// convert decides, and reports, as before.
+func (p *argSpec) convertNodes(ns NodeSet, ctx *Context) (v Object, ok bool) {
+	if len(ns) != 1 {
+		return nil, false
+	}
+	x := ns[0]
+	if x == nil || x.RealItem() != nil {
+		return nil, false
+	}
+	if plainNode(x) {
+		if p.stringy || x.Kind == xmltree.KindComment || x.Kind == xmltree.KindPI || x.Kind == xmltree.KindNamespace {
+			return nil, false
+		}
+		if p.atom == XSdouble || p.atom == XSnumeric {
+			if f, ok := simpleDouble(x.StringValue()); ok {
+				return NewDouble(f), true
+			}
+		}
+		c, ch, err := p.convertAtom("", 0, nil, NewUntyped(x.StringValue()), ctx)
+		if err != nil || !ch {
+			return nil, false
+		}
+		return c, true
+	}
+	at, n, err := atomizeOne(x)
+	if err != nil || n != 1 {
+		return nil, false
+	}
+	c, _, err := p.convertAtom("", 0, nil, at.(*Atomic), ctx)
+	if err != nil {
+		return nil, false
+	}
+	return c, true
+}
+
 // convertAtom applies the rules to one atomic item.
 func (p *argSpec) convertAtom(fname string, idx int, arg Object, x *Atomic, ctx *Context) (Item, bool, error) {
 	if p.ok[x.T] {
