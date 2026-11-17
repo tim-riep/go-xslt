@@ -78,7 +78,13 @@ dragging in the GUI's Wails/CGo dependencies:
   for its first child (`streamElementSlab`): at 152 bytes a node each shape
   ends exactly on a size class (160/320/480/640), which
   `TestNodeSizeStaysInItsAllocatorClass` pins — a field added to `Node`
-  moves every shape up a class. `CopyTypeInfo(dst, src)` must be used at every
+  moves every shape up a class. When the window shows character data right
+  after the start tag, the shapes with up to two attributes also hold the
+  node for that first text child (`streamElem0T..2T`: 320/480/640, the
+  class the element and a separate 160-byte text node took together; three
+  attributes would land in 896 > 800, so that shape has none): a node and a
+  child that keep each other alive may share an allocation, two RECORDS
+  never may. `CopyTypeInfo(dst, src)` must be used at every
   node-rebuild/copy site to carry `TypeAnno`/`SchemaType`/`Nilled`/
   `ListTyped`/etc. forward.
 - `internal/xpath` — `lexer.go`, `parser.go`/`ast.go`, `eval.go` + `axes.go` +
