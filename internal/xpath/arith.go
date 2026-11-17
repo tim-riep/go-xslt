@@ -30,8 +30,11 @@ func unaryArith(ctx *Context, o Object, negate bool) (Object, error) {
 	switch {
 	case isIntegerType(a.T) && a.i != nil:
 		return NewIntegerBig(new(big.Int).Neg(a.i)), nil
-	case a.T == XSdecimal && a.d != nil:
-		return NewDecimal(new(big.Rat).Neg(a.d)), nil
+	case a.T == XSdecimal:
+		if m, s, ok := a.decFast(); ok && m != math.MinInt64 {
+			return newDecFast(-m, s), nil
+		}
+		return NewDecimal(new(big.Rat).Neg(a.rat())), nil
 	case a.T == XSfloat:
 		return NewFloat(-a.f), nil
 	}
@@ -141,6 +144,9 @@ func numericArith(op string, a, b *Atomic) (Object, error) {
 	case a.T == XSfloat || b.T == XSfloat:
 		return floatArith(op, a.Float(), b.Float())
 	case a.T == XSdecimal || b.T == XSdecimal:
+		if r, ok := decimalArithFast(op, a, b); ok {
+			return r, nil
+		}
 		return decimalArith(op, toRat(a), toRat(b))
 	case isIntegerType(a.T) && isIntegerType(b.T):
 		return integerArith(op, a.i, b.i)
@@ -151,7 +157,7 @@ func numericArith(op string, a, b *Atomic) (Object, error) {
 
 func toRat(a *Atomic) *big.Rat {
 	if a.T == XSdecimal {
-		return a.d
+		return a.rat()
 	}
 	if isIntegerType(a.T) {
 		return new(big.Rat).SetInt(a.i)
@@ -190,6 +196,44 @@ func integerArith(op string, a, b *big.Int) (Object, error) {
 		return NewDecimal(new(big.Rat).SetFrac(a, b)), nil
 	}
 	return nil, fmt.Errorf("bad operator %q", op)
+}
+
+// decimalArithFast adds, subtracts or multiplies two compact decimals (an
+// integer operand in int64 counts as one of scale 0) in int64; ok is false
+// for any other operator or operand, or on overflow, and decimalArith then
+// does the same in big.Rat.
+func decimalArithFast(op string, a, b *Atomic) (Object, bool) {
+	ma, sa, ok := decOperand(a)
+	if !ok {
+		return nil, false
+	}
+	mb, sb, ok := decOperand(b)
+	if !ok {
+		return nil, false
+	}
+	switch op {
+	case "+":
+		return decAdd(ma, sa, mb, sb)
+	case "-":
+		if mb == math.MinInt64 {
+			return nil, false
+		}
+		return decAdd(ma, sa, -mb, sb)
+	case "*":
+		return decMul(ma, sa, mb, sb)
+	}
+	return nil, false
+}
+
+// decOperand reads a decimal or integer operand as a compact decimal.
+func decOperand(a *Atomic) (m int64, s int, ok bool) {
+	if a.T == XSdecimal {
+		return a.decFast()
+	}
+	if isIntegerType(a.T) && a.i != nil && a.i.IsInt64() {
+		return a.i.Int64(), 0, true
+	}
+	return 0, 0, false
 }
 
 func decimalArith(op string, a, b *big.Rat) (Object, error) {

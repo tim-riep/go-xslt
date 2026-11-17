@@ -42,8 +42,8 @@ func mapKey(it Item) mkey {
 		switch {
 		case isIntegerType(v.T) && v.i != nil:
 			return mkey{'n', v.i.String()}
-		case v.T == XSdecimal && v.d != nil:
-			return mkey{'n', v.d.RatString()}
+		case v.T == XSdecimal:
+			return mkey{'n', v.rat().RatString()}
 		case v.IsNumeric():
 			return num(v.Float())
 		case v.T == XSboolean:

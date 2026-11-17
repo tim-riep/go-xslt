@@ -506,7 +506,7 @@ func aggregate(o Object, op string, zero Object, coll func(a, b string) int) (Ob
 		case isIntegerType(s.T):
 			return NewDecimal(new(big.Rat).SetFrac(s.i, big.NewInt(n))), nil
 		case s.T == XSdecimal:
-			return NewDecimal(new(big.Rat).Quo(s.d, new(big.Rat).SetInt64(n))), nil
+			return NewDecimal(new(big.Rat).Quo(s.rat(), new(big.Rat).SetInt64(n))), nil
 		case s.T == XSfloat:
 			return NewFloat(s.f / float64(n)), nil
 		default:

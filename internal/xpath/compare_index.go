@@ -156,8 +156,12 @@ func (idx *eqIndex) contains(a *Atomic) (hit, decided bool) {
 		_, hit = idx.ints[a.i.Int64()]
 		return hit, true
 	case a.T == XSdecimal:
-		if a.d == nil {
-			return false, false
+		if m, s, ok := a.decFast(); ok {
+			if s != 0 {
+				return false, true
+			}
+			_, hit = idx.ints[m]
+			return hit, true
 		}
 		if !a.d.IsInt() {
 			return false, true

@@ -167,8 +167,15 @@ func fmtNumInput(o Object) fmtNum {
 			switch {
 			case isIntegerType(at.T) && at.i != nil:
 				return fmtNum{abs: new(big.Rat).SetInt(new(big.Int).Abs(at.i)), neg: at.i.Sign() < 0}
-			case at.T == XSdecimal && at.d != nil:
-				return fmtNum{abs: new(big.Rat).Abs(at.d), neg: at.d.Sign() < 0}
+			case at.T == XSdecimal:
+				if m, s, ok := at.decFast(); ok && m != math.MinInt64 {
+					if m < 0 {
+						return fmtNum{abs: ratFromDec(-m, s), neg: true}
+					}
+					return fmtNum{abs: ratFromDec(m, s)}
+				}
+				r := at.rat()
+				return fmtNum{abs: new(big.Rat).Abs(r), neg: r.Sign() < 0}
 			case at.T == XSfloat:
 				return fmtNumFromFloat(at.f, 32)
 			case at.T == XSdouble:
@@ -888,7 +895,13 @@ func fnAbsT(c *Context, a []Object) (Object, error) {
 	case isIntegerType(x.T):
 		return NewIntegerBig(new(big.Int).Abs(x.i)), nil
 	case x.T == XSdecimal:
-		return NewDecimal(new(big.Rat).Abs(x.d)), nil
+		if m, s, ok := x.decFast(); ok && m != math.MinInt64 {
+			if m < 0 {
+				m = -m
+			}
+			return newDecFast(m, s), nil
+		}
+		return NewDecimal(new(big.Rat).Abs(x.rat())), nil
 	case x.T == XSfloat:
 		return NewFloat(math.Abs(x.f)), nil
 	default:
@@ -905,6 +918,13 @@ func fnFloorT(c *Context, a []Object) (Object, error) {
 	case isIntegerType(x.T):
 		return NewIntegerBig(new(big.Int).Set(x.i)), nil
 	case x.T == XSdecimal:
+		if m, s, ok := x.decFast(); ok {
+			q := m / pow10i64[s]
+			if m < 0 && q*pow10i64[s] != m {
+				q--
+			}
+			return newDecFast(q, 0), nil
+		}
 		return NewDecimal(new(big.Rat).SetInt(ratFloorInt(x.d))), nil
 	case x.T == XSfloat:
 		return NewFloat(math.Floor(x.f)), nil
@@ -922,6 +942,13 @@ func fnCeilingT(c *Context, a []Object) (Object, error) {
 	case isIntegerType(x.T):
 		return NewIntegerBig(new(big.Int).Set(x.i)), nil
 	case x.T == XSdecimal:
+		if m, s, ok := x.decFast(); ok {
+			q := m / pow10i64[s]
+			if m > 0 && q*pow10i64[s] != m {
+				q++
+			}
+			return newDecFast(q, 0), nil
+		}
 		return NewDecimal(new(big.Rat).SetInt(ratCeilInt(x.d))), nil
 	case x.T == XSfloat:
 		return NewFloat(math.Ceil(x.f)), nil
@@ -955,7 +982,12 @@ func fnRoundT(c *Context, a []Object) (Object, error) {
 		}
 		return NewIntegerBig(ratRoundScaled(new(big.Rat).SetInt(x.i), p).Num()), nil
 	case x.T == XSdecimal:
-		return NewDecimal(ratRoundScaled(x.d, p)), nil
+		if m, s, ok := x.decFast(); ok {
+			if r, ok := decRoundScaled(m, s, p); ok {
+				return r, nil
+			}
+		}
+		return NewDecimal(ratRoundScaled(x.rat(), p)), nil
 	case x.T == XSfloat:
 		return NewFloat(roundFloatPrec(x.f, p)), nil
 	default:

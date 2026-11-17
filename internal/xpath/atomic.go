@@ -127,10 +127,11 @@ type Atomic struct {
 	T     AtomType
 	b     bool     // boolean
 	hasTZ bool     // whether the date/time value carries an explicit timezone
+	ds    uint8    // scale of a compact decimal (decimal.go)
 	s     string   // string family, anyURI, untypedAtomic, gregorian lexical
 	i     *big.Int // integer family
-	d     *big.Rat // decimal
-	f     float64  // double, float
+	d     *big.Rat // decimal, exact form (nil for the compact form)
+	f     float64  // double, float; the mantissa bits of a compact decimal
 	// ext holds the payloads of the rare, large kinds (date/time, duration,
 	// binary, QName/NOTATION) so every other Atomic — strings, numbers,
 	// booleans: nearly all of them — stays at 64 bytes instead of paying for
@@ -241,14 +242,24 @@ func NewIntegerBig(n *big.Int) *Atomic       { return &Atomic{T: XSinteger, i: n
 func NewQName(n xmltree.Name) *Atomic        { return &Atomic{T: XSqname, ext: &atomExt{qn: n}} }
 func NewBinary(t AtomType, b []byte) *Atomic { return &Atomic{T: t, ext: &atomExt{bin: b}} }
 
-func NewDecimal(r *big.Rat) *Atomic { return &Atomic{T: XSdecimal, d: r} }
+// NewDecimal makes an xs:decimal of r's value: compact when it fits
+// (decimal.go), else holding r itself.
+func NewDecimal(r *big.Rat) *Atomic {
+	if m, s, ok := decFromRat(r); ok {
+		return newDecFast(m, s)
+	}
+	return &Atomic{T: XSdecimal, d: r}
+}
 
 func NewDecimalFromString(s string) (*Atomic, bool) {
+	if mant, scale, ok := plainDecimal(s); ok {
+		return newDecFast(mant, scale), true
+	}
 	r, ok := new(big.Rat).SetString(s)
 	if !ok {
 		return nil, false
 	}
-	return &Atomic{T: XSdecimal, d: r}, true
+	return NewDecimal(r), true
 }
 
 func NewDateTime(t AtomType, tm time.Time, hasTZ bool) *Atomic {
@@ -334,7 +345,12 @@ func (a *Atomic) Float() float64 {
 		v, _ := f.Float64()
 		return v
 	case a.T == XSdecimal:
-		v, _ := a.d.Float64()
+		if a.d == nil {
+			if f, ok := decFloat(int64(math.Float64bits(a.f)), int(a.ds)); ok {
+				return f
+			}
+		}
+		v, _ := a.rat().Float64()
 		return v
 	case a.T == XSdouble || a.T == XSfloat:
 		return a.f
@@ -381,6 +397,9 @@ func (a *Atomic) Lexical() string {
 		}
 		return a.i.String()
 	case a.T == XSdecimal:
+		if a.d == nil {
+			return formatDecFast(int64(math.Float64bits(a.f)), int(a.ds))
+		}
 		return formatDecimal(a.d)
 	case a.T == XSdouble || a.T == XSfloat:
 		if a.T == XSfloat {

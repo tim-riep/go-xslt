@@ -677,7 +677,11 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 	case isIntegerType(a.T):
 		z = new(big.Int).Set(a.i)
 	case a.T == XSdecimal:
-		z = new(big.Int).Quo(a.d.Num(), a.d.Denom())
+		if m, s, ok := a.decFast(); ok {
+			z = big.NewInt(m / pow10i64[s]) // truncates toward zero, as Quo does
+		} else {
+			z = new(big.Int).Quo(a.d.Num(), a.d.Denom())
+		}
 	case a.T == XSdouble || a.T == XSfloat:
 		if math.IsNaN(a.f) || math.IsInf(a.f, 0) {
 			return nil, fmt.Errorf("err:FOCA0002: cannot cast %v to integer", a.f)
@@ -772,6 +776,9 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 	case a.T == XSdecimal:
 		return a, nil
 	case isIntegerType(a.T):
+		if a.i.IsInt64() {
+			return newDecFast(a.i.Int64(), 0), nil
+		}
 		return NewDecimal(new(big.Rat).SetInt(a.i)), nil
 	case a.T == XSdouble || a.T == XSfloat:
 		if math.IsNaN(a.f) || math.IsInf(a.f, 0) {
@@ -784,20 +791,17 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 		return NewDecimal(r), nil
 	case a.T == XSboolean:
 		if a.b {
-			return NewDecimal(big.NewRat(1, 1)), nil
+			return newDecFast(1, 0), nil
 		}
-		return NewDecimal(new(big.Rat)), nil
+		return newDecFast(0, 0), nil
 	default:
 		s := strings.TrimSpace(a.Lexical())
 		if strings.ContainsAny(s, "eE") {
 			return nil, fmt.Errorf("err:FORG0001: decimal lexical may not use exponent %q", s)
 		}
 		if mant, scale, ok := plainDecimal(s); ok {
-			// The usual lexical ("12.5", "-3"): the fraction mant/10^scale
-			// built directly. Rat.SetString computes the power of ten in
-			// big arithmetic first; both end in the same canonical form
-			// (Rat.norm), so the value is the same Rat either way.
-			return NewDecimal(new(big.Rat).SetFrac64(mant, pow10i64[scale])), nil
+			// The usual lexical ("12.5", "-3"): the compact form directly.
+			return newDecFast(mant, scale), nil
 		}
 		r, ok := new(big.Rat).SetString(s)
 		if !ok {
