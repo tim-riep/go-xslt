@@ -214,6 +214,10 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// The whole second-argument sequence is ONE tuple to look up
 			// (mirrors CompositeKeyString's use in keyIndexOn exactly).
 			values = []string{canonKeyString(xpath.CompositeKeyString(xpath.Items(argN(args, 1))), collURI)}
+		} else if n, ok := argN(args, 1).(*xmltree.Node); ok {
+			// One plain node, as evalFunc hands a string parameter its path
+			// argument.
+			values = append(values, canonKeyString(keyNodeString(n), collURI))
 		} else if ns, ok := xpath.ToNodeSet(argN(args, 1)); ok {
 			for _, n := range ns {
 				values = append(values, canonKeyString(keyNodeString(n), collURI))

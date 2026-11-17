@@ -121,6 +121,8 @@ func ToBool(o Object) bool {
 		return effectiveBool([]Item(v))
 	case *Atomic:
 		return effectiveBool([]Item{v})
+	case *xmltree.Node:
+		return true // a one-node set
 	}
 	return false
 }
@@ -146,6 +148,8 @@ func ToNumber(o Object) float64 {
 		return itemNumber(v[0])
 	case *Atomic:
 		return v.Float()
+	case *xmltree.Node:
+		return parseNumber(nodeStringValue(v)) // a one-node set
 	}
 	return math.NaN()
 }
@@ -183,6 +187,10 @@ func ToString(o Object) string {
 		return itemString(v[0])
 	case *Atomic:
 		return v.Lexical()
+	case *xmltree.Node:
+		// A bare node is a one-node set (evalFunc hands a string parameter
+		// its one plain node this way).
+		return nodeStringValue(v)
 	case *Map, *Array:
 		return ""
 	}
