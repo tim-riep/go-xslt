@@ -314,6 +314,34 @@ libxslt's time to where it is now:
   on the HTML workload but cost the xml output method a check per
   attribute (0.5 % more instructions on the identity workload).
 
+- a thirteenth round, part A, on the value model, the functions and the
+  XSLT instructions, under the same harness and rule: an xs:decimal was a
+  big.Rat — three to five allocations to read one from a lexical, as many
+  for every sum or product, a dozen to format one — and is now held
+  compactly, as an int64 mantissa and a scale inside the same 64-byte
+  Atomic, whenever its value fits (a repeating quotient or more than 18
+  digits keeps the Rat), with addition, subtraction, multiplication,
+  rounding, comparison, casting and formatting done in integers and checked
+  against the Rat path to the bit over 435 lexicals pairwise (deep
+  recursion summing decimals: 13 % fewer instructions, half the
+  allocations; xsl:iterate with a decimal map: 13 % fewer
+  instructions, 29 % fewer allocations; XSD 1.1 assertions: 3 %
+  fewer instructions); format-number renders a compact decimal or an int64
+  integer in integer arithmetic (number formatting: 27 % fewer
+  instructions, 48 % fewer allocations; 200 transforms in one process:
+  15 % fewer); an xsl:sort key that selects one unannotated node is
+  classified from the node, without boxing the set or atomizing it (sort:
+  5 % fewer instructions, 46 % fewer allocations, with the next item);
+  a string parameter's one plain node is passed as the bare node instead of
+  a set around it, in 1.0 compatibility mode too (the string workload: 11 %
+  fewer allocations; the XPath 1.0 predicate workload 24 %, regular
+  expressions 12 %); key() keeps its search values on the stack; a call
+  chain's scope stack and a function call's frame are kept for the next
+  call (the function-call workload: 5 % fewer allocations); and generate-id
+  returns its id as the plain string (Muenchian grouping: 3 % less
+  allocated). No workload allocates more or executes more instructions beyond the
+  counter's spread. Every output is byte-identical.
+
 - a thirteenth round, part B, on the readers, the validator and the
   serializer (part A, in parallel, took the evaluator). A streamed element's
   allocation already carried its attribute nodes and the slot for its first
