@@ -206,7 +206,10 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 		if kerr != nil {
 			return nil, true, kerr
 		}
-		var values []string
+		// The one or two search values of the usual lookup live in a stack
+		// array; the loops below append within its capacity.
+		var valBuf [2]string
+		values := valBuf[:0]
 		if composite {
 			// The whole second-argument sequence is ONE tuple to look up
 			// (mirrors CompositeKeyString's use in keyIndexOn exactly).
@@ -224,7 +227,18 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// (key-069/070); collURI additionally re-canonicalizes string-family
 			// keys per the key's @collation/@default-collation (collations-0105).
 			bc := eng.bc10AtDynamic(env.el)
-			for _, it := range xpath.Items(argN(args, 1)) {
+			var oneItem [1]xpath.Item
+			var items []xpath.Item
+			switch v := argN(args, 1).(type) {
+			case *xpath.Atomic, string:
+				// One atomic value (a string from concat, a number): no
+				// slice built around it.
+				oneItem[0] = v
+				items = oneItem[:]
+			default:
+				items = xpath.Items(v)
+			}
+			for _, it := range items {
 				if at, ok := it.(*xpath.Atomic); ok && bc && at.IsNumeric() {
 					// XSLT 1.0 key(): the search value is converted with
 					// string() — a number is XPath 1.0's "1", not the decimal's
