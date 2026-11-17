@@ -477,6 +477,7 @@ func (s *Schema) evalAsserts(asserts []*assertion, el *xmltree.Node, value xpath
 			DefaultElemNS: a.defaultNS,
 			Vars:          vars,
 			RootlessTree:  true,
+			ArgStack:      s.argStack(),
 		}
 		obj, err := a.test.Eval(ctx)
 		if err != nil {

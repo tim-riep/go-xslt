@@ -282,12 +282,18 @@ func (s *Schema) evalNodes(ic *identityConstraint, p *xpath.Parsed, node *xmltre
 		Node: node, Pos: 1, Size: 1,
 		NS:            xsdNS(ic.ns),
 		DefaultElemNS: defNS,
+		ArgStack:      s.argStack(),
 	}
-	obj, err := p.Eval(ctx)
+	// A path's node set is taken unboxed (EvalNodes): Eval would box it
+	// into an interface value, one allocation per field of every target.
+	ns, obj, isNodes, err := p.EvalNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if ns, ok := obj.(xpath.NodeSet); ok {
+	if !isNodes {
+		ns, isNodes = obj.(xpath.NodeSet)
+	}
+	if isNodes {
 		// The usual result of a selector or field path, taken as it is:
 		// Items would copy it into a []Item first. A carrier node unwraps to
 		// the item it stands for, exactly as Items does, and only a node

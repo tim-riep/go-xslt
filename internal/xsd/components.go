@@ -432,6 +432,25 @@ type validateScratch struct {
 	// buffer a key tuple is built in (tupleFor).
 	icCtx *xpath.Context
 	tuple []byte
+	// args is the argument stack of the built-in calls in assertions,
+	// selectors and fields (xpath.Context.ArgStack): one per call, so a
+	// call's arguments need no slice of their own. Evaluations nest, so
+	// one stack serves both contexts.
+	args *xpath.ArgStack
+}
+
+// argStack returns the per-call argument stack, or nil for a Schema not
+// copied for a call (then every built-in call allocates its arguments, as
+// before).
+func (s *Schema) argStack() *xpath.ArgStack {
+	sc := s.scratchSpace()
+	if sc == nil {
+		return nil
+	}
+	if sc.args == nil {
+		sc.args = xpath.NewArgStack()
+	}
+	return sc.args
 }
 
 // assertAnno is the typed-XDM description of a validated node for assertion
