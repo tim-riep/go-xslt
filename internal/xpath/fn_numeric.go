@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"math/bits"
 	"strconv"
 	"strings"
 	"unicode"
@@ -130,8 +131,14 @@ func expandDFName(name string, c *Context) string {
 // fewest digits that round-trips (F&O §4.7.5), so 1E25 formats as 1 followed by
 // 25 zeros rather than the binary expansion 10000000000000000905969664.
 type fmtNum struct {
-	abs      *big.Rat // magnitude; nil when nan or inf
-	neg      bool
+	abs *big.Rat // magnitude; nil when nan or inf, or when compact
+	neg bool
+	// compact: the magnitude is cm / 10^cs (a compact decimal or an int64
+	// integer), rendered in integer arithmetic where the picture allows;
+	// abs is built from it only when the Rat path is needed.
+	compact  bool
+	cm       uint64
+	cs       int
 	nan, inf bool
 	isFloat  bool    // xs:double/xs:float input: %/‰ scaling happens in float arithmetic
 	f        float64 // the double magnitude when isFloat
@@ -166,13 +173,20 @@ func fmtNumInput(o Object) fmtNum {
 		if at, ok := items[0].(*Atomic); ok {
 			switch {
 			case isIntegerType(at.T) && at.i != nil:
+				if at.i.IsInt64() {
+					m := at.i.Int64()
+					if m < 0 {
+						return fmtNum{compact: true, cm: -uint64(m), neg: true}
+					}
+					return fmtNum{compact: true, cm: uint64(m)}
+				}
 				return fmtNum{abs: new(big.Rat).SetInt(new(big.Int).Abs(at.i)), neg: at.i.Sign() < 0}
 			case at.T == XSdecimal:
-				if m, s, ok := at.decFast(); ok && m != math.MinInt64 {
+				if m, s, ok := at.decFast(); ok {
 					if m < 0 {
-						return fmtNum{abs: ratFromDec(-m, s), neg: true}
+						return fmtNum{compact: true, cm: -uint64(m), cs: s, neg: true}
 					}
-					return fmtNum{abs: ratFromDec(m, s)}
+					return fmtNum{compact: true, cm: uint64(m), cs: s}
 				}
 				r := at.rat()
 				return fmtNum{abs: new(big.Rat).Abs(r), neg: r.Sign() < 0}
@@ -592,6 +606,19 @@ func formatNumberValue(n fmtNum, picture string, df DecimalFormat) string {
 		}
 		return out
 	}
+	if n.compact {
+		if body, ok := renderMantissaCompact(n.cm, n.cs, sp, df); ok {
+			out := sp.prefix + body + sp.suffix
+			if soleNeg {
+				out = string(df.MinusSign) + out
+			}
+			return out
+		}
+		n.abs = ratFromDec(int64(n.cm), n.cs) // cm is a magnitude; the sign is in neg
+		if n.cm > math.MaxInt64 {
+			n.abs = new(big.Rat).SetFrac(new(big.Int).SetUint64(n.cm), pow10rat(n.cs).Denom())
+		}
+	}
 	av := new(big.Rat).Set(n.abs)
 	if sp.mult != 1 && !n.isFloat {
 		av.Mul(av, new(big.Rat).SetInt64(int64(sp.mult)))
@@ -692,6 +719,67 @@ func renderMantissa(av *big.Rat, sp subPicture, df DecimalFormat) string {
 		}
 		fracPart = strings.TrimRight(fracPart, "0")
 	}
+	return finishMantissa(intPart, fracPart, sp, df)
+}
+
+// renderMantissaCompact is renderMantissa for a magnitude cm / 10^cs in
+// integer arithmetic: the %/‰ factor applied, the value rounded half to even
+// at maxFrac places, the integer and fraction digits taken apart. ok is
+// false where int64 does not suffice or the picture is scientific, and the
+// Rat path renders the same value.
+func renderMantissaCompact(cm uint64, cs int, sp subPicture, df DecimalFormat) (string, bool) {
+	if sp.hasExp || cs > decMaxScale || sp.maxFrac > decMaxScale {
+		return "", false
+	}
+	if sp.mult != 1 {
+		hi, lo := bits.Mul64(cm, uint64(sp.mult))
+		if hi != 0 {
+			return "", false
+		}
+		cm = lo
+	}
+	if cs > sp.maxFrac {
+		// Drop cs-maxFrac digits, rounding half to even as
+		// numRatRoundToEvenInt does.
+		div := uint64(pow10i64[cs-sp.maxFrac])
+		q, rem := cm/div, cm%div
+		if rem > div/2 || (rem == div/2 && q%2 == 1) { // div is even: div/2 is exact
+			q++
+		}
+		cm, cs = q, sp.maxFrac
+	}
+	var buf [20]byte
+	digits := strconv.AppendUint(buf[:0], cm, 10)
+	intPart, fracPart := "", ""
+	if len(digits) > cs {
+		intPart = string(digits[:len(digits)-cs])
+		if intPart == "0" {
+			intPart = ""
+		}
+	}
+	if sp.maxFrac > 0 && cs > 0 {
+		// The fraction is the last cs digits, with leading zeros where there
+		// are fewer; trailing zeros are dropped (a rounded q may end in some).
+		frac := digits
+		lead := 0
+		if len(digits) > cs {
+			frac = digits[len(digits)-cs:]
+		} else {
+			lead = cs - len(digits)
+		}
+		for len(frac) > 0 && frac[len(frac)-1] == '0' {
+			frac = frac[:len(frac)-1]
+		}
+		if len(frac) > 0 {
+			fracPart = strings.Repeat("0", lead) + string(frac)
+		}
+	}
+	return finishMantissa(intPart, fracPart, sp, df), true
+}
+
+// finishMantissa pads the digit strings to the picture's minimum sizes,
+// writes them in the format's digit family and groups them.
+func finishMantissa(intPart, fracPart string, sp subPicture, df DecimalFormat) string {
 	if len(intPart) < sp.minInt {
 		intPart = strings.Repeat("0", sp.minInt-len(intPart)) + intPart
 	}
