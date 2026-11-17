@@ -400,10 +400,11 @@ func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) ([]byte,
 		if len(nodes) > 1 {
 			return nil, false, invalidf("cvc-identity-constraint.3", "field selects more than one node")
 		}
-		if err := s.fieldTypeOK(nodes[0]); err != nil {
+		st, err := s.fieldKeyType(nodes[0])
+		if err != nil {
 			return nil, false, err
 		}
-		buf = s.appendFieldKey(buf, nodes[0])
+		buf = s.appendFieldKey(buf, nodes[0], st)
 	}
 	if sc != nil {
 		sc.tuple = buf
@@ -442,61 +443,70 @@ func (s *Schema) absentAttrDefault(raw string, target *xmltree.Node) (string, *S
 	return "", nil, false
 }
 
-// fieldTypeOK enforces cvc-identity-constraint.3: a field must select a node
-// with a SIMPLE type — a simple-typed element, an element whose complex type
-// has simple content, or a declared attribute. An untyped (anyType) element,
-// an element-only/mixed complex type, or an attribute known only through a
-// skip wildcard has no key value (idF018, idG006, idK012, idZ015).
-func (s *Schema) fieldTypeOK(n *xmltree.Node) error {
+// fieldKeyType enforces cvc-identity-constraint.3 — a field must select a
+// node with a SIMPLE type: a simple-typed element, an element whose complex
+// type has simple content, or a declared attribute; an untyped (anyType)
+// element, an element-only/mixed complex type, or an attribute known only
+// through a skip wildcard has no key value (idF018, idG006, idK012, idZ015)
+// — and returns the simple type the field's value is compared in (see
+// appendFieldKey), nil when it cannot be determined: an undeclared element,
+// an attribute matched by a wildcard. Key comparison happens in the type's
+// VALUE space, so the type has to be known even when the instance carries
+// no xsi:type: a field on two xs:decimal elements must see "1.0" and "1.00"
+// as the same key. The type is found by walking from the document element
+// down to the node (elementTypeOf), rather than being recorded during
+// validation — identity constraints are evaluated at a scope element
+// before its subtree has been walked, so nothing is recorded yet.
+func (s *Schema) fieldKeyType(n *xmltree.Node) (*SimpleType, error) {
 	owner, attr := n, (*xmltree.Node)(nil)
 	if n.Kind == xmltree.KindAttribute {
 		owner, attr = n.Parent, n
 	}
 	if owner == nil || owner.Kind != xmltree.KindElement {
-		return nil
+		return nil, nil
 	}
 	typ := s.elementTypeOf(owner)
 	if attr != nil {
 		ct, ok := typ.(*ComplexType)
 		if !ok {
-			return nil // conservative: owner's type unknown or simple
+			return nil, nil // conservative: owner's type unknown or simple
 		}
 		an := nameOf(attr)
 		uses, _ := s.effectiveAttrs(ct)
 		for _, u := range uses {
 			if u.decl.name == an {
-				return nil // declared attribute — always simple-typed
+				return u.decl.typ, nil // declared attribute — always simple-typed
 			}
 		}
 		if _, ok := s.attributes[an]; ok {
-			return nil // matched via a wildcard, assessed against its global decl
+			return nil, nil // matched via a wildcard, assessed against its global decl
 		}
 		if an.Space == xsiNS || an.Space == xmlNS {
-			return nil
+			return nil, nil
 		}
-		return invalidf("cvc-identity-constraint.3", "field selects attribute %s, which has no declaration", an)
+		return nil, invalidf("cvc-identity-constraint.3", "field selects attribute %s, which has no declaration", an)
 	}
 	switch t := typ.(type) {
 	case nil:
-		return nil // undeclared element: no verdict, stay conservative
+		return nil, nil // undeclared element: no verdict, stay conservative
 	case *SimpleType:
-		return nil
+		return t, nil
 	case *ComplexType:
-		if simpleContentType(t) != nil {
-			return nil
+		if st := simpleContentType(t); st != nil {
+			return st, nil
 		}
-		return invalidf("cvc-identity-constraint.3", "field selects element %s, whose type has no simple content", nameOf(owner))
+		return nil, invalidf("cvc-identity-constraint.3", "field selects element %s, whose type has no simple content", nameOf(owner))
 	}
-	return nil
+	return nil, nil
 }
 
 // appendFieldKey appends the comparison key for one identity-constraint field
-// value. Values are compared in their type's VALUE space, so the value is
-// canonicalised and prefixed with the type: boolean "1" and decimal "1" are
-// distinct keys, while decimal "1.0" and "1.00" are the same one. Without a
-// determinable type it falls back to the collapsed lexical string.
-func (s *Schema) appendFieldKey(dst []byte, node *xmltree.Node) []byte {
-	st := s.declaredTypeOf(node)
+// value, of simple type st (fieldKeyType). Values are compared in their
+// type's VALUE space, so the value is canonicalised and prefixed with the
+// type: boolean "1" and decimal "1" are distinct keys, while decimal "1.0"
+// and "1.00" are the same one. Without a determinable type (st nil) it
+// falls back to the collapsed lexical string.
+func (s *Schema) appendFieldKey(dst []byte, node *xmltree.Node, st *SimpleType) []byte {
 	if st == nil {
 		return append(dst, applyWhiteSpace("collapse", nodeStringValue(node))...)
 	}
@@ -683,47 +693,9 @@ func nodeStringValue(n *xmltree.Node) string {
 	return b.String()
 }
 
-// declaredTypeOf returns the simple type an identity-constraint field's value is
-// validated against. Key comparison happens in the type's VALUE space, so the
-// type has to be known even when the instance carries no xsi:type: a field on
-// two xs:decimal elements must see "1.0" and "1.00" as the same key.
-//
-// The type is found by walking from the document element down to n, resolving
-// each step through its parent's content model, rather than being recorded
-// during validation — identity constraints are evaluated at a scope element
-// before its subtree has been walked, so nothing is recorded yet. Results are
-// memoised on the per-call Schema copy.
-func (s *Schema) declaredTypeOf(n *xmltree.Node) *SimpleType {
-	owner, attr := n, (*xmltree.Node)(nil)
-	if n.Kind == xmltree.KindAttribute {
-		owner, attr = n.Parent, n
-	}
-	if owner == nil || owner.Kind != xmltree.KindElement {
-		return nil
-	}
-	typ := s.elementTypeOf(owner)
-	if typ == nil {
-		return nil
-	}
-	if attr != nil {
-		ct, ok := typ.(*ComplexType)
-		if !ok {
-			return nil
-		}
-		uses, _ := s.effectiveAttrs(ct)
-		an := nameOf(attr)
-		for _, u := range uses {
-			if u.decl.name == an {
-				return u.decl.typ
-			}
-		}
-		return nil
-	}
-	return simpleContentType(typ)
-}
-
 // elementTypeOf resolves the type governing an element node, walking the
-// ancestor chain down from the document element.
+// ancestor chain down from the document element. Results are memoised on
+// the per-call Schema copy (typeCache).
 func (s *Schema) elementTypeOf(el *xmltree.Node) Type {
 	if t, ok := s.typeCache[el]; ok {
 		return t
