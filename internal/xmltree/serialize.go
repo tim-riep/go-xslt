@@ -937,7 +937,9 @@ func (s *serializer) element(n *Node, depth int) {
 			}
 		case htmlish:
 			// Non-void empty element must use a separate end tag (<p></p>).
-			s.b.WriteString("></" + o.qname + ">")
+			s.b.WriteString("></")
+			s.b.WriteString(o.qname)
+			s.b.WriteString(">")
 		default:
 			s.b.WriteString("/>")
 		}
@@ -948,7 +950,10 @@ func (s *serializer) element(n *Node, depth int) {
 		return
 	}
 
-	s.b.WriteString(">" + o.meta)
+	s.b.WriteString(">")
+	if o.meta != "" {
+		s.b.WriteString(o.meta)
+	}
 	may := s.opts.Indent && s.mayIndentIn(n)
 	for i, c := range n.Children {
 		s.child = childPos{parentMayIndent: may}
