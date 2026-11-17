@@ -2,6 +2,7 @@ package xsd
 
 import (
 	"strings"
+	"unsafe"
 
 	"github.com/tim-riep/go-xslt/internal/xmltree"
 	"github.com/tim-riep/go-xslt/internal/xpath"
@@ -152,6 +153,30 @@ func (c *compiler) checkKeyrefs() error {
 // scope element.
 type keyTable struct {
 	tuples map[string]bool
+	// arena holds the bytes of the keys of tuples: a key is a piece of one
+	// of the chunks appended here (intern), not a string of its own, so a
+	// table of many tuples costs a few allocations instead of one per
+	// tuple. A chunk is only ever appended to beyond the pieces handed
+	// out, and a full one is left to the strings that point into it.
+	arena []byte
+}
+
+// keyArenaChunk is the size of an arena chunk; a tuple longer than that
+// gets a chunk of its own size.
+const keyArenaChunk = 4096
+
+// intern returns tuple as a string kept in the table's arena.
+func (t *keyTable) intern(tuple []byte) string {
+	n := len(tuple)
+	if n == 0 {
+		return ""
+	}
+	if cap(t.arena)-len(t.arena) < n {
+		t.arena = make([]byte, 0, max(keyArenaChunk, n))
+	}
+	off := len(t.arena)
+	t.arena = append(t.arena, tuple...)
+	return unsafe.String(&t.arena[off], n)
 }
 
 type xsdNS map[string]string
@@ -282,12 +307,18 @@ func (s *Schema) evalNodes(ic *identityConstraint, p *xpath.Parsed, node *xmltre
 		Node: node, Pos: 1, Size: 1,
 		NS:            xsdNS(ic.ns),
 		DefaultElemNS: defNS,
+		ArgStack:      s.argStack(),
 	}
-	obj, err := p.Eval(ctx)
+	// A path's node set is taken unboxed (EvalNodes): Eval would box it
+	// into an interface value, one allocation per field of every target.
+	ns, obj, isNodes, err := p.EvalNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if ns, ok := obj.(xpath.NodeSet); ok {
+	if !isNodes {
+		ns, isNodes = obj.(xpath.NodeSet)
+	}
+	if isNodes {
 		// The usual result of a selector or field path, taken as it is:
 		// Items would copy it into a []Item first. A carrier node unwraps to
 		// the item it stands for, exactly as Items does, and only a node
@@ -327,9 +358,10 @@ const tupleSep = "\x00"
 
 // tupleFor evaluates the fields against a target node, returning the serialized
 // key tuple and whether every field selected exactly one node (complete).
-// The tuple is built in the call's scratch buffer: one string per tuple,
-// not one per field and one more for joining them.
-func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string, bool, error) {
+// The tuple is built in the call's scratch buffer, which the next call
+// overwrites: the caller looks it up or copies it (keyTable.intern) before
+// evaluating another, and builds no string for it.
+func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) ([]byte, bool, error) {
 	var buf []byte
 	sc := s.scratchSpace()
 	if sc != nil {
@@ -341,7 +373,7 @@ func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string,
 		}
 		nodes, err := s.evalNodes(ic, f, target, ic.fieldNS[fi])
 		if err != nil {
-			return "", false, ErrUnsupported
+			return nil, false, ErrUnsupported
 		}
 		if len(nodes) == 0 {
 			// An absent attribute with a default/fixed value still contributes
@@ -363,20 +395,21 @@ func (s *Schema) tupleFor(ic *identityConstraint, target *xmltree.Node) (string,
 					continue
 				}
 			}
-			return "", false, nil // incomplete
+			return nil, false, nil // incomplete
 		}
 		if len(nodes) > 1 {
-			return "", false, invalidf("cvc-identity-constraint.3", "field selects more than one node")
+			return nil, false, invalidf("cvc-identity-constraint.3", "field selects more than one node")
 		}
-		if err := s.fieldTypeOK(nodes[0]); err != nil {
-			return "", false, err
+		st, err := s.fieldKeyType(nodes[0])
+		if err != nil {
+			return nil, false, err
 		}
-		buf = s.appendFieldKey(buf, nodes[0])
+		buf = s.appendFieldKey(buf, nodes[0], st)
 	}
 	if sc != nil {
 		sc.tuple = buf
 	}
-	return string(buf), true, nil
+	return buf, true, nil
 }
 
 // absentAttrDefault resolves a field of the simple form "@name" against the
@@ -410,61 +443,70 @@ func (s *Schema) absentAttrDefault(raw string, target *xmltree.Node) (string, *S
 	return "", nil, false
 }
 
-// fieldTypeOK enforces cvc-identity-constraint.3: a field must select a node
-// with a SIMPLE type — a simple-typed element, an element whose complex type
-// has simple content, or a declared attribute. An untyped (anyType) element,
-// an element-only/mixed complex type, or an attribute known only through a
-// skip wildcard has no key value (idF018, idG006, idK012, idZ015).
-func (s *Schema) fieldTypeOK(n *xmltree.Node) error {
+// fieldKeyType enforces cvc-identity-constraint.3 — a field must select a
+// node with a SIMPLE type: a simple-typed element, an element whose complex
+// type has simple content, or a declared attribute; an untyped (anyType)
+// element, an element-only/mixed complex type, or an attribute known only
+// through a skip wildcard has no key value (idF018, idG006, idK012, idZ015)
+// — and returns the simple type the field's value is compared in (see
+// appendFieldKey), nil when it cannot be determined: an undeclared element,
+// an attribute matched by a wildcard. Key comparison happens in the type's
+// VALUE space, so the type has to be known even when the instance carries
+// no xsi:type: a field on two xs:decimal elements must see "1.0" and "1.00"
+// as the same key. The type is found by walking from the document element
+// down to the node (elementTypeOf), rather than being recorded during
+// validation — identity constraints are evaluated at a scope element
+// before its subtree has been walked, so nothing is recorded yet.
+func (s *Schema) fieldKeyType(n *xmltree.Node) (*SimpleType, error) {
 	owner, attr := n, (*xmltree.Node)(nil)
 	if n.Kind == xmltree.KindAttribute {
 		owner, attr = n.Parent, n
 	}
 	if owner == nil || owner.Kind != xmltree.KindElement {
-		return nil
+		return nil, nil
 	}
 	typ := s.elementTypeOf(owner)
 	if attr != nil {
 		ct, ok := typ.(*ComplexType)
 		if !ok {
-			return nil // conservative: owner's type unknown or simple
+			return nil, nil // conservative: owner's type unknown or simple
 		}
 		an := nameOf(attr)
 		uses, _ := s.effectiveAttrs(ct)
 		for _, u := range uses {
 			if u.decl.name == an {
-				return nil // declared attribute — always simple-typed
+				return u.decl.typ, nil // declared attribute — always simple-typed
 			}
 		}
 		if _, ok := s.attributes[an]; ok {
-			return nil // matched via a wildcard, assessed against its global decl
+			return nil, nil // matched via a wildcard, assessed against its global decl
 		}
 		if an.Space == xsiNS || an.Space == xmlNS {
-			return nil
+			return nil, nil
 		}
-		return invalidf("cvc-identity-constraint.3", "field selects attribute %s, which has no declaration", an)
+		return nil, invalidf("cvc-identity-constraint.3", "field selects attribute %s, which has no declaration", an)
 	}
 	switch t := typ.(type) {
 	case nil:
-		return nil // undeclared element: no verdict, stay conservative
+		return nil, nil // undeclared element: no verdict, stay conservative
 	case *SimpleType:
-		return nil
+		return t, nil
 	case *ComplexType:
-		if simpleContentType(t) != nil {
-			return nil
+		if st := simpleContentType(t); st != nil {
+			return st, nil
 		}
-		return invalidf("cvc-identity-constraint.3", "field selects element %s, whose type has no simple content", nameOf(owner))
+		return nil, invalidf("cvc-identity-constraint.3", "field selects element %s, whose type has no simple content", nameOf(owner))
 	}
-	return nil
+	return nil, nil
 }
 
 // appendFieldKey appends the comparison key for one identity-constraint field
-// value. Values are compared in their type's VALUE space, so the value is
-// canonicalised and prefixed with the type: boolean "1" and decimal "1" are
-// distinct keys, while decimal "1.0" and "1.00" are the same one. Without a
-// determinable type it falls back to the collapsed lexical string.
-func (s *Schema) appendFieldKey(dst []byte, node *xmltree.Node) []byte {
-	st := s.declaredTypeOf(node)
+// value, of simple type st (fieldKeyType). Values are compared in their
+// type's VALUE space, so the value is canonicalised and prefixed with the
+// type: boolean "1" and decimal "1" are distinct keys, while decimal "1.0"
+// and "1.00" are the same one. Without a determinable type (st nil) it
+// falls back to the collapsed lexical string.
+func (s *Schema) appendFieldKey(dst []byte, node *xmltree.Node, st *SimpleType) []byte {
 	if st == nil {
 		return append(dst, applyWhiteSpace("collapse", nodeStringValue(node))...)
 	}
@@ -578,7 +620,10 @@ func (s *Schema) buildKeyTable(ic *identityConstraint, el *xmltree.Node) (*keyTa
 		return nil, ErrUnsupported
 	}
 	targets = s.icFilter(targets)
-	tbl := &keyTable{tuples: map[string]bool{}}
+	// Sized for one tuple per target, what a key has and a unique usually
+	// has: the map then grows no further, instead of through every size
+	// on the way.
+	tbl := &keyTable{tuples: make(map[string]bool, len(targets))}
 	for _, t := range targets {
 		tuple, complete, err := s.tupleFor(ic, t)
 		if err != nil {
@@ -590,10 +635,10 @@ func (s *Schema) buildKeyTable(ic *identityConstraint, el *xmltree.Node) (*keyTa
 			}
 			continue // unique: incomplete tuples are not compared
 		}
-		if tbl.tuples[tuple] {
+		if tbl.tuples[string(tuple)] { // a lookup: no string is built
 			return nil, invalidf("cvc-identity-constraint.4.1", "duplicate key/unique value for %s", ic.name)
 		}
-		tbl.tuples[tuple] = true
+		tbl.tuples[tbl.intern(tuple)] = true
 	}
 	return tbl, nil
 }
@@ -615,7 +660,7 @@ func (s *Schema) checkKeyref(ic *identityConstraint, el *xmltree.Node, scopes ma
 		if !complete {
 			continue
 		}
-		if ref == nil || !ref.tuples[tuple] {
+		if ref == nil || !ref.tuples[string(tuple)] {
 			return invalidf("cvc-identity-constraint.4.3", "keyref %s has no matching key", ic.name)
 		}
 	}
@@ -648,47 +693,9 @@ func nodeStringValue(n *xmltree.Node) string {
 	return b.String()
 }
 
-// declaredTypeOf returns the simple type an identity-constraint field's value is
-// validated against. Key comparison happens in the type's VALUE space, so the
-// type has to be known even when the instance carries no xsi:type: a field on
-// two xs:decimal elements must see "1.0" and "1.00" as the same key.
-//
-// The type is found by walking from the document element down to n, resolving
-// each step through its parent's content model, rather than being recorded
-// during validation — identity constraints are evaluated at a scope element
-// before its subtree has been walked, so nothing is recorded yet. Results are
-// memoised on the per-call Schema copy.
-func (s *Schema) declaredTypeOf(n *xmltree.Node) *SimpleType {
-	owner, attr := n, (*xmltree.Node)(nil)
-	if n.Kind == xmltree.KindAttribute {
-		owner, attr = n.Parent, n
-	}
-	if owner == nil || owner.Kind != xmltree.KindElement {
-		return nil
-	}
-	typ := s.elementTypeOf(owner)
-	if typ == nil {
-		return nil
-	}
-	if attr != nil {
-		ct, ok := typ.(*ComplexType)
-		if !ok {
-			return nil
-		}
-		uses, _ := s.effectiveAttrs(ct)
-		an := nameOf(attr)
-		for _, u := range uses {
-			if u.decl.name == an {
-				return u.decl.typ
-			}
-		}
-		return nil
-	}
-	return simpleContentType(typ)
-}
-
 // elementTypeOf resolves the type governing an element node, walking the
-// ancestor chain down from the document element.
+// ancestor chain down from the document element. Results are memoised on
+// the per-call Schema copy (typeCache).
 func (s *Schema) elementTypeOf(el *xmltree.Node) Type {
 	if t, ok := s.typeCache[el]; ok {
 		return t
@@ -717,8 +724,21 @@ func (s *Schema) elementTypeOf(el *xmltree.Node) Type {
 			typ = t
 		}
 	}
-	if s.typeCache != nil {
+	// Memoised for the elements a later lookup may walk through — those
+	// with element children. A leaf (a simple-typed field of a key, mostly)
+	// is asked for once or twice; recording it would cost a map entry per
+	// leaf of the instance for a lookup its parent's entry answers anyway.
+	if s.typeCache != nil && hasElementChild(el) {
 		s.typeCache[el] = typ
 	}
 	return typ
+}
+
+func hasElementChild(el *xmltree.Node) bool {
+	for _, c := range el.Children {
+		if c.Kind == xmltree.KindElement {
+			return true
+		}
+	}
+	return false
 }

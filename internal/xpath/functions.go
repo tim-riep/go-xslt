@@ -76,6 +76,7 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 	var fuse uint32 // bit i: argument i is a path to convert here
 	var args []Object
 	var stack *ArgStack // the arguments' stack, when they live on one
+	bc := ctx != nil && ctx.BC10
 	if plan := n.plan.Load(); plan != planDecided {
 		// (A call that can do nothing of this is one load and one test.)
 		if plan == 0 {
@@ -84,8 +85,9 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		if plan&planSetFunc != 0 {
 			return fusedSetFunc(n.Prefix, n.Local, n.Args[0], ctx)
 		}
-		if plan&planFuseArgs != 0 && (ctx == nil || !ctx.BC10) {
-			// (1.0 compatibility passes every argument as it is.)
+		if plan&planFuseArgs != 0 {
+			// (1.0 compatibility passes every argument as it is, a string
+			// parameter's one plain node included — as the bare node.)
 			fuse = plan >> planArgShift
 		}
 		if plan&planStackArgs != 0 && ctx != nil && ctx.ArgStack != nil {
@@ -108,8 +110,23 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 			}
 			if v != nil {
 				args[i] = v
-			} else if c, ok := p.convertNodes(ns, ctx); ok {
-				args[i] = c
+				continue
+			}
+			if !bc {
+				if c, ok := p.convertNodes(ns, ctx); ok {
+					args[i] = c
+					continue
+				}
+			}
+			if len(ns) == 1 && p.stringy && plainNode(ns[0]) && ns[0].RealItem() == nil {
+				// A string parameter takes one plain node as it is: the
+				// bare node, which boxes without allocating, where the set
+				// around it would allocate. The argument check accepts
+				// it (argSpec.fast), ToString/ToBool/ToNumber, Items,
+				// Atomize and the item helpers read it as the one-node
+				// set, and an implementation that tests for a NodeSet
+				// handles the node (fnStringJoin, XSLT's key()).
+				args[i] = ns[0]
 			} else {
 				args[i] = ns
 			}
@@ -1671,6 +1688,10 @@ func fnStringJoin(c *Context, a []Object) (Object, error) {
 	// comment, PI or namespace node: the xs:string) of its string value, and
 	// a sequence that is atomic already.
 	switch v := arg(a, 0).(type) {
+	case *xmltree.Node:
+		if plainNode(v) {
+			return v.StringValue(), nil // joinNodeStrings of the one node
+		}
 	case NodeSet:
 		plain := true
 		for _, n := range v {

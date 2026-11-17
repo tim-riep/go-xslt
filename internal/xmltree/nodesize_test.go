@@ -31,6 +31,11 @@ func TestNodeSizeStaysInItsAllocatorClass(t *testing.T) {
 		{"streamElem1", unsafe.Sizeof(streamElem1{}), 320},
 		{"streamElem2", unsafe.Sizeof(streamElem2{}), 480},
 		{"streamElem3", unsafe.Sizeof(streamElem3{}), 640},
+		// With the node for a first text child: the class the element's
+		// shape and a text node's own 160-byte allocation took together.
+		{"streamElem0T", unsafe.Sizeof(streamElem0T{}), 320},
+		{"streamElem1T", unsafe.Sizeof(streamElem1T{}), 480},
+		{"streamElem2T", unsafe.Sizeof(streamElem2T{}), 640},
 	} {
 		if c.size > c.max {
 			t.Errorf("sizeof(%s) = %d, want <= %d", c.name, c.size, c.max)

@@ -314,7 +314,72 @@ libxslt's time to where it is now:
   on the HTML workload but cost the xml output method a check per
   attribute (0.5 % more instructions on the identity workload).
 
-The sixth to twelfth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a thirteenth round, part A, on the value model, the functions and the
+  XSLT instructions, under the same harness and rule: an xs:decimal was a
+  big.Rat — three to five allocations to read one from a lexical, as many
+  for every sum or product, a dozen to format one — and is now held
+  compactly, as an int64 mantissa and a scale inside the same 64-byte
+  Atomic, whenever its value fits (a repeating quotient or more than 18
+  digits keeps the Rat), with addition, subtraction, multiplication,
+  rounding, comparison, casting and formatting done in integers and checked
+  against the Rat path to the bit over 435 lexicals pairwise (deep
+  recursion summing decimals: 13 % fewer instructions, half the
+  allocations; xsl:iterate with a decimal map: 13 % fewer
+  instructions, 29 % fewer allocations; XSD 1.1 assertions: 3 %
+  fewer instructions); format-number renders a compact decimal or an int64
+  integer in integer arithmetic (number formatting: 27 % fewer
+  instructions, 48 % fewer allocations; 200 transforms in one process:
+  15 % fewer); an xsl:sort key that selects one unannotated node is
+  classified from the node, without boxing the set or atomizing it (sort:
+  5 % fewer instructions, 46 % fewer allocations, with the next item);
+  a string parameter's one plain node is passed as the bare node instead of
+  a set around it, in 1.0 compatibility mode too (the string workload: 11 %
+  fewer allocations; the XPath 1.0 predicate workload 24 %, regular
+  expressions 12 %); key() keeps its search values on the stack; a call
+  chain's scope stack and a function call's frame are kept for the next
+  call (the function-call workload: 5 % fewer allocations); and generate-id
+  returns its id as the plain string (Muenchian grouping: 3 % less
+  allocated). No workload allocates more or executes more instructions beyond the
+  counter's spread. Every output is byte-identical.
+
+- a thirteenth round, part B, on the readers, the validator and the
+  serializer (part A, in parallel, took the evaluator). A streamed element's
+  allocation already carried its attribute nodes and the slot for its first
+  child; when the input shows character data right after the start tag, the
+  shapes with up to two attributes now carry the node for that first text
+  child too — a text node alone took a 160-byte allocation, and each shape
+  with one more node ends in the class the two took together, so a leaf
+  record costs one allocation less for the same bytes, and nothing lives
+  longer, since the element and its text child keep each other alive anyway
+  (streaming the 200,000-record document: 15 % fewer allocations, 2 % fewer
+  instructions; the memory bound is unchanged). The validator's identity
+  constraints evaluated every selector and field through the boxing
+  evaluator, built a string for every key tuple to insert it and another to
+  look it up, resolved a field's type twice and memoised the type of every
+  leaf element; they now take a path's node set as it is, keep the tuples of
+  a table in one byte arena and look a tuple up in place, resolve the type
+  once, and memoise only the elements a later lookup can walk through — and
+  the assertions' built-in calls push their arguments on a per-call stack
+  instead of allocating a slice each (XSD 1.1 validation of the
+  200,000-order document: 17 % fewer allocations, 7 % less allocated, 5 %
+  fewer instructions). XSD 1.0's rule on late schema-location hints was
+  enforced by a walk over the whole instance that recorded every namespace,
+  for every validation; a hint on the document element itself can never
+  break the rule, so the walk now runs only when a cheaper scan finds a hint
+  below the root, and an attribute use is marked present by the position
+  its lookup found instead of a second search (XSD 1.0 validation of the
+  same document: 4 % fewer instructions). The html serializer looked an
+  element's URI-valued attributes up for every attribute, lower-casing the
+  names twice; it looks them up once per element, outside the xml method's
+  path — the first
+  version put one test per element on that path too, and cachegrind showed
+  it as 0.4 % more instructions on the identity workload — and the content
+  opener of an element is written without concatenating (HTML output: 4 %
+  fewer instructions; copying the whole document: 1.5 %; rebuilding every
+  node: 1 %). No workload executes more instructions than before beyond the
+  counter's spread, none allocates more, and every output is byte-identical.
+
+The sixth to thirteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 

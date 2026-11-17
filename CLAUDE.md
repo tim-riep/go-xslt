@@ -78,7 +78,13 @@ dragging in the GUI's Wails/CGo dependencies:
   for its first child (`streamElementSlab`): at 152 bytes a node each shape
   ends exactly on a size class (160/320/480/640), which
   `TestNodeSizeStaysInItsAllocatorClass` pins — a field added to `Node`
-  moves every shape up a class. `CopyTypeInfo(dst, src)` must be used at every
+  moves every shape up a class. When the window shows character data right
+  after the start tag, the shapes with up to two attributes also hold the
+  node for that first text child (`streamElem0T..2T`: 320/480/640, the
+  class the element and a separate 160-byte text node took together; three
+  attributes would land in 896 > 800, so that shape has none): a node and a
+  child that keep each other alive may share an allocation, two RECORDS
+  never may. `CopyTypeInfo(dst, src)` must be used at every
   node-rebuild/copy site to carry `TypeAnno`/`SchemaType`/`Nilled`/
   `ListTyped`/etc. forward.
 - `internal/xpath` — `lexer.go`, `parser.go`/`ast.go`, `eval.go` + `axes.go` +
@@ -471,7 +477,15 @@ Desktop GUI (**run from `desktop/`**):
   body share the scope by pointer, so a binding is never overwritten. The
   parser carves nodes from slabs and collects children on a shared stack
   (`parseRaw`), so nothing may read `Children` of an open element while
-  parsing.
+  parsing. The scope stack of a call chain (`calleeScopes`/`leaveScopes`)
+  and a function call's frame (`recycleFrame`) are reused across calls:
+  a frame is recycled only when `eng.captureGen` has not moved since the
+  call began — `ContextCaptured`, the one place a snapshot of `eng.scopes`
+  is taken, increments it — so any new code that keeps a `*scopeFrame` or a
+  copy of `eng.scopes` beyond the call must go through `ContextCaptured`.
+  `sortNodes` leaves a key's value nil when the key is one unannotated node
+  (`xpath.NodeAtomizesUntyped`) or empty; `compareAtomicKey` reads values
+  only for a column of date/time/duration keys, which such a key rules out.
 - **A node set handed out may be reused as a buffer.** `execApplyTemplates`
   keeps its static-select result slices in `eng.selBufs` and refills them
   (`static[:0]`), and `normalize`/`dedupByIdentity` rewrite a set in place,
@@ -567,7 +581,21 @@ Desktop GUI (**run from `desktop/`**):
   items (nodes, typed `*Atomic`, maps, arrays, functions); `NodeSet` is the
   node-only form. Plain Go `string`/`float64`/`bool` still occur as untyped
   results of fast paths and the 1.0 conversion functions — `Items()`
-  normalizes everything, so new code should work on items.
+  normalizes everything, so new code should work on items. A bare
+  `*xmltree.Node` is an Object too: `evalFunc` hands a string parameter
+  (`argSpec.stringy`) its one plain node that way, so `ToString`/`ToBool`/
+  `ToNumber`, `Items`, `Atomize` and the item helpers read it as a one-node
+  set, and a built-in that tests its argument for a `NodeSet` must take the
+  node as well (`fnStringJoin`, XSLT's `key()`).
+- **An xs:decimal has two forms** (`xpath/decimal.go`): compact — `d == nil`,
+  the int64 mantissa in the bits of `f`, the scale in `ds`, normalized — or
+  exact, a `*big.Rat` in `d`. Read a decimal through `decFast()` on the hot
+  paths and `rat()` everywhere else (it allocates a Rat for a compact value);
+  never `a.d` directly, and never add a field to `Atomic` (64 bytes, pinned
+  by `TestAtomicSize`). `NewDecimal` brings a Rat whose value fits back to
+  the compact form, so any new fast path must give the same result as the
+  Rat path to the bit (`TestCompactDecimalMatchesRat`); `Float()` of a
+  compact value is one IEEE division, correctly rounded like `Rat.Float64`.
 - **Maps and arrays share structure** (`xpath/map.go`, `Array.Append` in
   `xpath/types.go`): a `*Map` is a persistent hash trie and `map:put` is
   `Map.With`, which freezes its source; `Map.Put` changes a map IN PLACE

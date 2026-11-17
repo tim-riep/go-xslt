@@ -133,6 +133,10 @@ type streamFrame struct {
 	node  *Node
 	frame map[string]string // prefix -> uri (default prefix "")
 	raw   xml.Name
+	// text is the node the element's first text child is built in, when its
+	// allocation carries one (streamElementSlab, the input said a text run
+	// follows the start tag); charData takes it.
+	text *Node
 }
 
 // NewStreamReader starts an incremental parse of r. It returns
@@ -295,7 +299,13 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			if len(s.open)-1 >= MaxDepth {
 				return StreamEvent{}, errTooDeep
 			}
-			el := s.startElement(t)
+			// The element's first child is a text node when character data
+			// follows the start tag (not '<': a child element, comment, PI
+			// or CDATA section; not the end tag of <x/>), which the window
+			// shows unless the tag ended exactly at its end — then, as for
+			// any other first child, the text node is its own allocation.
+			textNext := !tz.needClose && tz.pos < len(tz.s) && tz.s[tz.pos] != '<'
+			el := s.startElement(t, textNext)
 			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.open) - 1}, nil
 
 		case tokEnd:
@@ -450,7 +460,7 @@ func streamHasExternalEntity(sub string) bool {
 	}
 }
 
-func (s *StreamReader) startElement(t xml.StartElement) *Node {
+func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 	// Intern the tag's own name before anything retains it: one string per
 	// distinct name, copied out of the tokenizer's window (see
 	// streamTokenizer), where the element and rawNames would otherwise keep
@@ -492,7 +502,7 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 	// longer than before, and a record of a few attributes costs one
 	// allocation instead of one per node plus the regrowth of Attrs.
 	nAttrs := len(t.Attr) - len(decls)
-	slab, attrs, kids := streamElementSlab(nAttrs)
+	slab, attrs, kids, text := streamElementSlab(nAttrs, textNext)
 	el := &slab[0]
 	el.Kind, el.Name, el.Children = KindElement, resolveRawName(frame, t.Name, false), kids
 	el.SetNSDecls(decls)
@@ -546,7 +556,7 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 		}
 	}
 	s.appendChild(s.top(), el)
-	s.open = append(s.open, streamFrame{node: el, frame: frame, raw: t.Name})
+	s.open = append(s.open, streamFrame{node: el, frame: frame, raw: t.Name, text: text})
 	return el
 }
 
@@ -558,6 +568,17 @@ func (s *StreamReader) startElement(t xml.StartElement) *Node {
 // node is 152 bytes, so each of these shapes ends 8 bytes short of its
 // allocation size class (160, 320, 480, 640), and most elements are leaves
 // holding one text node, which then needs no child list of its own.
+//
+// When the input shows that character data follows the start tag, the
+// shapes with up to two attributes carry the node for that first text
+// child too (streamElem0T..2T): a text node alone takes a 160-byte
+// allocation, and each of these shapes with one more node ends in the
+// class the two allocations took together (320, 480, 640), so the record
+// costs one allocation less for the same bytes. The text node lives
+// exactly as long as its element did already: the element reaches it
+// through Children, and it reaches the element through Parent. With three
+// attributes the shape would end at 792 bytes, in the 896-byte class, more
+// than the 800 of two allocations, so that shape keeps its text node apart.
 type streamElem0 struct {
 	nodes [1]Node
 	kid   [1]*Node
@@ -581,26 +602,57 @@ type streamElem3 struct {
 	kid   [1]*Node
 }
 
+type streamElem0T struct {
+	nodes [2]Node
+	kid   [1]*Node
+}
+
+type streamElem1T struct {
+	nodes [3]Node
+	ptrs  [1]*Node
+	kid   [1]*Node
+}
+
+type streamElem2T struct {
+	nodes [4]Node
+	ptrs  [2]*Node
+	kid   [1]*Node
+}
+
 // streamElementSlab allocates an element node followed by nAttrs attribute
-// nodes, the empty attribute list to append them to (nil for none), and the
+// nodes, the empty attribute list to append them to (nil for none), the
 // empty child list to append the first child to (nil for the shapes that
-// have no slot of their own).
-func streamElementSlab(nAttrs int) (nodes []Node, attrs, kids []*Node) {
+// have no slot of their own) and, when text is set and the shape has room
+// for it, the node for the element's first text child (else nil).
+func streamElementSlab(nAttrs int, text bool) (nodes []Node, attrs, kids []*Node, txt *Node) {
+	if text {
+		switch nAttrs {
+		case 0:
+			e := &streamElem0T{}
+			return e.nodes[:1], nil, e.kid[:0], &e.nodes[1]
+		case 1:
+			e := &streamElem1T{}
+			return e.nodes[:2], e.ptrs[:0], e.kid[:0], &e.nodes[2]
+		case 2:
+			e := &streamElem2T{}
+			return e.nodes[:3], e.ptrs[:0], e.kid[:0], &e.nodes[3]
+		}
+	}
 	switch nAttrs {
 	case 0:
 		e := &streamElem0{}
-		return e.nodes[:], nil, e.kid[:0]
+		return e.nodes[:], nil, e.kid[:0], nil
 	case 1:
 		e := &streamElem1{}
-		return e.nodes[:], e.ptrs[:0], e.kid[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0], nil
 	case 2:
 		e := &streamElem2{}
-		return e.nodes[:], e.ptrs[:0], e.kid[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0], nil
 	case 3:
 		e := &streamElem3{}
-		return e.nodes[:], e.ptrs[:0], e.kid[:0]
+		return e.nodes[:], e.ptrs[:0], e.kid[:0], nil
 	}
-	return make([]Node, 1+nAttrs), make([]*Node, 0, nAttrs), nil
+	return make([]Node, 1+nAttrs), make([]*Node, 0, nAttrs), nil, nil
 }
 
 func (s *StreamReader) endElement(t xml.EndElement) (*Node, error) {
@@ -625,7 +677,13 @@ func (s *StreamReader) pop() {
 // coalesced into a text node already reported. The three rules mirror
 // parseRaw's CharData case exactly.
 func (s *StreamReader) charData(t string) *Node {
-	top := s.top()
+	fr := &s.open[len(s.open)-1]
+	top := fr.node
+	// The node the element's allocation holds for its first text child, if
+	// any, is for this run, the first character data under the element;
+	// whatever becomes of the run, no later one may take it.
+	n := fr.text
+	fr.text = nil
 	if top == s.doc && strings.Trim(t, " \t\r\n") == "" {
 		return nil
 	}
@@ -636,7 +694,10 @@ func (s *StreamReader) charData(t string) *Node {
 		top.Children[k-1].Value += t
 		return nil
 	}
-	n := &Node{Kind: KindText, Value: s.textString(t)}
+	if n == nil {
+		n = &Node{}
+	}
+	n.Kind, n.Value = KindText, s.textString(t)
 	s.stamp(n)
 	s.appendChild(top, n)
 	return n

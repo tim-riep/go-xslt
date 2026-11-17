@@ -206,11 +206,18 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 		if kerr != nil {
 			return nil, true, kerr
 		}
-		var values []string
+		// The one or two search values of the usual lookup live in a stack
+		// array; the loops below append within its capacity.
+		var valBuf [2]string
+		values := valBuf[:0]
 		if composite {
 			// The whole second-argument sequence is ONE tuple to look up
 			// (mirrors CompositeKeyString's use in keyIndexOn exactly).
 			values = []string{canonKeyString(xpath.CompositeKeyString(xpath.Items(argN(args, 1))), collURI)}
+		} else if n, ok := argN(args, 1).(*xmltree.Node); ok {
+			// One plain node, as evalFunc hands a string parameter its path
+			// argument.
+			values = append(values, canonKeyString(keyNodeString(n), collURI))
 		} else if ns, ok := xpath.ToNodeSet(argN(args, 1)); ok {
 			for _, n := range ns {
 				values = append(values, canonKeyString(keyNodeString(n), collURI))
@@ -224,7 +231,18 @@ func (eng *engine) callFunc(prefix, local string, args []xpath.Object, env *eval
 			// (key-069/070); collURI additionally re-canonicalizes string-family
 			// keys per the key's @collation/@default-collation (collations-0105).
 			bc := eng.bc10AtDynamic(env.el)
-			for _, it := range xpath.Items(argN(args, 1)) {
+			var oneItem [1]xpath.Item
+			var items []xpath.Item
+			switch v := argN(args, 1).(type) {
+			case *xpath.Atomic, string:
+				// One atomic value (a string from concat, a number): no
+				// slice built around it.
+				oneItem[0] = v
+				items = oneItem[:]
+			default:
+				items = xpath.Items(v)
+			}
+			for _, it := range items {
 				if at, ok := it.(*xpath.Atomic); ok && bc && at.IsNumeric() {
 					// XSLT 1.0 key(): the search value is converted with
 					// string() — a number is XPath 1.0's "1", not the decimal's
@@ -789,9 +807,18 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 	// variables of whatever happens to be calling it. The scope stack is the
 	// dynamic call chain, so run the body on a stack of its own.
 	callerScopes := eng.scopes
-	eng.scopes = callerScopes[len(callerScopes):]
+	var own bool
+	eng.scopes, own = eng.calleeScopes(callerScopes)
 	eng.pushScope()
-	defer func() { eng.scopes = callerScopes }()
+	gen := eng.captureGen
+	defer func() {
+		// The body's frame (its parameters and locals) is kept for the next
+		// call when no function item can be holding it.
+		if len(eng.scopes) > 0 {
+			eng.recycleFrame(eng.scopes[0], gen)
+		}
+		eng.leaveScopes(callerScopes, own)
+	}()
 	// Calling a stylesheet function establishes a fresh, EMPTY tunnel
 	// parameter set: unlike xsl:call-template/apply-templates (which forward
 	// the ambient tunnel set unless a NEW one is supplied), a function

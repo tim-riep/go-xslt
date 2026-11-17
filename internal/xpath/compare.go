@@ -249,7 +249,7 @@ func rangeComparison(n *CompareExpr, ctx *Context) (Object, bool, error) {
 	}
 	for _, v := range vals {
 		var hit bool
-		if v.i != nil || v.d != nil {
+		if v.i != nil || v.T == XSdecimal {
 			hit = rangeHitExact(op, v, from, to)
 		} else {
 			hit = rangeHitFloat(op, v, from, to)
@@ -265,9 +265,11 @@ func rangeComparison(n *CompareExpr, ctx *Context) (Object, bool, error) {
 // under op with some integer of from..to. Both are compared as decimals,
 // exactly, at any magnitude (RangeExpr-409c: 10^21+20001 = 10^21 to ...).
 func rangeHitExact(op string, v *Atomic, from, to *big.Int) bool {
-	r := v.d
+	var r *big.Rat
 	if v.i != nil {
 		r = new(big.Rat).SetInt(v.i)
+	} else {
+		r = v.rat()
 	}
 	lo, hi := new(big.Rat).SetInt(from), new(big.Rat).SetInt(to)
 	switch op {
@@ -627,8 +629,8 @@ func (a *Atomic) ratValue() (*big.Rat, bool) {
 	switch {
 	case isIntegerType(a.T) && a.i != nil:
 		return new(big.Rat).SetInt(a.i), true
-	case a.T == XSdecimal && a.d != nil:
-		return a.d, true
+	case a.T == XSdecimal:
+		return a.rat(), true
 	}
 	return nil, false
 }

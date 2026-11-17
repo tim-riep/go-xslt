@@ -13,7 +13,7 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 	nID := 0
 	for _, a := range el.Attrs {
 		an := xname{a.Name.Space, a.Name.Local}
-		u, ok := ix.lookup(an)
+		u, ui, ok := ix.lookup(an)
 		// xsi:* and xml:* attributes are always permitted, but when one is
 		// *explicitly* declared (e.g. ref="xml:base" use="required", or
 		// ref="xsi:type" with a fixed value) it must still be validated and
@@ -77,7 +77,7 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 			}
 			continue
 		}
-		ix.markPresent(an)
+		ix.markPresent(an, ui)
 		if u.decl.typ != nil {
 			if err := s.yearZeroOK(u.decl.typ, a.Value); err != nil {
 				return err
@@ -184,29 +184,29 @@ func newAttrUseIndex(uses []*attrUse) attrUseIndex {
 	return ix
 }
 
-func (ix *attrUseIndex) lookup(n xname) (*attrUse, bool) {
+// lookup finds the use named n, with its position in uses (for
+// markPresent; meaningless when the index is a map).
+func (ix *attrUseIndex) lookup(n xname) (*attrUse, int, bool) {
 	if ix.byName != nil {
 		u, ok := ix.byName[n]
-		return u, ok
+		return u, -1, ok
 	}
 	for i := len(ix.uses) - 1; i >= 0; i-- {
 		if ix.uses[i].decl.name == n {
-			return ix.uses[i], true
+			return ix.uses[i], i, true
 		}
 	}
-	return nil, false
+	return nil, -1, false
 }
 
-func (ix *attrUseIndex) markPresent(n xname) {
+// markPresent records that the use lookup found at position i (named n)
+// was present.
+func (ix *attrUseIndex) markPresent(n xname, i int) {
 	if ix.seenMap != nil {
 		ix.seenMap[n] = true
 		return
 	}
-	for i, u := range ix.uses {
-		if u.decl.name == n {
-			ix.seen |= 1 << uint(i)
-		}
-	}
+	ix.seen |= 1 << uint(i)
 }
 
 func (ix *attrUseIndex) present(n xname) bool {

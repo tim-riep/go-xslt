@@ -670,10 +670,20 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	// A pre-existing <meta http-equiv="Content-Type"> child of such a head
 	// (output-0143/0144/0157/0158) isn't duplicated above; instead its own
 	// "content" attribute is (re)written with the correct value below.
-	fixContentTypeAttr := htmlish && s.opts.IncludeContentType && n.Parent != nil &&
-		strings.EqualFold(n.Parent.Name.Local, "head") &&
-		(html || n.Parent.Name.Space == "http://www.w3.org/1999/xhtml") &&
-		isContentTypeMeta(n)
+	fixContentTypeAttr := false
+	// The URI-valued attributes of this HTML element, looked up once per
+	// element (not per attribute); nil for the xml method, which tests
+	// nothing else of it, and for an element with none.
+	var uriAttrs map[string]bool
+	if htmlish {
+		fixContentTypeAttr = s.opts.IncludeContentType && n.Parent != nil &&
+			strings.EqualFold(n.Parent.Name.Local, "head") &&
+			(html || n.Parent.Name.Space == "http://www.w3.org/1999/xhtml") &&
+			isContentTypeMeta(n)
+		if !s.opts.NoEscapeURIAttributes && len(n.Attrs) > 0 {
+			uriAttrs = htmlURIAttrs[strings.ToLower(n.Name.Local)]
+		}
+	}
 
 	var saves []nsSave
 	var decls strings.Builder
@@ -826,17 +836,24 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 			pfx := s.resolvePrefix(a.Name, true, &saves, &decls)
 			aq = pfx + ":" + a.Name.Local
 		}
-		if html && a.Name.Space == "" && htmlBooleanAttrs[strings.ToLower(a.Name.Local)] &&
-			strings.EqualFold(a.Value, a.Name.Local) {
-			// HTML boolean attribute (attribute-0701): serialize as a bare
-			// name, not name="value".
-			attrs = append(attrs, ' ')
-			attrs = append(attrs, aq...)
-			continue
+		// The HTML tables, by the attribute's name lower-cased once for
+		// both; the xml method takes the same two tests as before and
+		// nothing more.
+		isURIAttr := false
+		if html && a.Name.Space == "" {
+			lower := strings.ToLower(a.Name.Local)
+			if htmlBooleanAttrs[lower] && strings.EqualFold(a.Value, a.Name.Local) {
+				// HTML boolean attribute (attribute-0701): serialize as a
+				// bare name, not name="value".
+				attrs = append(attrs, ' ')
+				attrs = append(attrs, aq...)
+				continue
+			}
+			isURIAttr = uriAttrs[lower]
+		} else if uriAttrs != nil && a.Name.Space == "" {
+			isURIAttr = uriAttrs[strings.ToLower(a.Name.Local)]
 		}
 		val := a.Value
-		isURIAttr := htmlish && !s.opts.NoEscapeURIAttributes && a.Name.Space == "" &&
-			htmlURIAttrs[strings.ToLower(n.Name.Local)][strings.ToLower(a.Name.Local)]
 		var out string
 		if isURIAttr {
 			// A URI-valued HTML/XHTML attribute is percent-escaped instead of
@@ -920,7 +937,9 @@ func (s *serializer) element(n *Node, depth int) {
 			}
 		case htmlish:
 			// Non-void empty element must use a separate end tag (<p></p>).
-			s.b.WriteString("></" + o.qname + ">")
+			s.b.WriteString("></")
+			s.b.WriteString(o.qname)
+			s.b.WriteString(">")
 		default:
 			s.b.WriteString("/>")
 		}
@@ -931,7 +950,10 @@ func (s *serializer) element(n *Node, depth int) {
 		return
 	}
 
-	s.b.WriteString(">" + o.meta)
+	s.b.WriteString(">")
+	if o.meta != "" {
+		s.b.WriteString(o.meta)
+	}
 	may := s.opts.Indent && s.mayIndentIn(n)
 	for i, c := range n.Children {
 		s.child = childPos{parentMayIndent: may}
