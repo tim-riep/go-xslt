@@ -320,5 +320,8 @@ func fnGenerateID(c *Context, a []Object) (Object, error) {
 		// prefix is needed to keep IDs unique (generate-id-011).
 		b = append(append(b, "ns"...), n.Name.Local...)
 	}
-	return NewString(string(b)), nil
+	// The id is returned as the plain string (an xs:string item, as
+	// fn:concat's and fn:string-join's results are), not boxed in an
+	// Atomic of its own.
+	return string(b), nil
 }
