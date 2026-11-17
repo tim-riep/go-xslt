@@ -156,7 +156,11 @@ func (s *Schema) ValidateOptsCtx(ctx context.Context, instance, lang string, max
 // suite's verdicts saying otherwise are all "queried"). XSD 1.1 dropped the
 // rule, so it is a no-op there.
 func (s *Schema) checkLateHints(root *xmltree.Node) *Error {
-	if s.version != Version10 {
+	if s.version != Version10 || !hintBelow(root) {
+		// A hint on the validation root itself is always the first thing
+		// of its namespaces seen (nothing precedes it), so only a hint on
+		// an element below the root can break the rule — and the walk that
+		// records every namespace runs only when there is one.
 		return nil
 	}
 	seen := map[string]bool{}      // namespaces of the elements and attributes so far
@@ -226,6 +230,25 @@ func (s *Schema) checkLateHints(root *xmltree.Node) *Error {
 		return nil
 	}
 	return walk(root)
+}
+
+// hintBelow reports whether an element below el (not el itself) carries an
+// xsi:schemaLocation or xsi:noNamespaceSchemaLocation attribute.
+func hintBelow(el *xmltree.Node) bool {
+	for _, c := range el.Children {
+		if c.Kind != xmltree.KindElement {
+			continue
+		}
+		for _, a := range c.Attrs {
+			if a.Name.Space == xsiNS && (a.Name.Local == "schemaLocation" || a.Name.Local == "noNamespaceSchemaLocation") {
+				return true
+			}
+		}
+		if hintBelow(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // hintDocs reads the schema documents referenced by the document element's
