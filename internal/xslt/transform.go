@@ -1439,10 +1439,19 @@ type engine struct {
 	outWriter io.Writer
 	outSink   *xmltree.ChunkWriter
 
-	sheet          *Stylesheet
-	doc            *xmltree.Node
-	globals        map[string]xpath.Object
-	scopes         []*scopeFrame
+	sheet   *Stylesheet
+	doc     *xmltree.Node
+	globals map[string]xpath.Object
+	scopes  []*scopeFrame
+	// scopeSpare is a scope-stack array a finished call chain left behind,
+	// for the next call made from a stack without spare capacity;
+	// frameSpare a frame a finished function call left behind, for the next
+	// bindVar into an empty stack; captureGen counts the scope snapshots
+	// taken (ContextCaptured), so a call knows whether its frame may be
+	// shared with a function item. See calleeScopes.
+	scopeSpare     []*scopeFrame
+	frameSpare     *scopeFrame
+	captureGen     uint64
 	funcMemo       map[string]memoResult                      // results of xsl:function new-each-time="no" / cache="yes" calls
 	keyIndex       map[keyCacheKey]map[string][]*xmltree.Node // lazily built key indexes (per key name and document root)
 	keyBuilding    map[string]bool                            // keys currently being indexed (circularity -> XTDE0640)
@@ -1896,6 +1905,47 @@ func (eng *engine) evalGlobal(key string, vd *VarDef) (xpath.Object, error) {
 func (eng *engine) pushScope() { eng.scopes = append(eng.scopes, nil) }
 func (eng *engine) popScope()  { eng.scopes = eng.scopes[:len(eng.scopes)-1] }
 
+// calleeScopes returns the empty stack a template or function call runs its
+// body on: the caller's spare capacity when it has any, else the array the
+// last call chain that started from a full stack left in scopeSpare, else a
+// new array with room for a call chain. own reports the last two cases, in
+// which leaveScopes stores the array for the next call; the first case hands
+// the caller's own array out, which is not to be kept.
+func (eng *engine) calleeScopes(caller []*scopeFrame) (callee []*scopeFrame, own bool) {
+	if cap(caller) > len(caller) {
+		return caller[len(caller):], false
+	}
+	if sp := eng.scopeSpare; sp != nil {
+		eng.scopeSpare = nil
+		return sp[:0], true
+	}
+	return make([]*scopeFrame, 0, 8), true
+}
+
+// leaveScopes restores the caller's stack after a call started with
+// calleeScopes. An own array is kept for the next call with its frames
+// cleared out (a dead frame holds its variables' values).
+func (eng *engine) leaveScopes(caller []*scopeFrame, own bool) {
+	if own {
+		sp := eng.scopes[:cap(eng.scopes)]
+		clear(sp)
+		eng.scopeSpare = sp[:0]
+	}
+	eng.scopes = caller
+}
+
+// recycleFrame keeps the frame of a function call that has returned for the
+// next call, unless a scope snapshot was taken since gen (the frame may then
+// be a function item's). The frame's bindings are dropped.
+func (eng *engine) recycleFrame(f *scopeFrame, gen uint64) {
+	if f == nil || eng.captureGen != gen || f.idx != nil {
+		return
+	}
+	clear(f.vars)
+	f.vars = f.vars[:0]
+	eng.frameSpare = f
+}
+
 // scopeFrame is one frame of local variable bindings, by Clark name. Most
 // frames hold one or two bindings (a template's or function's parameters),
 // so they are kept in a short slice, searched backwards, inside the frame's
@@ -1971,7 +2021,12 @@ func (eng *engine) bindVar(name xmltree.Name, v xpath.Object) {
 	}
 	top := len(eng.scopes) - 1
 	if eng.scopes[top] == nil {
-		eng.scopes[top] = new(scopeFrame)
+		if f := eng.frameSpare; f != nil {
+			eng.frameSpare = nil
+			eng.scopes[top] = f
+		} else {
+			eng.scopes[top] = new(scopeFrame)
+		}
 	}
 	eng.scopes[top].bind(clark(name.Space, name.Local), v)
 }
@@ -2169,6 +2224,7 @@ func (e *evalEnv) ContextCaptured() {
 	e.captured = true
 	if e.snapScopes && e.scopes == nil {
 		e.scopes = append([]*scopeFrame{}, e.eng.scopes...)
+		e.eng.captureGen++
 	}
 }
 
@@ -3783,12 +3839,13 @@ func (eng *engine) invokeTemplateBody(tmpl *Template, r rt, out *xmltree.Node, c
 	// (~10% of a template-heavy transform's mallocs) for a frame that stayed
 	// empty.
 	callerScopes := eng.scopes
-	eng.scopes = callerScopes[len(callerScopes):]
+	var own bool
+	eng.scopes, own = eng.calleeScopes(callerScopes)
 	prevTunnel := eng.tunnel
 	if tunnelIn != nil {
 		eng.tunnel = tunnelIn
 	}
-	defer func() { eng.scopes = callerScopes; eng.tunnel = prevTunnel }()
+	defer func() { eng.leaveScopes(callerScopes, own); eng.tunnel = prevTunnel }()
 	return eng.runTemplate(tmpl, r, out, supplied)
 }
 

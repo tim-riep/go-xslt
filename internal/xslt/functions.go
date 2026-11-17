@@ -803,9 +803,18 @@ func (eng *engine) callUserFunc(fd *FuncDef, args []xpath.Object, env *evalEnv) 
 	// variables of whatever happens to be calling it. The scope stack is the
 	// dynamic call chain, so run the body on a stack of its own.
 	callerScopes := eng.scopes
-	eng.scopes = callerScopes[len(callerScopes):]
+	var own bool
+	eng.scopes, own = eng.calleeScopes(callerScopes)
 	eng.pushScope()
-	defer func() { eng.scopes = callerScopes }()
+	gen := eng.captureGen
+	defer func() {
+		// The body's frame (its parameters and locals) is kept for the next
+		// call when no function item can be holding it.
+		if len(eng.scopes) > 0 {
+			eng.recycleFrame(eng.scopes[0], gen)
+		}
+		eng.leaveScopes(callerScopes, own)
+	}()
 	// Calling a stylesheet function establishes a fresh, EMPTY tunnel
 	// parameter set: unlike xsl:call-template/apply-templates (which forward
 	// the ambient tunnel set unless a NEW one is supplied), a function
