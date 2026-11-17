@@ -724,8 +724,21 @@ func (s *Schema) elementTypeOf(el *xmltree.Node) Type {
 			typ = t
 		}
 	}
-	if s.typeCache != nil {
+	// Memoised for the elements a later lookup may walk through — those
+	// with element children. A leaf (a simple-typed field of a key, mostly)
+	// is asked for once or twice; recording it would cost a map entry per
+	// leaf of the instance for a lookup its parent's entry answers anyway.
+	if s.typeCache != nil && hasElementChild(el) {
 		s.typeCache[el] = typ
 	}
 	return typ
+}
+
+func hasElementChild(el *xmltree.Node) bool {
+	for _, c := range el.Children {
+		if c.Kind == xmltree.KindElement {
+			return true
+		}
+	}
+	return false
 }
