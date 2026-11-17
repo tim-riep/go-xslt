@@ -217,3 +217,23 @@ func nodeTypedItems(n *xmltree.Node) ([]Item, bool) {
 	}
 	return out, true
 }
+
+// NodeAtomizesUntyped reports whether n atomizes to exactly one
+// xs:untypedAtomic whose value is n's string value — toAtomic's last case:
+// an element, attribute, text or document node that no schema annotated,
+// not nilled, not a carrier node. A host that needs only the KIND of a
+// node's atomized value (xsl:sort's data-type inference) can then skip
+// building the Atomic. Conservative: false for every node it is unsure of,
+// which the caller atomizes the ordinary way.
+func NodeAtomizesUntyped(n *xmltree.Node) bool {
+	if n == nil || n.RealItem() != nil || n.TypeAnno() != 0 || n.ListTyped() || n.SchemaType() != nil {
+		return false
+	}
+	switch n.Kind {
+	case xmltree.KindElement:
+		return !n.Nilled()
+	case xmltree.KindAttribute, xmltree.KindText, xmltree.KindDocument:
+		return true
+	}
+	return false
+}

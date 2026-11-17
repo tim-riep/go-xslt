@@ -5959,13 +5959,18 @@ func (eng *engine) resolveSortAttrs(sk sortKey, el *xmltree.Node, ctx rt) (dataT
 // outerEl is the containing instruction (xsl:for-each/apply-templates/
 // perform-sort/xsl:for-each-group) — @select is evaluated against it, exactly
 // as before this function existed. A body (no @select) is evaluated against
-// the xsl:sort element's own scope instead.
-func (eng *engine) sortKeyValue(sk sortKey, outerEl *xmltree.Node, ctx rt) (xpath.Object, string, error) {
+// the xsl:sort element's own scope instead. With havePre, sortNodes has
+// evaluated a @select key already and pre is its value.
+func (eng *engine) sortKeyValue(sk sortKey, outerEl *xmltree.Node, ctx rt, pre xpath.Object, havePre bool) (xpath.Object, string, error) {
 	switch {
 	case sk.sel != nil:
-		v, err := eng.eval(sk.sel, outerEl, ctx)
-		if err != nil {
-			return nil, "", err
+		v := pre
+		if !havePre {
+			var err error
+			v, err = eng.eval(sk.sel, outerEl, ctx)
+			if err != nil {
+				return nil, "", err
+			}
 		}
 		// XSLT 1.0 backwards-compatible processing takes only the FIRST item
 		// of a multi-item sort key instead of raising XTTE1020
@@ -6139,10 +6144,53 @@ func (eng *engine) sortNodes(nodes []*xmltree.Node, sorts []sortKey, el *xmltree
 	// allocations for each of the nodes sorted.
 	keysFlat := make([]string, n*nk)
 	valsFlat := make([]xpath.Object, n*nk)
+	var pre xpath.Object
+	havePre := false
 	for i, node := range nodes {
 		k := keyed{node: node, keys: keysFlat[i*nk : (i+1)*nk : (i+1)*nk], vals: valsFlat[i*nk : (i+1)*nk : (i+1)*nk]}
 		for si, sk := range sorts {
-			v, s, err := eng.sortKeyValue(sk, el, rt{node: node, pos: i + 1, size: n})
+			if sk.sel != nil {
+				// The usual key, a path to one unannotated node (or to none):
+				// its string is the node's, and it atomizes to one
+				// xs:untypedAtomic, which every question below can be
+				// answered about without boxing the node set into the key
+				// value or building the Atomic. The value is left nil: it is
+				// read only for a column of date/time/duration keys, which
+				// an untyped key rules out (and an empty key atomizes to
+				// nothing, as a nil value does).
+				ns, vv, isNodes, err := eng.evalNodes(sk.sel, el, rt{node: node, pos: i + 1, size: n})
+				if err != nil {
+					return nil, err
+				}
+				if isNodes {
+					if len(ns) == 0 {
+						k.keys[si] = ""
+						continue
+					}
+					if (len(ns) == 1 || eng.bc10At(sk.el)) && xpath.NodeAtomizesUntyped(ns[0]) {
+						// (In 1.0 compatibility mode a plural key is its
+						// first item.)
+						if sk.dataType == nil {
+							if allNumeric[si] {
+								anyNumericSeen[si] = true
+								allNumeric[si] = false
+							}
+							if allOrderable[si] {
+								anyOrderableSeen[si] = true
+								allOrderable[si] = false
+							}
+							sawUntypedKey[si] = true
+						}
+						k.keys[si] = xpath.NodeSetString(ns[:1])
+						continue
+					}
+					vv = ns
+				}
+				pre = vv
+				havePre = true
+			}
+			v, s, err := eng.sortKeyValue(sk, el, rt{node: node, pos: i + 1, size: n}, pre, havePre)
+			pre, havePre = nil, false
 			if err != nil {
 				return nil, err
 			}
