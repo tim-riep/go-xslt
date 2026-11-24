@@ -374,7 +374,24 @@ Desktop GUI (**run from `desktop/`**):
   primitive and effective whitespace (`cacheOK`/`primCache`/`wsCache`) in
   `cacheSimpleTypes`, the last step of `compile`, and nowhere else: the
   walks fall back for a type the pass did not reach, and a type built after
-  compile (bridge.go's built-in references) is never cached.
+  compile (bridge.go's built-in references) is never cached. The same pass
+  records `noFacets` (the facet set constrains nothing), `yearZero` (the
+  primitive is one the XSD 1.0 year-zero / +INF rule looks at) and
+  `wsKind` (the whiteSpace mode as a constant); every reader of these
+  tests `cacheOK` first. In the tokenizer, a tab or line feed in an
+  attribute value is a class-2 byte (dq/sqClass), so `scanText` reports
+  `check` for a value holding one, and `attrWS` — set per start tag from
+  the values that were checked or not raw — says whether any attribute
+  value holds a tab, LF or CR: the parser's lazy whitespace pre-pass and
+  the stream reader's attribute normalization both rely on it (the stream
+  reader normalizes regardless under a DTD, whose defaulted attributes the
+  tokenizer never saw). Both readers read a token from the tokenizer's own
+  fields (`tz.name`, `tz.attrs`), which hold until its next call; nothing
+  may call `next` while a token is still being consumed. The stream
+  reader's `nameCache` in front of `nameIntern` holds interned strings
+  only, never a window substring. `normalizeIDAttr` is an inlinable test
+  that hands the rare case to `normalizeIDValue`; keep its cost under the
+  inlining budget (check `-gcflags=-m`).
 - **Optional features are per stylesheet** (`internal/xslt/features.go`,
   `engine.Features{SchemaAware, BackwardsCompatible, StrictStreaming}` on
   `Request`): `xslt.CompileWith(…, CompileOptions{Features})` stores them on

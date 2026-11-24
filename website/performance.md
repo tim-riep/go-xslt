@@ -488,7 +488,76 @@ libxslt's time to where it is now:
   text between a stylesheet's tags is a few bytes; the call cost more than
   the byte loop).
 
-The sixth to fourteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a fifteenth round, part B, on the validator, the readers, the serializer
+  and the compiler (part A, in parallel, took the evaluator), under the same
+  harness and rule. The validator asked, for every attribute use of every
+  element, whether the use's own attribute was present by scanning every use
+  for its name, twice; the use's position answers. Its linear content-model
+  matcher compared a child's name with an element particle twice, once to
+  see whether the particle could start and once to consume the child; one
+  comparison does both. A simple type the compiled schema records knows
+  whether its facets constrain anything, whether the XSD 1.0 year-zero rule
+  has anything to look at for its primitive, and its whiteSpace mode as a
+  constant, so the four facet checks, the rule and a switch on the mode's
+  name are skipped where they decide nothing; the error location is stamped
+  by a wrapper instead of a deferred call per element, the open-content
+  chain is guarded by a list on the stack instead of a map per element, an
+  element's child model is looked up once instead of three times, and its
+  child elements and character data are found in one pass (XSD 1.0
+  validation of the 200,000-order document: 12.3 % fewer instructions, then
+  0.5 %; XSD 1.1: 4.3 %, then 0.5 % and 0.1 %). The parser scanned every
+  attribute value of every start tag for a tab, LF or CR to decide whether
+  its lazy whitespace pre-pass has to run, and the streaming reader scanned
+  them again to normalize; the tokenizer's fast path classifies every byte
+  of a value anyway, so a tab or line feed is now a byte the value needs a
+  look for, and only the rare value that needed one is scanned. The
+  tokenizer's white-space skip takes one table look per byte instead of a
+  four-way comparison (and is inlined at the start-tag sites), both
+  readers' open frames are filled in place instead of appended as a literal
+  copied from the stack, and the parser's pending text run is flushed only
+  when one is open (copying the whole document: 2.7 % fewer instructions;
+  XSD 1.0 validation 2.6 %; compiling the DocBook stylesheets 1.7 %; keys
+  1.5 %; template dispatch 1.4 %; streaming 1.2 %). Both readers read a
+  token from the tokenizer's own fields instead of a copy made for every
+  tag, and the streamed retry restores only its position (copying the whole
+  document: 1.2 %; XSD 1.0 validation 1 %); the ID normalization of an
+  ordinary attribute returns from an inlined test (0.6 % and 0.5 %); an
+  element or attribute name is read without the call between nsname and
+  readName (copying the whole document 0.9 %, XSD 1.0 validation 0.9 %,
+  streaming 0.9 %); and a name's bytes are read with one table look each instead of two
+  comparisons, the high bits gathered by an OR telling afterwards whether
+  the name was all ASCII (0.4 % on every workload that parses the
+  document). The streaming reader interned every element name
+  through a map; a 64-slot cache in front of it, indexed by the name's
+  length and first and last bytes, answers a recurring name with one
+  comparison (streaming the 200,000-record document: 2.8 % fewer
+  instructions), and its prefix-undeclaring check is made where the
+  declarations are found (0.3 %). The html output method looked every
+  attribute name up in the boolean-attribute map and, for an element with
+  URI-valued attributes, in that element's map; both are string switches
+  now (HTML output: 5.9 % fewer instructions), and the serializer decides
+  the output method and the normalization form once instead of comparing
+  their names for every element and value (copying the whole document:
+  0.5 %). The compiler's attribute-set and call-template reference checks
+  walk the stylesheet once instead of twice, with the error reported for
+  any stylesheet unchanged, and white-space-only text is judged by a table
+  (compiling the DocBook stylesheets: 0.8 % fewer instructions); the ASCII
+  rows of the name-character predicates the XPath lexer asks for every
+  character of a name are tables (1.1 %); an element's shadow attributes
+  and use-when are found in one pass over its attributes (0.7 %); and a
+  literal result element's ambient namespaces are gathered into a reused
+  list, with exclude-result-prefixes parsed once per declaring element
+  instead of once per literal result element (1.2 % fewer instructions,
+  2.1 % fewer allocations). Over the whole round, against the version
+  before it: FINALSUMMARY No workload executes more instructions than before
+  beyond the counter's spread, none allocates more, and every output is
+  byte-identical. Tried and dropped: comparing an XSD name's local part
+  before its namespace (0.25 % more on XSD 1.0 validation: an equal-length
+  empty namespace costs no comparison call), and walking the parser's node
+  slabs by an index instead of reslicing them (0.5 % more copying the
+  document, confirmed against an A/A pair).
+
+The sixth to fifteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
