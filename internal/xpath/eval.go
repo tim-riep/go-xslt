@@ -233,6 +233,42 @@ type ArgStack struct {
 	// predicate or postfix step evaluated meanwhile takes others, so a set
 	// being read is never written over.
 	nodeBufs []NodeSet
+	// captures counts the captures (Context.capture) of every context
+	// sharing this stack: a loop that lends one local binding to every
+	// item (evalFor) keeps the binding only while the count stands still.
+	captures uint32
+	// ctxs are free scratch contexts for the per-item loops (takeCtx).
+	ctxs []*Context
+}
+
+// takeCtx lends a zero scratch context (a new one when none is free).
+func (s *ArgStack) takeCtx() *Context {
+	if l := len(s.ctxs); l > 0 {
+		c := s.ctxs[l-1]
+		s.ctxs = s.ctxs[:l-1]
+		return c
+	}
+	return new(Context)
+}
+
+// giveCtx takes a scratch context back, cleared so it keeps nothing alive;
+// a captured one (a function item holds it) is left to the collector. s
+// may be nil, then c is dropped.
+func (s *ArgStack) giveCtx(c *Context) {
+	if s == nil || c.captured {
+		return
+	}
+	*c = Context{}
+	s.ctxs = append(s.ctxs, c)
+}
+
+// scratchCtx is a scratch context for a per-item loop: lent by the stack
+// when there is one, else new.
+func scratchCtx(ctx *Context) *Context {
+	if ctx != nil && ctx.ArgStack != nil {
+		return ctx.ArgStack.takeCtx()
+	}
+	return new(Context)
 }
 
 // maxNodeBuf is the largest array nodeBufs keeps: a step over more nodes
@@ -1098,26 +1134,41 @@ func evalFor(binds []VarBind, i int, ctx *Context, body Expr) (Object, error) {
 	}
 	// One scratch context per loop (a copy of ctx, as withLocal makes),
 	// overwritten per item and replaced only once an evaluation captured it
-	// (as in applyPredicateOrdered). The binding itself is a fresh localScope
-	// per item: copies of the context made inside the body share it by
-	// pointer, so it is never overwritten.
+	// (as in applyPredicateOrdered). The binding is a localScope copies of
+	// the context made inside the body share by pointer, so it is rebound
+	// in place for the next item only while no context sharing the stack
+	// was captured during the body (ArgStack.captures): a function item
+	// made there holds a context whose chain of bindings has it.
 	var sub *Context
+	var ls *localScope
+	stack := ctx.ArgStack
+	var gen uint32
 	for idx := 0; idx < n; idx++ {
 		it := itemAt(seqV, idx)
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
 		if sub == nil || sub.captured {
-			sub = new(Context)
+			sub = scratchCtx(ctx)
 		}
 		*sub = *ctx
 		sub.captured = false
-		sub.locals = &localScope{parent: ctx.locals, key: key, val: singleItem(it)}
+		if ls == nil || stack == nil || stack.captures != gen {
+			ls = &localScope{parent: ctx.locals, key: key}
+		}
+		ls.val = singleItem(it)
+		sub.locals = ls
+		if stack != nil {
+			gen = stack.captures
+		}
 		r, err := evalFor(binds, i+1, sub, body)
 		if err != nil {
 			return nil, err
 		}
 		out = appendItems(out, r)
+	}
+	if sub != nil {
+		stack.giveCtx(sub)
 	}
 	return FromItems(out), nil
 }
@@ -1144,21 +1195,45 @@ func evalQuant(every bool, binds []VarBind, i int, ctx *Context, test Expr) (boo
 		return false, err
 	}
 	key := varKey(ctx, binds[i].Prefix, binds[i].Local)
-	for _, it := range Items(seqV) {
+	// The scratch context and the binding are reused per item as in evalFor.
+	var sub *Context
+	var ls *localScope
+	stack := ctx.ArgStack
+	var gen uint32
+	n := itemCount(seqV)
+	for idx := 0; idx < n; idx++ {
+		it := itemAt(seqV, idx)
 		if err := ctx.poll(); err != nil {
 			return false, err
 		}
-		child := withLocal(ctx, key, FromItems([]Item{it}))
-		ok, err := evalQuant(every, binds, i+1, child, test)
+		if sub == nil || sub.captured {
+			sub = scratchCtx(ctx)
+		}
+		*sub = *ctx
+		sub.captured = false
+		if ls == nil || stack == nil || stack.captures != gen {
+			ls = &localScope{parent: ctx.locals, key: key}
+		}
+		ls.val = singleItem(it)
+		sub.locals = ls
+		if stack != nil {
+			gen = stack.captures
+		}
+		ok, err := evalQuant(every, binds, i+1, sub, test)
 		if err != nil {
 			return false, err
 		}
 		if every && !ok {
+			stack.giveCtx(sub)
 			return false, nil
 		}
 		if !every && ok {
+			stack.giveCtx(sub)
 			return true, nil
 		}
+	}
+	if sub != nil {
+		stack.giveCtx(sub)
 	}
 	return every, nil
 }
@@ -1223,6 +1298,9 @@ type CaptureListener interface {
 // field directly.
 func (c *Context) capture() {
 	c.captured = true
+	if c.ArgStack != nil {
+		c.ArgStack.captures++
+	}
 	if l, ok := c.Vars.(CaptureListener); ok {
 		l.ContextCaptured()
 	}
@@ -1421,14 +1499,14 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 	pathPred, _ := pred.(*PathExpr)
 	// One scratch context serves every item, as in applyPredicateOrdered:
 	// overwritten per item, replaced only once an evaluation captured it.
-	sub := new(Context)
+	sub := scratchCtx(ctx)
 	for i, it := range items {
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
 		pos := i + 1
 		if sub.captured {
-			sub = new(Context)
+			sub = scratchCtx(ctx)
 		}
 		*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 		switch it.(type) {
@@ -1480,6 +1558,7 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 			out = append(out, it)
 		}
 	}
+	ctx.ArgStack.giveCtx(sub)
 	return out, nil
 }
 
@@ -1674,10 +1753,10 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			// One scratch context per step, overwritten per context node and
 			// replaced only once an evaluation captured it (as in
 			// applyPredicateOrdered).
-			sub := new(Context)
+			sub := scratchCtx(ctx)
 			for idx, cn := range current {
 				if sub.captured {
-					sub = new(Context)
+					sub = scratchCtx(ctx)
 				}
 				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 				pv, err := evalExpr(step.Postfix, sub)
@@ -1687,6 +1766,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				}
 				items = appendItems(items, pv)
 			}
+			bufs.giveCtx(sub)
 			inScratch = false
 			// XPath 3.1 §3.3.3: when E1/E2 yields NODES the result is returned
 			// in document order with duplicates eliminated. That applies to a
@@ -2121,15 +2201,15 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 	// One scratch context serves every item: it is overwritten wholesale per
 	// item, and replaced by a fresh one only when an evaluation CAPTURED it
 	// (Context.captured — a function item holding the pointer could otherwise
-	// observe a later item's focus).
-	sub := new(Context)
+	// observe a later item's focus). It is lent by the stack and given back.
+	sub := scratchCtx(ctx)
 	for i, node := range ns {
 		if err := ctx.poll(); err != nil {
 			return nil, err
 		}
 		pos := i + 1
 		if sub.captured {
-			sub = new(Context)
+			sub = scratchCtx(ctx)
 		}
 		*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: node, Pos: pos, Size: size, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 		// A path predicate ([@b], [item]) is an existence test: its node
@@ -2173,6 +2253,7 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 			out = append(out, node)
 		}
 	}
+	ctx.ArgStack.giveCtx(sub)
 	return out, nil
 }
 
@@ -2522,13 +2603,13 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 		var out []Item
 		// One scratch context per step, overwritten per item and replaced
 		// only once an evaluation captured it (as in applyPredicateOrdered).
-		sub := new(Context)
+		sub := scratchCtx(ctx)
 		for i, it := range items {
 			if err := ctx.poll(); err != nil {
 				return nil, err
 			}
 			if sub.captured {
-				sub = new(Context)
+				sub = scratchCtx(ctx)
 			}
 			*sub = Context{SchemaTypes: ctx.SchemaTypes, Pos: i + 1, Size: len(items), CtxItem: it, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 			if nd, ok := it.(*xmltree.Node); ok {
@@ -2540,6 +2621,7 @@ func evalSimpleMap(n *SimpleMapExpr, ctx *Context) (Object, error) {
 			}
 			out = appendItems(out, r)
 		}
+		ctx.ArgStack.giveCtx(sub)
 		cur = FromItems(out)
 	}
 	return cur, nil
