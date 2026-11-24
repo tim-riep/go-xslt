@@ -132,6 +132,7 @@ type StreamReader struct {
 type streamFrame struct {
 	node  *Node
 	frame map[string]string // prefix -> uri (default prefix "")
+	def   string            // frame[""], read without the lookup for every unprefixed name
 	raw   xml.Name
 	// text is the node the element's first text child is built in, when its
 	// allocation carries one (streamElementSlab, the input said a text run
@@ -471,10 +472,17 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 	// parse.go: most elements declare no namespace of their own, so reuse the
 	// parent's frame reference until a decl actually forces a copy.
 	frame := s.open[len(s.open)-1].frame
+	def := s.open[len(s.open)-1].def
 	cloned := false
 	var decls []*Node
-	if d := s.attrDefaults[t.Name.Local]; len(d) > 0 {
-		t.Attr = withNSDefaults(t.Attr, d) // DTD-defaulted xmlns[:p] declarations
+	// The DTD tables exist only after a DOCTYPE declared something; a
+	// lookup in a nil map is a call all the same, so the common document
+	// skips them (the buffered parser does the same).
+	hasDTD := s.attrDefaults != nil || s.idKinds != nil
+	if hasDTD {
+		if d := s.attrDefaults[t.Name.Local]; len(d) > 0 {
+			t.Attr = withNSDefaults(t.Attr, d) // DTD-defaulted xmlns[:p] declarations
+		}
 	}
 	for _, a := range t.Attr {
 		local, isNS := "", false
@@ -495,6 +503,9 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		// is open, which for the document element is the whole document.
 		uri := strings.Clone(a.Value)
 		frame[local] = uri
+		if local == "" {
+			def = uri
+		}
 		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: internCopy(s.nameIntern, local)}, Value: uri})
 	}
 	// The element and its attribute nodes are one allocation: an attribute
@@ -504,7 +515,12 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 	nAttrs := len(t.Attr) - len(decls)
 	slab, attrs, kids, text := streamElementSlab(nAttrs, textNext)
 	el := &slab[0]
-	el.Kind, el.Name, el.Children = KindElement, resolveRawName(frame, t.Name, false), kids
+	el.Kind, el.Children = KindElement, kids
+	if t.Name.Space == "" {
+		el.Name = Name{Local: t.Name.Local, Space: def} // resolveRawName, without the lookup
+	} else {
+		el.Name = resolveRawName(frame, t.Name, false)
+	}
 	el.SetNSDecls(decls)
 	// Stamping order is element, then its namespace nodes, then its
 	// attributes, then (as they arrive) its children — exactly assignOrder's
@@ -524,9 +540,11 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		an.Kind = KindAttribute
 		an.Name = resolveRawName(frame, a.Name, true)
 		an.Value = streamNormalizeAttrValue(a.Value)
-		if m := s.idKinds[t.Name.Local]; m != nil {
-			if k := m[a.Name.Local]; k != 0 {
-				an.SetIDKind(k)
+		if hasDTD {
+			if m := s.idKinds[t.Name.Local]; m != nil {
+				if k := m[a.Name.Local]; k != 0 {
+					an.SetIDKind(k)
+				}
 			}
 		}
 		normalizeIDAttr(an)
@@ -534,7 +552,11 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		s.stamp(an)
 		el.Attrs = append(el.Attrs, an)
 	}
-	if defaults := s.attrDefaults[t.Name.Local]; len(defaults) > 0 {
+	var defaults map[string]attlistDefault
+	if hasDTD {
+		defaults = s.attrDefaults[t.Name.Local]
+	}
+	if len(defaults) > 0 {
 		for _, name := range defaultNames(defaults) {
 			d := defaults[name]
 			if isNSDecl(name) {
@@ -556,7 +578,7 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		}
 	}
 	s.appendChild(s.top(), el)
-	s.open = append(s.open, streamFrame{node: el, frame: frame, raw: t.Name, text: text})
+	s.open = append(s.open, streamFrame{node: el, frame: frame, def: def, raw: t.Name, text: text})
 	return el
 }
 
@@ -687,7 +709,7 @@ func (s *StreamReader) charData(t string) *Node {
 	if top == s.doc && strings.Trim(t, " \t\r\n") == "" {
 		return nil
 	}
-	if top.Kind == KindElement && s.elemOnly[top.Name.Local] && strings.Trim(t, " \t\r\n") == "" {
+	if top.Kind == KindElement && s.elemOnly != nil && s.elemOnly[top.Name.Local] && strings.Trim(t, " \t\r\n") == "" {
 		return nil
 	}
 	if k := len(top.Children); k > 0 && top.Children[k-1].Kind == KindText && !top.Children[k-1].Atomic() {
@@ -775,7 +797,17 @@ func internCopy(m map[string]string, s string) string {
 // well. Accepted: the alternative — not normalizing at all — is wrong for the
 // overwhelmingly more common literal case.
 func streamNormalizeAttrValue(v string) string {
-	if !strings.ContainsAny(v, "\t\n\r") {
+	// The scan is a byte loop: strings.ContainsAny builds a character set
+	// per call for a long value and tests every byte of a short one against
+	// the three characters one by one, and attribute values are short.
+	i := 0
+	for i < len(v) {
+		if c := v[i]; c == '\t' || c == '\n' || c == '\r' {
+			break
+		}
+		i++
+	}
+	if i == len(v) {
 		return v
 	}
 	b := []byte(v)
