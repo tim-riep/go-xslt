@@ -542,11 +542,29 @@ libxslt's time to where it is now:
   numbered node after node; the run remembers, per instruction and parent,
   the last sibling it numbered and counts on from there whenever the match
   is a function of the node alone (xsl:number with position()/last() over
-  2,000 records: 0.37 s to 0.08 s of CPU). Over the whole round, against
-  the version before it, see the table of the final measurement below in
-  the round's commit messages; no workload executes more instructions than
-  before beyond the counter's spread, none allocates more, and every
-  output is byte-identical. Tried and dropped: copying a path's last step
+  2,000 records: 0.37 s to 0.08 s of CPU, 80 % fewer instructions). A map
+  called as a function, $m($k), allocated an argument slice, a table of
+  argument holes and an item slice around the map to count it, and a
+  literal predicate over a sequence, ($m($k), 0)[1], built a context per
+  item: the one argument of a map call is the key, the hole table exists
+  only for a partial application, the literal indexes the sequence, a
+  sequence constructor starts with room for its parts, and xsl:iterate's
+  loop reads the next-iteration sentinel by a type assertion where
+  errors.As had allocated its target per iteration (the decimal map: 31 %
+  fewer allocations; the array 16 %; typed functions 5 %). Over the whole
+  round, against the version before it: xsl:number with position()/last()
+  executes 80 % fewer instructions, group-by with JSON output 16 %, the
+  Muenchian grouping 10 %, number formatting 7 %, the string functions,
+  typed functions, xsl:iterate with a decimal map and 200 transforms in one
+  process 5 to 6 %, deep recursion 1.6 %, HTML output 1.3 %, and the rest
+  between 0 and 1 %; allocations fall by half on group-by with JSON output,
+  by a third on the string functions, by a quarter on typed functions,
+  Muenchian grouping, the XPath 1.0 predicates and 200 transforms in one
+  process, and by 18 to 21 % on xsl:iterate, number formatting and regular
+  expressions. No workload executes more instructions than before beyond
+  the counter's spread (0.3 % tonight between two runs of one binary), none
+  allocates more, and every output is byte-identical. Tried and dropped:
+  copying a path's last step
   set always (a 200,000-node set copied: 1.6 MB more on two workloads),
   copying a single-node non-direct step's set into the lent array (160 KB
   more on the JSON round trip), and keeping a last-step set beyond the
