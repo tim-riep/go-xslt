@@ -9,6 +9,7 @@ import (
 	"github.com/tim-riep/go-xslt/internal/fileuri"
 	"github.com/tim-riep/go-xslt/internal/fsaccess"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1544,6 +1545,11 @@ func (c *compiler) compileTopLevel(ss *Stylesheet, children []*xmltree.Node) err
 type compiler struct {
 	// files checks every file the compile reads; nil checks nothing.
 	files *fsaccess.Guard
+	// exclDecl caches each element's own exclude-result-prefixes
+	// contribution (excludedResultURIsAt), and nsScratch is
+	// ambientResultNamespaces' list of in-scope bindings, reused per call.
+	exclDecl  map[*xmltree.Node]map[string]bool
+	nsScratch []nsBinding
 	// feat are the optional capabilities this compile claims.
 	feat    Features
 	baseDir string
@@ -3233,55 +3239,111 @@ func excludedResultURIs(el *xmltree.Node) map[string]bool {
 		if cur.Kind != xmltree.KindElement {
 			continue
 		}
-		var v string
-		var ok bool
-		if cur.Name.Space == NS {
-			v, ok = cur.AttrLocal("exclude-result-prefixes")
-		} else {
-			v, ok = cur.Attr(NS, "exclude-result-prefixes")
+		for uri := range excludedResultURIsAt(cur) {
+			if uris == nil {
+				uris = map[string]bool{}
+			}
+			uris[uri] = true
 		}
-		if !ok {
+	}
+	return uris
+}
+
+// excludedResultURIs is the free function of that name through a cache of
+// each declaring element's contribution (excludedResultURIsAt): the walk
+// from a literal result element up to the stylesheet element parsed that
+// element's attribute, and built a map, for every literal result element
+// of the stylesheet. The map of a lone contributing element is returned
+// itself (read-only to every caller), and only several are merged.
+func (c *compiler) excludedResultURIs(el *xmltree.Node) map[string]bool {
+	var uris, merged map[string]bool
+	for cur := el; cur != nil; cur = cur.Parent {
+		if cur.Kind != xmltree.KindElement {
 			continue
 		}
-		for _, tok := range strings.Fields(v) {
-			switch tok {
-			case "#all":
-				// "#all indicates that all namespaces that are in scope FOR
-				// THE STYLESHEET ELEMENT that is the parent of the
-				// exclude-result-prefixes attribute are designated as
-				// excluded namespaces" (XSLT 3.0 §5.6.2) — a fixed snapshot
-				// taken AT cur, not "everything found anywhere in the
-				// subtree forever after". The spec's own worked example:
-				// exclude-result-prefixes="#all" on xsl:stylesheet (in
-				// scope there: xsl, a, b) does NOT exclude xmlns:d="d.uri"
-				// declared later on a literal result element deep inside a
-				// template, because d.uri was never in scope at
-				// xsl:stylesheet itself (copy-1220/1221: an unrelated
-				// "w" prefix declared on a literal element nested inside
-				// the template survives an ancestor #all the same way).
-				for _, uri := range cur.InScopeNamespaces() {
-					if uri == "" {
-						continue
-					}
-					if uris == nil {
-						uris = map[string]bool{}
-					}
-					uris[uri] = true
+		own, ok := c.exclDecl[cur]
+		if !ok {
+			own = excludedResultURIsAt(cur)
+			if c.exclDecl == nil {
+				c.exclDecl = map[*xmltree.Node]map[string]bool{}
+			}
+			c.exclDecl[cur] = own
+		}
+		if len(own) == 0 {
+			continue
+		}
+		switch {
+		case uris == nil:
+			uris = own
+		case merged == nil:
+			merged = make(map[string]bool, len(uris)+len(own))
+			for u := range uris {
+				merged[u] = true
+			}
+			uris = merged
+			fallthrough
+		default:
+			for u := range own {
+				merged[u] = true
+			}
+		}
+	}
+	return uris
+}
+
+// excludedResultURIsAt is the contribution of one element's own
+// exclude-result-prefixes attribute to excludedResultURIs: the URIs its
+// tokens resolve to at that element, nil without the attribute.
+func excludedResultURIsAt(cur *xmltree.Node) map[string]bool {
+	var uris map[string]bool
+	var v string
+	var ok bool
+	if cur.Name.Space == NS {
+		v, ok = cur.AttrLocal("exclude-result-prefixes")
+	} else {
+		v, ok = cur.Attr(NS, "exclude-result-prefixes")
+	}
+	if !ok {
+		return nil
+	}
+	for _, tok := range strings.Fields(v) {
+		switch tok {
+		case "#all":
+			// "#all indicates that all namespaces that are in scope FOR
+			// THE STYLESHEET ELEMENT that is the parent of the
+			// exclude-result-prefixes attribute are designated as
+			// excluded namespaces" (XSLT 3.0 §5.6.2) — a fixed snapshot
+			// taken AT cur, not "everything found anywhere in the
+			// subtree forever after". The spec's own worked example:
+			// exclude-result-prefixes="#all" on xsl:stylesheet (in
+			// scope there: xsl, a, b) does NOT exclude xmlns:d="d.uri"
+			// declared later on a literal result element deep inside a
+			// template, because d.uri was never in scope at
+			// xsl:stylesheet itself (copy-1220/1221: an unrelated
+			// "w" prefix declared on a literal element nested inside
+			// the template survives an ancestor #all the same way).
+			for _, uri := range cur.InScopeNamespaces() {
+				if uri == "" {
+					continue
 				}
-			case "#default":
-				if def, ok := cur.LookupPrefix(""); ok && def != "" {
-					if uris == nil {
-						uris = map[string]bool{}
-					}
-					uris[def] = true
+				if uris == nil {
+					uris = map[string]bool{}
 				}
-			default:
-				if uri, ok := cur.LookupPrefix(tok); ok {
-					if uris == nil {
-						uris = map[string]bool{}
-					}
-					uris[uri] = true
+				uris[uri] = true
+			}
+		case "#default":
+			if def, ok := cur.LookupPrefix(""); ok && def != "" {
+				if uris == nil {
+					uris = map[string]bool{}
 				}
+				uris[def] = true
+			}
+		default:
+			if uri, ok := cur.LookupPrefix(tok); ok {
+				if uris == nil {
+					uris = map[string]bool{}
+				}
+				uris[uri] = true
 			}
 		}
 	}
@@ -3357,27 +3419,49 @@ func isExtensionElement(el *xmltree.Node) bool {
 // (post-alias) name or one of its attribute names — those survive exclusion
 // below (namespace-0913/0914: even under exclude-result-prefixes="#all",
 // nothing else would supply the binding an element's own QName needs).
-func ambientResultNamespaces(el *xmltree.Node, already []*xmltree.Node, nsAlias map[string]xmltree.Name, usedURIs map[string]bool, neededPrefix map[string]string) []*xmltree.Node {
-	ambient := el.InScopeNamespaces()
-	if len(ambient) == 0 {
+func (c *compiler) ambientResultNamespaces(el *xmltree.Node, already []*xmltree.Node, nsAlias map[string]xmltree.Name, usedURIs map[string]bool, neededPrefix map[string]string, excl map[string]bool) []*xmltree.Node {
+	// The in-scope bindings, nearest declaration first per prefix, gathered
+	// into the compiler's scratch list and sorted by prefix (deterministic
+	// output order) — where a map was built and its keys copied out and
+	// sorted for every literal result element. The two or three bindings
+	// el declares itself (already) are scanned, not indexed.
+	scope := c.nsScratch[:0]
+	for cur := el; cur != nil; cur = cur.Parent {
+		for _, ns := range cur.NSDecls() {
+			seen := false
+			for _, b := range scope {
+				if b.pfx == ns.Name.Local {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				scope = append(scope, nsBinding{pfx: ns.Name.Local, uri: ns.Value})
+			}
+		}
+		if cur.NSBarrier() {
+			break // inherit-namespaces="no"
+		}
+	}
+	c.nsScratch = scope[:0]
+	if len(scope) == 0 {
 		return nil
 	}
-	excl := excludedResultURIs(el)
-	have := make(map[string]bool, len(already))
-	haveURI := make(map[string]bool, len(already))
-	for _, ns := range already {
-		have[ns.Name.Local] = true
-		haveURI[ns.Value] = true
-	}
-	prefixes := make([]string, 0, len(ambient))
-	for pfx := range ambient {
-		prefixes = append(prefixes, pfx)
-	}
-	sort.Strings(prefixes) // deterministic output order
+	slices.SortFunc(scope, func(a, b nsBinding) int { return strings.Compare(a.pfx, b.pfx) })
 	var out []*xmltree.Node
-	for _, pfx := range prefixes {
-		uri := ambient[pfx]
-		if uri == "" || uri == NS || have[pfx] {
+	for _, b := range scope {
+		pfx, uri := b.pfx, b.uri
+		if uri == "" || uri == NS {
+			continue
+		}
+		have := false
+		for _, ns := range already {
+			if ns.Name.Local == pfx {
+				have = true
+				break
+			}
+		}
+		if have {
 			continue
 		}
 		aliasTarget := false
@@ -3392,7 +3476,14 @@ func ambientResultNamespaces(el *xmltree.Node, already []*xmltree.Node, nsAlias 
 			// own literal xmlns="..." already satisfies its name's need, so
 			// a second, ambient prefix for the same excluded URI must still
 			// be dropped, not duplicated).
-			if !usedURIs[uri] || haveURI[uri] || pfx != neededPrefix[uri] {
+			haveURI := false
+			for _, ns := range already {
+				if ns.Value == uri {
+					haveURI = true
+					break
+				}
+			}
+			if !usedURIs[uri] || haveURI || pfx != neededPrefix[uri] {
 				continue
 			}
 		}
@@ -3403,6 +3494,9 @@ func ambientResultNamespaces(el *xmltree.Node, already []*xmltree.Node, nsAlias 
 	}
 	return out
 }
+
+// nsBinding is one in-scope namespace binding (ambientResultNamespaces).
+type nsBinding struct{ pfx, uri string }
 
 func (c *compiler) compileLiteralElement(el *xmltree.Node) (instruction, error) {
 	name := el.Name
@@ -3473,7 +3567,8 @@ func (c *compiler) compileLiteralElement(el *xmltree.Node) (instruction, error) 
 		}
 		nsNodes = kept
 	}
-	if excl := excludedResultURIs(el); len(excl) > 0 && len(nsNodes) > 0 {
+	excl := c.excludedResultURIs(el)
+	if len(excl) > 0 && len(nsNodes) > 0 {
 		kept := nsNodes[:0:0]
 		for _, ns := range nsNodes {
 			if usedURIs[ns.Value] || !excl[ns.Value] {
@@ -3482,7 +3577,7 @@ func (c *compiler) compileLiteralElement(el *xmltree.Node) (instruction, error) 
 		}
 		nsNodes = kept
 	}
-	nsNodes = append(nsNodes, ambientResultNamespaces(el, nsNodes, nsAlias, usedURIs, neededPrefix)...)
+	nsNodes = append(nsNodes, c.ambientResultNamespaces(el, nsNodes, nsAlias, usedURIs, neededPrefix, excl)...)
 	leVal, err := compileValidation(el, vkElement)
 	if err != nil {
 		return nil, err
