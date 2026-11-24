@@ -634,7 +634,11 @@ libxslt's time to where it is now:
   list, with exclude-result-prefixes parsed once per declaring element
   instead of once per literal result element (1.2 % fewer instructions,
   2.1 % fewer allocations). Over the whole round, against the version
-  before it: FINALSUMMARY No workload executes more instructions than before
+  before it: XSD 1.0 validation executes 17 % fewer instructions, the HTML
+  output, streaming, compiling a stylesheet and XSD 1.1 validation 6 to 7 %
+  fewer, copying a document 5 % fewer and the key lookups 3 % fewer (the
+  cumulative per-candidate counts; the whole-round table was measured on the
+  tree combined with part A). No workload executes more instructions than before
   beyond the counter's spread, none allocates more, and every output is
   byte-identical. Tried and dropped: comparing an XSD name's local part
   before its namespace (0.25 % more on XSD 1.0 validation: an equal-length
