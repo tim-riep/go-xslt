@@ -553,15 +553,17 @@ libxslt's time to where it is now:
   errors.As had allocated its target per iteration (the decimal map: 31 %
   fewer allocations; the array 16 %; typed functions 5 %). Over the whole
   round, against the version before it: xsl:number with position()/last()
-  executes 80 % fewer instructions, group-by with JSON output 16 %, the
-  Muenchian grouping 10 %, number formatting 7 %, the string functions,
-  typed functions, xsl:iterate with a decimal map and 200 transforms in one
-  process 5 to 6 %, deep recursion 1.6 %, HTML output 1.3 %, and the rest
-  between 0 and 1 %; allocations fall by half on group-by with JSON output,
-  by a third on the string functions, by a quarter on typed functions,
-  Muenchian grouping, the XPath 1.0 predicates and 200 transforms in one
-  process, and by 18 to 21 % on xsl:iterate, number formatting and regular
-  expressions. No workload executes more instructions than before beyond
+  executes 80 % fewer instructions, group-by with JSON output 16 %,
+  xsl:iterate with a decimal map 14 %, the Muenchian grouping 9.5 %, number
+  formatting 7 %, typed functions 6.7 %, the string functions 5.7 %, 200
+  transforms in one process 5.5 %, xsl:iterate with an array 4.4 %, deep
+  recursion 1.5 %, regular expressions and the JSON round trip 1.1 %, and
+  the rest between 0 and 0.6 %; allocations fall by half on group-by with
+  JSON output, by 43 % on the decimal map, by a third on the string
+  functions, by 27 to 30 % on typed functions, the array, 200 transforms
+  in one process and Muenchian grouping, by a fifth on the XPath 1.0
+  predicates, number formatting and regular expressions, and by 17 % on
+  deep recursion. No workload executes more instructions than before beyond
   the counter's spread (0.3 % tonight between two runs of one binary), none
   allocates more, and every output is byte-identical. Tried and dropped:
   copying a path's last step
