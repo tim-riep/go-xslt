@@ -613,7 +613,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// an element the DTD declares with ELEMENT CONTENT (no #PCDATA
 			// alternative) as ignorable whitespace, stripped by default even
 			// with no xsl:strip-space in the stylesheet (id-003/id-036).
-			if elemOnly[top.Name.Local] && strings.Trim(s, " \t\r\n") == "" {
+			if hasDTD && elemOnly[top.Name.Local] && strings.Trim(s, " \t\r\n") == "" {
 				return
 			}
 			// xsl:strip-space, net of this element's xml:space scope. Uses
@@ -710,8 +710,13 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			def := open[len(open)-1].def
 			cloned := false
 			var decls []*Node
-			if d := attrDefaults[t.Name.Local]; len(d) > 0 {
-				t.Attr = withNSDefaults(t.Attr, d) // DTD-defaulted xmlns[:p] declarations
+			// The DTD tables are nil without a DOCTYPE, and a lookup in a
+			// nil map is a call all the same: skip them (here, per
+			// attribute below, and for the defaults further down).
+			if hasDTD {
+				if d := attrDefaults[t.Name.Local]; len(d) > 0 {
+					t.Attr = withNSDefaults(t.Attr, d) // DTD-defaulted xmlns[:p] declarations
+				}
 			}
 			for _, a := range t.Attr {
 				local, isNS := "", false
@@ -768,9 +773,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				if !hasSpace && an.Name.Local == "space" && an.Name.Space == xmlNS {
 					spaceAttr, hasSpace = an.Value, true
 				}
-				if m := idKinds[t.Name.Local]; m != nil {
-					if k := m[a.Name.Local]; k != 0 {
-						an.SetIDKind(k)
+				if hasDTD {
+					if m := idKinds[t.Name.Local]; m != nil {
+						if k := m[a.Name.Local]; k != 0 {
+							an.SetIDKind(k)
+						}
 					}
 				}
 				normalizeIDAttr(an)
@@ -778,7 +785,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				stamp(an)
 				el.Attrs = append(el.Attrs, an)
 			}
-			if defaults := attrDefaults[t.Name.Local]; len(defaults) > 0 {
+			var defaults map[string]attlistDefault
+			if hasDTD {
+				defaults = attrDefaults[t.Name.Local]
+			}
+			if len(defaults) > 0 {
 				// DTD ATTLIST default/#FIXED values (attribute-0501): supply
 				// them for any declared attribute absent from the instance —
 				// per the XML infoset, such an attribute IS present with its
@@ -1199,15 +1210,17 @@ func (p *linePos) at(off int) (int, int) {
 	if off > len(p.src) {
 		off = len(p.src)
 	}
-	for p.scanned < off {
-		i := strings.IndexByte(p.src[p.scanned:off], '\n')
-		if i < 0 {
-			p.scanned = off
-			break
+	if p.scanned < off {
+		// One count of the newlines in the span and one search for the last
+		// of them, instead of one search per line: the lines of a
+		// pretty-printed document are short, so the per-call cost of the
+		// search dominated.
+		span := p.src[p.scanned:off]
+		if n := strings.Count(span, "\n"); n > 0 {
+			p.line += n
+			p.lineStart = p.scanned + strings.LastIndexByte(span, '\n') + 1
 		}
-		p.scanned += i + 1
-		p.line++
-		p.lineStart = p.scanned
+		p.scanned = off
 	}
 	return p.line, off - p.lineStart + 1
 }
