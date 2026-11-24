@@ -264,6 +264,9 @@ func (st *SimpleType) checkIn(v string, at *xmltree.Node) error {
 
 // resolvePrim walks the base chain to the built-in primitive (cycle-guarded).
 func (st *SimpleType) resolvePrim() xpath.AtomType {
+	if st.cacheOK {
+		return st.primCache
+	}
 	for s, n := st, 0; s != nil && n < 64; n++ {
 		if s.baseBuiltin {
 			return s.prim
@@ -282,6 +285,9 @@ func (st *SimpleType) resolvePrim() xpath.AtomType {
 // effectiveWhiteSpace is the strongest of the primitive default and any explicit
 // whiteSpace facet down the base chain (preserve < replace < collapse).
 func (st *SimpleType) effectiveWhiteSpace() string {
+	if st.cacheOK {
+		return st.wsCache
+	}
 	best := primitiveWhiteSpace(st.resolvePrim(), st.variety)
 	for s, n := st, 0; s != nil && n < 64; n++ {
 		if s.facets.whiteSpace != "" {
@@ -850,4 +856,77 @@ func escapeXSDAnchors(pat string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// cacheSimpleTypes records resolvePrim's and effectiveWhiteSpace's answers
+// on every simple type the schema reaches from its global components (the
+// types themselves, the declarations, and whatever a complex type's
+// content, attributes and base lead to), once the components are final.
+// The caches are written here only, before the schema is shared, so a
+// validation reads them without synchronization.
+func (sch *Schema) cacheSimpleTypes() {
+	seen := map[Type]bool{}
+	var visit func(t Type)
+	var visitParticle func(p *particle)
+	visitParticle = func(p *particle) {
+		if p == nil {
+			return
+		}
+		switch tm := p.term.(type) {
+		case *ElementDecl:
+			visit(tm.typ)
+			for _, alt := range tm.alternatives {
+				visit(alt.typ)
+			}
+		case *modelGroup:
+			for _, q := range tm.particles {
+				visitParticle(q)
+			}
+		}
+	}
+	visit = func(t Type) {
+		if t == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		switch tt := t.(type) {
+		case *SimpleType:
+			if tt.base != nil {
+				visit(tt.base)
+			}
+			if tt.item != nil {
+				visit(tt.item)
+			}
+			for _, m := range tt.members {
+				visit(m)
+			}
+			prim, ws := tt.resolvePrim(), tt.effectiveWhiteSpace()
+			tt.primCache, tt.wsCache, tt.cacheOK = prim, ws, true
+		case *ComplexType:
+			visit(tt.baseType)
+			if tt.simpleType != nil {
+				visit(tt.simpleType)
+			}
+			for _, u := range tt.attrUses {
+				if u.decl != nil && u.decl.typ != nil {
+					visit(u.decl.typ)
+				}
+			}
+			visitParticle(tt.particle)
+		}
+	}
+	for _, t := range sch.types {
+		visit(t)
+	}
+	for _, e := range sch.elements {
+		visit(e.typ)
+		for _, alt := range e.alternatives {
+			visit(alt.typ)
+		}
+	}
+	for _, a := range sch.attributes {
+		if a.typ != nil {
+			visit(a.typ)
+		}
+	}
 }

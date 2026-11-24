@@ -558,9 +558,14 @@ func (c *compiler) pruneUseWhen(node *xmltree.Node) error {
 	// (the common case — one allocation per element with children before).
 	kept := node.Children[:0]
 	for i, ch := range node.Children {
-		keep, err := c.pruneChild(ch)
-		if err != nil {
-			return err
+		// A text node (half of a stylesheet's nodes), comment or PI has no
+		// use-when and no children: it survives without the two calls.
+		keep := true
+		if ch.Kind == xmltree.KindElement {
+			var err error
+			if keep, err = c.pruneChild(ch); err != nil {
+				return err
+			}
 		}
 		if keep {
 			if len(kept) != i {

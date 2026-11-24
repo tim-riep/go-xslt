@@ -85,6 +85,11 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		if plan&planSetFunc != 0 {
 			return fusedSetFunc(n.Prefix, n.Local, n.Args[0], ctx)
 		}
+		if plan&planBareArg != 0 {
+			if v, ok, err := n.evalBareArgCall(ctx); ok {
+				return v, err
+			}
+		}
 		if plan&planFuseArgs != 0 {
 			// (1.0 compatibility passes every argument as it is, a string
 			// parameter's one plain node included — as the bare node.)
@@ -100,36 +105,19 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 	}
 	for i, a := range n.Args {
 		if fuse&(1<<i) != 0 {
-			p := n.form.Load().spec(i)
-			ns, v, _, err := evalNodes(a, ctx)
+			// (In its own function: the plain argument loop here is the
+			// hottest path of every call, and the variables of the fused
+			// case in this frame cost it spills — cachegrind showed 8 %
+			// more instructions in evalFunc on a workload with no fused
+			// path at all.)
+			v, err := n.evalFusedArg(i, a, ctx, bc)
 			if err != nil {
 				if stack != nil {
 					stack.pop(len(n.Args))
 				}
 				return nil, err
 			}
-			if v != nil {
-				args[i] = v
-				continue
-			}
-			if !bc {
-				if c, ok := p.convertNodes(ns, ctx); ok {
-					args[i] = c
-					continue
-				}
-			}
-			if len(ns) == 1 && p.stringy && plainNode(ns[0]) && ns[0].RealItem() == nil {
-				// A string parameter takes one plain node as it is: the
-				// bare node, which boxes without allocating, where the set
-				// around it would allocate. The argument check accepts
-				// it (argSpec.fast), ToString/ToBool/ToNumber, Items,
-				// Atomize and the item helpers read it as the one-node
-				// set, and an implementation that tests for a NodeSet
-				// handles the node (fnStringJoin, XSLT's key()).
-				args[i] = ns[0]
-			} else {
-				args[i] = ns
-			}
+			args[i] = v
 			continue
 		}
 		v, err := evalExpr(a, ctx)
@@ -146,6 +134,83 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		stack.pop(len(n.Args))
 	}
 	return v, err
+}
+
+// evalFusedArg evaluates argument i of the call, a path written for an
+// atomic parameter (planFuseArgs), to its node set and converts it to the
+// declared type as evalFunc's doc comment says. A single predicate-free
+// step is built in the stack's scratch array (evalStepScratch, FuncCall.
+// scratch): converted or taken as the bare node, the set is dropped right
+// here; passed on as a set, it is detached first.
+func (n *FuncCall) evalFusedArg(i int, a Expr, ctx *Context, bc bool) (Object, error) {
+	p := n.form.Load().spec(i)
+	var ns NodeSet
+	var v Object
+	var err error
+	inBuf := false
+	if ctx.ArgStack != nil && n.scratch.Load()&(1<<i) != 0 {
+		ns, inBuf, err = evalStepScratch(a.(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
+		if inBuf && err == nil {
+			keepScratch(ctx, ns)
+		}
+	}
+	if !inBuf {
+		ns, v, _, err = evalNodes(a, ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if v != nil {
+		return v, nil
+	}
+	if !bc {
+		if c, ok := p.convertNodes(ns, ctx); ok {
+			return c, nil
+		}
+	}
+	if len(ns) == 1 && p.stringy && plainNode(ns[0]) && ns[0].RealItem() == nil {
+		// A string parameter takes one plain node as it is: the bare node,
+		// which boxes without allocating, where the set around it would
+		// allocate. The argument check accepts it (argSpec.fast),
+		// ToString/ToBool/ToNumber, Items, Atomize and the item helpers
+		// read it as the one-node set, and an implementation that tests
+		// for a NodeSet handles the node (fnStringJoin, XSLT's key()).
+		return ns[0], nil
+	}
+	if inBuf {
+		return detachNodes(ns), nil
+	}
+	return ns, nil
+}
+
+// evalBareArgCall is the call of a bareArgCall (planBareArg) when the
+// context is the plain one: the path's set is built in the stack's scratch
+// array, one plain node passed as the bare node and any other result as a
+// detached set, with the argument slice on the stack too — fn:string
+// (argStackSafe) and the constructors read it during the call only
+// (CallConstructor and castInContext take the Object). ok is false, and
+// nothing has been evaluated, when the step's fast path steps aside.
+func (n *FuncCall) evalBareArgCall(ctx *Context) (Object, bool, error) {
+	if ctx == nil || ctx.ArgStack == nil {
+		return nil, false, nil
+	}
+	ns, ok, err := evalStepScratch(n.Args[0].(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
+	if !ok {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	keepScratch(ctx, ns)
+	args := ctx.ArgStack.push(1)
+	if len(ns) == 1 && plainNode(ns[0]) && ns[0].RealItem() == nil {
+		args[0] = ns[0]
+	} else {
+		args[0] = detachNodes(ns)
+	}
+	v, err := dispatchFunc(n.Prefix, n.Local, args, ctx)
+	ctx.ArgStack.pop(1)
+	return v, true, err
 }
 
 // argStackSafe lists the fn: built-ins whose implementations read their
@@ -182,6 +247,7 @@ const (
 	planSetFunc                      // fusedSetFunc answers the call
 	planFuseArgs                     // some argument bit is set
 	planStackArgs                    // the arguments may live on the Context's ArgStack (argStackSafe)
+	planBareArg                      // the one argument is a one-step path passed as its bare node (bareArgCall)
 	// bit planArgShift+i: argument i is a path for an atomic parameter.
 	planArgShift = 8
 	planMaxArgs  = 32 - planArgShift
@@ -198,6 +264,11 @@ const (
 func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 	plan = planDecided
 	if n.Prefix != "" && n.Prefix != "fn" {
+		// A call written with the xs prefix names a constructor whatever the
+		// prefix is bound to (dispatchFunc), so its plan is kept.
+		if n.Prefix == "xs" && n.bareArgCall() {
+			plan |= planBareArg
+		}
 		n.plan.Store(plan)
 		return plan
 	}
@@ -210,25 +281,51 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 	}
 	if len(n.Args) == 1 && isSetFunc(n.Local) {
 		plan |= planSetFunc
+	} else if n.Prefix == "" && n.bareArgCall() {
+		plan |= planBareArg
 	} else if f := sig.form(len(n.Args)); f != nil && len(n.Args) <= planMaxArgs {
 		if len(n.Args) > 0 && argStackSafe[n.Local] {
 			plan |= planStackArgs
 		}
+		var scratch uint32
 		for i, a := range n.Args {
 			if _, isPath := a.(*PathExpr); isPath {
 				if p := f.spec(i); p != nil && p.kind == akAtomic {
 					plan |= planFuseArgs | 1<<(planArgShift+i)
+					if unionStep(a) != nil {
+						scratch |= 1 << i
+					}
 				}
 			}
 		}
 		if plan&planFuseArgs != 0 {
 			n.form.Store(f)
+			n.scratch.Store(scratch)
 		}
 	}
 	if n.Prefix == "" {
 		n.plan.Store(plan)
 	}
 	return plan
+}
+
+// bareArgCall reports a call of fn:string, or of an atomic type's xs:
+// constructor, whose one argument is a one-step path (unionStep): evalFunc
+// builds the path's set in the scratch array and passes one plain node as
+// the bare node — fn:string reads its item()? argument through the item
+// helpers and the constructors through itemCount/itemAt/Atomize, all of
+// which read a bare node as the one-node set — and any other result as a
+// detached set, as before. (An extension function named with the xs prefix
+// is never reached: dispatchFunc takes every xs: call to the constructors.)
+func (n *FuncCall) bareArgCall() bool {
+	if len(n.Args) != 1 || unionStep(n.Args[0]) == nil {
+		return false
+	}
+	if n.Prefix == "xs" {
+		_, isType := AtomTypeByName(n.Local)
+		return isType
+	}
+	return n.Local == "string"
 }
 
 // noFnSig marks a FuncCall looked up in the fn: catalogue without result.
@@ -276,7 +373,21 @@ func isSetFunc(local string) bool {
 // the set, which it did through a copy of them as a slice; the others take
 // its effective boolean value). Any other value takes the ordinary call.
 func fusedSetFunc(prefix, local string, e Expr, ctx *Context) (Object, error) {
-	ns, v, isPath, err := evalNodes(e, ctx)
+	var ns NodeSet
+	var v Object
+	var err error
+	isPath := false
+	// A single predicate-free step is built in the stack's scratch array:
+	// the set is only counted or tested here.
+	if st := unionStep(e); st != nil && ctx != nil && ctx.ArgStack != nil {
+		ns, isPath, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+		if isPath && err == nil {
+			keepScratch(ctx, ns)
+		}
+	}
+	if !isPath {
+		ns, v, isPath, err = evalNodes(e, ctx)
+	}
 	if !isPath {
 		v, err = evalExpr(e, ctx)
 	}

@@ -27,9 +27,29 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 	// the hottest expression after the path itself.
 	var l, r operand
 	var err error
+	// An operand that is one predicate-free child or attribute step is
+	// built in the stack's scratch array (evalStepScratch): both operands
+	// are read within this call and nothing below keeps them (the index of
+	// fastGeneralEq is only ever built over a Sequence). The left operand
+	// takes the array only when the right is a literal, which evaluates
+	// nothing while the left set is live; the right takes it when the left
+	// did not.
+	scratch := ctx != nil && ctx.ArgStack != nil
+	lScratch := false
 	if p, ok := n.L.(*PathExpr); ok {
-		l.nodes, l.v, err = evalPathCounted(p, ctx)
-		l.isNodes = l.v == nil
+		if _, lit := n.R.(*LiteralExpr); lit && scratch {
+			if st := unionStep(p); st != nil {
+				l.nodes, lScratch, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+				if lScratch && err == nil {
+					keepScratch(ctx, l.nodes)
+					l.isNodes = true
+				}
+			}
+		}
+		if !lScratch {
+			l.nodes, l.v, err = evalPathCounted(p, ctx)
+			l.isNodes = l.v == nil
+		}
 	} else {
 		l.v, err = evalExpr(n.L, ctx)
 	}
@@ -37,8 +57,20 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 		return nil, err
 	}
 	if p, ok := n.R.(*PathExpr); ok {
-		r.nodes, r.v, err = evalPathCounted(p, ctx)
-		r.isNodes = r.v == nil
+		rScratch := false
+		if scratch && !lScratch {
+			if st := unionStep(p); st != nil {
+				r.nodes, rScratch, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+				if rScratch && err == nil {
+					keepScratch(ctx, r.nodes)
+					r.isNodes = true
+				}
+			}
+		}
+		if !rScratch {
+			r.nodes, r.v, err = evalPathCounted(p, ctx)
+			r.isNodes = r.v == nil
+		}
 	} else {
 		r.v, err = evalExpr(n.R, ctx)
 	}
@@ -249,7 +281,7 @@ func rangeComparison(n *CompareExpr, ctx *Context) (Object, bool, error) {
 	}
 	for _, v := range vals {
 		var hit bool
-		if v.i != nil || v.T == XSdecimal {
+		if isIntegerType(v.T) || v.T == XSdecimal {
 			hit = rangeHitExact(op, v, from, to)
 		} else {
 			hit = rangeHitFloat(op, v, from, to)
@@ -266,8 +298,8 @@ func rangeComparison(n *CompareExpr, ctx *Context) (Object, bool, error) {
 // exactly, at any magnitude (RangeExpr-409c: 10^21+20001 = 10^21 to ...).
 func rangeHitExact(op string, v *Atomic, from, to *big.Int) bool {
 	var r *big.Rat
-	if v.i != nil {
-		r = new(big.Rat).SetInt(v.i)
+	if isIntegerType(v.T) {
+		r = new(big.Rat).SetInt(v.bigInt())
 	} else {
 		r = v.rat()
 	}
@@ -627,7 +659,10 @@ func coerceGeneralErr(a, b *Atomic, ctx *Context) ([2]*Atomic, error) {
 // atomic, avoiding the precision loss of Float() for large magnitudes.
 func (a *Atomic) ratValue() (*big.Rat, bool) {
 	switch {
-	case isIntegerType(a.T) && a.i != nil:
+	case isIntegerType(a.T):
+		if n, ok := a.intFast(); ok {
+			return new(big.Rat).SetInt64(n), true
+		}
 		return new(big.Rat).SetInt(a.i), true
 	case a.T == XSdecimal:
 		return a.rat(), true
@@ -650,9 +685,20 @@ func CompareAtomic(a, b *Atomic) (int, bool) {
 
 func atomicCompare(a, b *Atomic) (int, bool) {
 	switch {
-	case isIntegerType(a.T) && isIntegerType(b.T) && a.i != nil && b.i != nil:
+	case isIntegerType(a.T) && isIntegerType(b.T):
 		// Two integers compare exactly, with no float conversion to allocate.
-		return a.i.Cmp(b.i), true
+		if x, ok := a.intFast(); ok {
+			if y, ok := b.intFast(); ok {
+				switch {
+				case x < y:
+					return -1, true
+				case x > y:
+					return 1, true
+				}
+				return 0, true
+			}
+		}
+		return a.bigInt().Cmp(b.bigInt()), true
 	case a.IsNumeric() && b.IsNumeric():
 		fa, fb := a.Float(), b.Float()
 		// Numeric promotion: a decimal/integer facing an xs:float is promoted

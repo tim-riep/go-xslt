@@ -1576,6 +1576,18 @@ type engine struct {
 	asCtxs map[*xmltree.Node]*xpath.Context
 	// patCtx is the minimal match Context of staticMatchCtx.
 	patCtx *xpath.Context
+	// pathBuf is the array a select or test of one predicate-free child or
+	// attribute step is evaluated into (xpath.Parsed.EvalNodesInto) by the
+	// instructions that read the set on the spot and drop it: xsl:value-of,
+	// an attribute value template, xsl:if/xsl:when, a key's use, a sort key.
+	// Such a reader finishes with the set before anything else is
+	// evaluated, and the step itself evaluates nothing, so one array serves
+	// them all.
+	pathBuf xpath.NodeSet
+	// keyChunk is the pool of one-slot entry lists keyAppend hands out while
+	// a key index is built. (The engine is 1024 bytes, the end of its size
+	// class: a field added here costs 128 bytes per run.)
+	keyChunk []*xmltree.Node
 	// selBufs holds spare node lists for staticSelect, taken and given back
 	// around one xsl:apply-templates (see execApplyTemplates).
 	selBufs []xpath.NodeSet
@@ -2385,7 +2397,7 @@ func (eng *engine) releaseEvalScratch(sc *evalScratch) {
 
 // evalWith is eval with explicit static-context overrides.
 func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOverride) (xpath.Object, error) {
-	_, v, _, err := eng.evalWithNodes(p, el, r, ov, false)
+	_, v, _, err := eng.evalWithNodes(p, el, r, ov, false, false)
 	return v, err
 }
 
@@ -2393,13 +2405,22 @@ func (eng *engine) evalWith(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOver
 // isNodes reports that ns is the value, otherwise v is. For the instructions
 // that only read the nodes a select or test expression yields.
 func (eng *engine) evalNodes(p *xpath.Parsed, el *xmltree.Node, r rt) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
-	return eng.evalWithNodes(p, el, r, evalOverride{}, true)
+	return eng.evalWithNodes(p, el, r, evalOverride{}, true, false)
+}
+
+// evalNodesScratch is evalNodes for a caller that reads ns before the next
+// evaluation and never keeps it (xpath.Parsed.EvalNodesInto): a path of one
+// predicate-free child or attribute step is built in eng.pathBuf, and ns
+// aliases it. A caller that passes the set on detaches it first
+// (xpath.NodeSet.Detach).
+func (eng *engine) evalNodesScratch(p *xpath.Parsed, el *xmltree.Node, r rt) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
+	return eng.evalWithNodes(p, el, r, evalOverride{}, true, true)
 }
 
 // evalWithNodes evaluates p in the static and dynamic context of el and r;
 // with nodes set, through EvalNodes (isNodes then says which result holds
 // the value), otherwise through Eval into v.
-func (eng *engine) evalWithNodes(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOverride, nodes bool) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
+func (eng *engine) evalWithNodes(p *xpath.Parsed, el *xmltree.Node, r rt, ov evalOverride, nodes, scratch bool) (ns xpath.NodeSet, v xpath.Object, isNodes bool, err error) {
 	eng.depth++
 	sc := eng.checkoutEvalScratch()
 	defer func() {
@@ -2472,7 +2493,13 @@ func (eng *engine) evalWithNodes(p *xpath.Parsed, el *xmltree.Node, r rt, ov eva
 	}
 	ctx := &sc.ctx
 	*ctx = xpath.Context{Node: r.node, CtxItem: ctxItem, Pos: r.pos, Size: r.size, NoFocus: r.noFocus, Vars: env, NS: env, Funcs: env, ResolveNamedFunction: sc.named, ResolveLookupFunction: sc.lookup, Resolver: eng.resolver, DecimalFormats: eng.sheet.decimalFormatsFor(el), DefaultElemNS: dns, BaseURI: base, BaseNode: baseNode, HomeDoc: eng.homeDoc(rootOfNode(el)), DefaultCollation: coll, Now: eng.now, RootlessTree: true, HostPrefixesOnly: true, SchemaTypes: schemaTypes, BC10: bc10, Interrupt: eng.interrupt(), ArgStack: sc.args}
-	if nodes {
+	if scratch {
+		var inBuf bool
+		ns, v, isNodes, inBuf, err = p.EvalNodesInto(ctx, eng.pathBuf)
+		if inBuf && cap(ns) > cap(eng.pathBuf) {
+			eng.pathBuf = ns[:0]
+		}
+	} else if nodes {
 		ns, v, isNodes, err = p.EvalNodes(ctx)
 	} else {
 		v, err = p.Eval(ctx)
@@ -3039,13 +3066,14 @@ func (eng *engine) execInstrRaw(in instruction, r rt, out *xmltree.Node) error {
 			out.Append(textNode(s, n.doe))
 			return nil
 		}
-		ns, v, isNodes, err := eng.evalNodes(n.sel, n.el, r)
+		ns, v, isNodes, err := eng.evalNodesScratch(n.sel, n.el, r)
 		if err != nil {
 			return err
 		}
 		if isNodes {
 			// A path's nodes, as they are (the usual select): the carrier
-			// check and both renderings below, on the set itself.
+			// check and both renderings below, on the set itself (which may
+			// be eng.pathBuf: nothing below evaluates or keeps it).
 			if hasCarrier(ns) {
 				if err := rejectValueOfItems(n.el, ns); err != nil {
 					return err
@@ -3302,7 +3330,7 @@ func stripEmptyLiteralText(el *xmltree.Node) {
 // evalTest is the boolean of an xsl:if or xsl:when test expression
 // (xpath.ToBool of its value: a node set is true when it has a node).
 func (eng *engine) evalTest(p *xpath.Parsed, el *xmltree.Node, r rt) (bool, error) {
-	ns, v, isNodes, err := eng.evalNodes(p, el, r)
+	ns, v, isNodes, err := eng.evalNodesScratch(p, el, r)
 	if err != nil {
 		return false, err
 	}
@@ -5551,10 +5579,12 @@ func (eng *engine) keyIndexFor(name string) map[string][]*xmltree.Node {
 // (key-073/074: xsl:for-each/xsl:sequence content computing the values).
 // evalKeyUseNodes is evalKeyUse for a key with a @use expression, keeping a
 // path's node set as it is (evalNodes).
+// The set may be eng.pathBuf: keyIndexOn reads each node's key string from
+// it before it visits the next node.
 func (eng *engine) evalKeyUseNodes(kd *KeyDef, r rt) (xpath.NodeSet, xpath.Object, bool, error) {
 	eng.tempOutputDepth++
 	defer func() { eng.tempOutputDepth-- }()
-	return eng.evalNodes(kd.use, kd.el, r)
+	return eng.evalNodesScratch(kd.use, kd.el, r)
 }
 
 func (eng *engine) evalKeyUse(kd *KeyDef, r rt) (xpath.Object, error) {
@@ -5573,6 +5603,40 @@ func (eng *engine) evalKeyUse(kd *KeyDef, r rt) (xpath.Object, error) {
 	}
 	return fragAsSequence(frag), nil
 }
+
+// keyAppend adds node to a key index entry of an index that has entries
+// keys already. Once the index has keyChunkFrom entries, a new entry is a
+// one-slot list carved from a shared chunk (eng.keyChunk, keyChunkSlots
+// pointers), capacity one: the first node of each key — most keys of a
+// large index have one or two — then costs no allocation of its own, and a
+// second node reallocates the list exactly as it would from a one-slot list
+// of its own. The first keyChunkFrom entries are allocated singly, so a
+// small index (a short document, transformed many times) allocates exactly
+// what it did; a large one allocates at most one chunk's tail more. A chunk
+// stays at 512 bytes: a larger object with pointers carries an allocation
+// header and lands in the next size class, which cost 1,280 bytes per 8 KB
+// chunk. The chunk holds only pointers the index holds anyway. An entry
+// handed out by key() is still a COPY (callFunc): nothing here changes that.
+func (eng *engine) keyAppend(list []*xmltree.Node, node *xmltree.Node, entries int) []*xmltree.Node {
+	if list != nil {
+		return append(list, node)
+	}
+	if entries < keyChunkFrom {
+		return []*xmltree.Node{node}
+	}
+	if len(eng.keyChunk) == 0 {
+		eng.keyChunk = make([]*xmltree.Node, keyChunkSlots)
+	}
+	list = eng.keyChunk[:1:1]
+	eng.keyChunk = eng.keyChunk[1:]
+	list[0] = node
+	return list
+}
+
+const (
+	keyChunkFrom  = 1024 // entries allocated singly before chunks are used
+	keyChunkSlots = 64   // pointers per chunk (512 bytes)
+)
 
 // keyIndexOn lazily builds (and caches) the index for an xsl:key over the tree
 // rooted at root (the source document or a temporary tree). A circular key
@@ -5685,7 +5749,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 				// compound tuple key (key-096/097), not a multi-value key —
 				// the opposite of the composite="no" default just below.
 				k := canonKeyString(xpath.CompositeKeyString(xpath.Items(val)), kd.collURI)
-				idx[k] = append(idx[k], node)
+				idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				return
 			}
 			if !isNodes {
@@ -5694,7 +5758,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 			if isNodes {
 				for _, u := range useNodes {
 					k := canonKeyString(keyNodeString(u), kd.collURI)
-					idx[k] = append(idx[k], node)
+					idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				}
 			} else {
 				// A non-node (typed atomic) use value: index the node under
@@ -5709,7 +5773,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 				// keys so a case-insensitive lookup finds them (collations-0105).
 				for _, it := range xpath.Items(val) {
 					k := canonKeyString(xpath.KeyString(it), kd.collURI)
-					idx[k] = append(idx[k], node)
+					idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				}
 			}
 		}
@@ -5798,7 +5862,7 @@ func (eng *engine) evalAVT(a *avt, el *xmltree.Node, r rt) (string, error) {
 			// XSLT 1.0 backwards-compatible processing reverts this to the
 			// FIRST item's string value only (backwards-010's own point:
 			// "effect of BC on AVTs").
-			ns, v, isNodes, err := eng.evalNodes(part.expr, elOrDoc(el, eng.doc), r)
+			ns, v, isNodes, err := eng.evalNodesScratch(part.expr, elOrDoc(el, eng.doc), r)
 			if err != nil {
 				return "", err
 			}
@@ -6215,7 +6279,7 @@ func (eng *engine) sortNodes(nodes []*xmltree.Node, sorts []sortKey, el *xmltree
 				// read only for a column of date/time/duration keys, which
 				// an untyped key rules out (and an empty key atomizes to
 				// nothing, as a nil value does).
-				ns, vv, isNodes, err := eng.evalNodes(sk.sel, el, rt{node: node, pos: i + 1, size: n})
+				ns, vv, isNodes, err := eng.evalNodesScratch(sk.sel, el, rt{node: node, pos: i + 1, size: n})
 				if err != nil {
 					return nil, err
 				}
@@ -6241,7 +6305,7 @@ func (eng *engine) sortNodes(nodes []*xmltree.Node, sorts []sortKey, el *xmltree
 						k.keys[si] = xpath.NodeSetString(ns[:1])
 						continue
 					}
-					vv = ns
+					vv = ns.Detach() // sortKeyValue keeps the set past the next key
 				}
 				pre = vv
 				havePre = true

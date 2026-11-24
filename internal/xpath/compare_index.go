@@ -99,10 +99,13 @@ func buildEqIndex(seq Sequence) *eqIndex {
 		idx.ints = make(map[int64]struct{}, len(seq))
 		for _, it := range seq {
 			a, ok := it.(*Atomic)
-			if !ok || !isIntegerType(a.T) || a.i == nil || !a.i.IsInt64() {
+			if !ok {
 				return nil
 			}
-			v := a.i.Int64()
+			v, ok := a.intFast()
+			if !ok {
+				return nil
+			}
 			idx.ints[v] = struct{}{}
 			if v == math.MinInt64 {
 				idx.maxAbs = math.MaxInt64
@@ -150,10 +153,11 @@ func (idx *eqIndex) contains(a *Atomic) (hit, decided bool) {
 	}
 	switch {
 	case isIntegerType(a.T):
-		if a.i == nil || !a.i.IsInt64() {
+		n, ok := a.intFast()
+		if !ok {
 			return false, true // no int64 item equals it
 		}
-		_, hit = idx.ints[a.i.Int64()]
+		_, hit = idx.ints[n]
 		return hit, true
 	case a.T == XSdecimal:
 		if m, s, ok := a.decFast(); ok {

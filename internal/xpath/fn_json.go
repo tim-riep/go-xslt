@@ -30,18 +30,26 @@ const jsXFNS = "http://www.w3.org/2005/xpath-functions"
 type jsObj struct {
 	keys []string
 	vals []any
-	raw  []bool // key is already JSON-escaped; emit verbatim
+	// raw marks the keys that are already JSON-escaped, to emit verbatim.
+	// It is nil until putRaw marks one (nearly always: a parsed JSON text
+	// has none), so an ordinary object grows two lists, not three.
+	raw []bool
 }
 
 func (o *jsObj) put(k string, v any) {
 	o.keys = append(o.keys, k)
 	o.vals = append(o.vals, v)
-	o.raw = append(o.raw, false)
+	if o.raw != nil {
+		o.raw = append(o.raw, false)
+	}
 }
 
 // putRaw records a key that is already JSON-escaped (escaped-key="true") and
 // must be emitted verbatim.
 func (o *jsObj) putRaw(k string, v any) {
+	if o.raw == nil {
+		o.raw = make([]bool, len(o.keys), cap(o.keys)+1)
+	}
 	o.keys = append(o.keys, k)
 	o.vals = append(o.vals, v)
 	o.raw = append(o.raw, true)

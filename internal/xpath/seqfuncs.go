@@ -296,7 +296,7 @@ func rankType(r int) AtomType {
 func castNumeric(a *Atomic, kind AtomType) *Atomic {
 	switch kind {
 	case XSinteger:
-		return NewIntegerBig(new(big.Int).Set(a.i))
+		return NewIntegerBig(a.intCopy())
 	case XSdecimal:
 		return NewDecimal(toRat(a))
 	case XSfloat:
@@ -309,11 +309,27 @@ func castNumeric(a *Atomic, kind AtomType) *Atomic {
 func sumNumeric(atoms []*Atomic, kind AtomType) *Atomic {
 	switch kind {
 	case XSinteger:
-		s := new(big.Int)
+		// In int64 while every operand is compact and no sum overflows.
+		var s int64
+		ok := true
 		for _, a := range atoms {
-			s.Add(s, a.i)
+			n, fast := a.intFast()
+			if !fast {
+				ok = false
+				break
+			}
+			if s, ok = addInt64(s, n); !ok {
+				break
+			}
 		}
-		return NewIntegerBig(s)
+		if ok {
+			return newIntFast(s)
+		}
+		z := new(big.Int)
+		for _, a := range atoms {
+			z.Add(z, a.bigInt())
+		}
+		return NewIntegerBig(z)
 	case XSdecimal:
 		s := new(big.Rat)
 		for _, a := range atoms {
@@ -504,7 +520,12 @@ func aggregate(o Object, op string, zero Object, coll func(a, b string) int) (Ob
 		n := int64(len(atoms))
 		switch {
 		case isIntegerType(s.T):
-			return NewDecimal(new(big.Rat).SetFrac(s.i, big.NewInt(n))), nil
+			if m, ok := s.intFast(); ok {
+				if d, ok := intDivFast(m, n); ok {
+					return d, nil
+				}
+			}
+			return NewDecimal(new(big.Rat).SetFrac(s.bigInt(), big.NewInt(n))), nil
 		case s.T == XSdecimal:
 			return NewDecimal(new(big.Rat).Quo(s.rat(), new(big.Rat).SetInt64(n))), nil
 		case s.T == XSfloat:

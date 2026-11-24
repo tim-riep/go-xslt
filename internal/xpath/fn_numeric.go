@@ -172,9 +172,8 @@ func fmtNumInput(o Object) fmtNum {
 	if items, err := Atomize(o); err == nil && len(items) > 0 {
 		if at, ok := items[0].(*Atomic); ok {
 			switch {
-			case isIntegerType(at.T) && at.i != nil:
-				if at.i.IsInt64() {
-					m := at.i.Int64()
+			case isIntegerType(at.T):
+				if m, ok := at.intFast(); ok {
 					if m < 0 {
 						return fmtNum{compact: true, cm: -uint64(m), neg: true}
 					}
@@ -981,7 +980,13 @@ func fnAbsT(c *Context, a []Object) (Object, error) {
 	}
 	switch {
 	case isIntegerType(x.T):
-		return NewIntegerBig(new(big.Int).Abs(x.i)), nil
+		if n, ok := x.intFast(); ok && n != math.MinInt64 {
+			if n < 0 {
+				n = -n
+			}
+			return newIntFast(n), nil
+		}
+		return NewIntegerBig(new(big.Int).Abs(x.bigInt())), nil
 	case x.T == XSdecimal:
 		if m, s, ok := x.decFast(); ok && m != math.MinInt64 {
 			if m < 0 {
@@ -1004,7 +1009,7 @@ func fnFloorT(c *Context, a []Object) (Object, error) {
 	}
 	switch {
 	case isIntegerType(x.T):
-		return NewIntegerBig(new(big.Int).Set(x.i)), nil
+		return NewIntegerBig(x.intCopy()), nil
 	case x.T == XSdecimal:
 		if m, s, ok := x.decFast(); ok {
 			q := m / pow10i64[s]
@@ -1028,7 +1033,7 @@ func fnCeilingT(c *Context, a []Object) (Object, error) {
 	}
 	switch {
 	case isIntegerType(x.T):
-		return NewIntegerBig(new(big.Int).Set(x.i)), nil
+		return NewIntegerBig(x.intCopy()), nil
 	case x.T == XSdecimal:
 		if m, s, ok := x.decFast(); ok {
 			q := m / pow10i64[s]
@@ -1066,9 +1071,9 @@ func fnRoundT(c *Context, a []Object) (Object, error) {
 	switch {
 	case isIntegerType(x.T):
 		if p >= 0 {
-			return NewIntegerBig(new(big.Int).Set(x.i)), nil
+			return NewIntegerBig(x.intCopy()), nil
 		}
-		return NewIntegerBig(ratRoundScaled(new(big.Rat).SetInt(x.i), p).Num()), nil
+		return NewIntegerBig(ratRoundScaled(new(big.Rat).SetInt(x.bigInt()), p).Num()), nil
 	case x.T == XSdecimal:
 		if m, s, ok := x.decFast(); ok {
 			if r, ok := decRoundScaled(m, s, p); ok {
@@ -1156,11 +1161,11 @@ func numRoundHalfToEven(c *Context, a []Object) (Object, error) {
 
 	// Integer input: rounding to precision >= 0 yields the same integer;
 	// negative precision rounds to powers of ten.
-	if at != nil && isIntegerType(at.T) && at.i != nil {
+	if at != nil && isIntegerType(at.T) {
 		if precision >= 0 {
-			return NewIntegerBig(new(big.Int).Set(at.i)), nil
+			return NewIntegerBig(at.intCopy()), nil
 		}
-		return NewIntegerBig(numRoundIntToEven(at.i, -precision)), nil
+		return NewIntegerBig(numRoundIntToEven(at.bigInt(), -precision)), nil
 	}
 
 	// Decimal input: round exactly using big.Rat.
@@ -1970,8 +1975,8 @@ func titleCaseWords(s string) string {
 // numToBigInt extracts an integer value from an Object.
 func numToBigInt(o Object) *big.Int {
 	if at := numFirstAtomic(o); at != nil {
-		if isIntegerType(at.T) && at.i != nil {
-			return new(big.Int).Set(at.i)
+		if isIntegerType(at.T) {
+			return at.intCopy()
 		}
 	}
 	f := ToNumber(o)

@@ -4,13 +4,39 @@ import "github.com/tim-riep/go-xslt/internal/xmltree"
 
 // --- effective (post-derivation) content model and attributes ---------------
 
-func (s *Schema) effectiveParticle(ct *ComplexType) *particle {
-	return s.effParticle(ct, map[*ComplexType]bool{})
+// A type derived from another by extension or restriction takes part of its
+// content model and attributes from its base, so the effective ones are
+// computed along the derivation chain; a type that is not derived answers
+// at once. Every element validated asks (validateAttributes, the child
+// model), so the chain walk must not set anything up for the common
+// answer: a map literal, even one that never leaves the stack, draws a hash
+// seed from the runtime's random source, which was 2 % of a validation.
+// The chain is guarded against a cycle by the list of the types visited
+// (ctSeen), which lives on the caller's stack.
+
+// ctSeen is the set of complex types a derivation-chain walk has visited.
+type ctSeen []*ComplexType
+
+func (v ctSeen) has(ct *ComplexType) bool {
+	for _, c := range v {
+		if c == ct {
+			return true
+		}
+	}
+	return false
 }
 
-func (s *Schema) effParticle(ct *ComplexType, seen map[*ComplexType]bool) *particle {
-	if ct.derivation == "extension" && !seen[ct] {
-		seen[ct] = true
+func (s *Schema) effectiveParticle(ct *ComplexType) *particle {
+	if ct.derivation != "extension" {
+		return ct.particle
+	}
+	var buf [8]*ComplexType
+	return s.effParticle(ct, buf[:0])
+}
+
+func (s *Schema) effParticle(ct *ComplexType, seen ctSeen) *particle {
+	if ct.derivation == "extension" && !seen.has(ct) {
+		seen = append(seen, ct)
 		if base, ok := ct.baseType.(*ComplexType); ok {
 			bp := s.effParticle(base, seen)
 			switch {
@@ -54,15 +80,19 @@ func allGroupOf(p *particle) *modelGroup {
 }
 
 func (s *Schema) effectiveAttrs(ct *ComplexType) ([]*attrUse, *wildcard) {
-	return s.effAttrs(ct, map[*ComplexType]bool{})
-}
-
-func (s *Schema) effAttrs(ct *ComplexType, seen map[*ComplexType]bool) ([]*attrUse, *wildcard) {
-	base, ok := ct.baseType.(*ComplexType)
-	if !ok || ct.derivation == "" || seen[ct] {
+	if _, ok := ct.baseType.(*ComplexType); !ok || ct.derivation == "" {
 		return ct.attrUses, ct.attrWildcard
 	}
-	seen[ct] = true
+	var buf [8]*ComplexType
+	return s.effAttrs(ct, buf[:0])
+}
+
+func (s *Schema) effAttrs(ct *ComplexType, seen ctSeen) ([]*attrUse, *wildcard) {
+	base, ok := ct.baseType.(*ComplexType)
+	if !ok || ct.derivation == "" || seen.has(ct) {
+		return ct.attrUses, ct.attrWildcard
+	}
+	seen = append(seen, ct)
 	bu, bw := s.effAttrs(base, seen)
 	merged := mergeAttrs(bu, ct.attrUses)
 	wc := ct.attrWildcard
@@ -87,12 +117,29 @@ func (s *Schema) effAttrs(ct *ComplexType, seen map[*ComplexType]bool) ([]*attrU
 // removes the inherited one.
 func mergeAttrs(base, own []*attrUse) []*attrUse {
 	out := make([]*attrUse, 0, len(base)+len(own))
-	skip := map[xname]bool{}
-	for _, u := range own {
-		skip[u.decl.name] = true
+	// own is usually a handful of uses: a scan of it per base use, instead
+	// of a map built per call (see ctSeen on the hash seed a map costs);
+	// many own uses take the map.
+	var skip map[xname]bool
+	if len(own) > 16 {
+		skip = make(map[xname]bool, len(own))
+		for _, u := range own {
+			skip[u.decl.name] = true
+		}
 	}
 	for _, u := range base {
-		if !skip[u.decl.name] {
+		skipped := false
+		if skip != nil {
+			skipped = skip[u.decl.name]
+		} else {
+			for _, o := range own {
+				if o.decl.name == u.decl.name {
+					skipped = true
+					break
+				}
+			}
+		}
+		if !skipped {
 			out = append(out, u)
 		}
 	}

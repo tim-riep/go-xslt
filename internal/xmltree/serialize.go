@@ -497,11 +497,16 @@ func (s *serializer) node(n *Node, depth int) {
 		// (Serialization 3.1 §6), where an undeclared &nbsp; is not
 		// well-formed; U+00A0 is written as the character (or as a character
 		// reference by escapeRepertoire when the encoding lacks it).
-		if s.opts.Method == "html" {
-			v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
-		}
 		if s.opts.Method == "html" || s.opts.Method == "xhtml" {
-			v = escapeC1(v)
+			// U+00A0 and the C1 controls are the only characters these two
+			// steps touch, and in UTF-8 both start with the byte 0xC2: a
+			// value without one needs neither search.
+			if strings.IndexByte(v, 0xC2) >= 0 {
+				if s.opts.Method == "html" {
+					v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
+				}
+				v = escapeC1(v)
+			}
 		}
 		s.b.WriteString(v)
 	case KindComment:
@@ -639,9 +644,16 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	indent := s.opts.Indent && !s.suppress && !triggersSuppress && hasElementChildren(n) &&
 		s.mayIndentIn(n) && !s.inlineElement(lastChild(n))
 
+	// The whole start tag — its indentation, "<", the name, the namespace
+	// declarations and the attributes — is gathered in the serializer's
+	// scratch buffer and written by flushTag in ONE call to the writer,
+	// together with whatever the caller puts after it (">", "/>", an end
+	// tag): every piece was a call to the writer of its own, and those
+	// calls were 9 % of a copy of a large document.
+	buf := s.attrBuf[:0]
 	if s.opts.Indent && !s.suppress && depth > 0 && pos.parentMayIndent &&
 		!s.inlineElement(n) && !s.inlineElement(pos.prev) {
-		s.writeIndent(depth)
+		buf = appendIndent(buf, depth)
 	}
 	suppressed := false
 	if triggersSuppress {
@@ -819,12 +831,16 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	if !html {
 		attrEsc = escapeAttrXML
 	}
-	// The attributes are gathered in the serializer's reusable scratch buffer
-	// (they must follow the namespace declarations, which resolving their
-	// prefixes may still add to) and every piece is appended separately:
-	// building each attribute, and then the whole tag, by string
-	// concatenation cost three allocations per element.
-	attrs := s.attrBuf[:0]
+	// The attributes follow the name in the buffer; the namespace
+	// declarations, which resolving an attribute's prefix may still add to,
+	// are inserted before them once all are known (declsAt) — nearly every
+	// element declares none. Every piece is appended separately: building
+	// each attribute, and then the whole tag, by string concatenation cost
+	// three allocations per element.
+	buf = append(buf, '<')
+	buf = append(buf, qname...)
+	declsAt := len(buf)
+	attrs := buf
 	for _, a := range n.Attrs {
 		if fixContentTypeAttr && a.Name.Space == "" && strings.EqualFold(a.Name.Local, "content") {
 			// Dropped so the correct value can be appended once below, instead
@@ -841,7 +857,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		// nothing more.
 		isURIAttr := false
 		if html && a.Name.Space == "" {
-			lower := strings.ToLower(a.Name.Local)
+			lower := lowerName(a.Name.Local)
 			if htmlBooleanAttrs[lower] && strings.EqualFold(a.Value, a.Name.Local) {
 				// HTML boolean attribute (attribute-0701): serialize as a
 				// bare name, not name="value".
@@ -849,9 +865,11 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 				attrs = append(attrs, aq...)
 				continue
 			}
-			isURIAttr = uriAttrs[lower]
+			if uriAttrs != nil {
+				isURIAttr = uriAttrs[lower]
+			}
 		} else if uriAttrs != nil && a.Name.Space == "" {
-			isURIAttr = uriAttrs[strings.ToLower(a.Name.Local)]
+			isURIAttr = uriAttrs[lowerName(a.Name.Local)]
 		}
 		val := a.Value
 		var out string
@@ -881,37 +899,60 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		attrs = append(attrs, s.mapChars(s.contentTypeValue(), escapeAttr)...)
 		attrs = append(attrs, '"')
 	}
-
-	s.b.WriteString("<")
-	s.b.WriteString(qname)
-	s.b.WriteString(decls.String())
-	s.b.Write(attrs)
-	s.attrBuf = attrs[:0]
+	if d := decls.Len(); d > 0 {
+		attrs = append(attrs, decls.String()...)
+		copy(attrs[declsAt+d:], attrs[declsAt:len(attrs)-d])
+		copy(attrs[declsAt:], decls.String())
+	}
+	s.attrBuf = attrs
 	return elemOpen{qname: qname, meta: meta, saves: saves, indent: indent, suppress: suppressed}
+}
+
+// flushTag writes the start tag startTag left in the scratch buffer, with
+// tail after it, in one call to the writer.
+func (s *serializer) flushTag(tail string) {
+	buf := append(s.attrBuf, tail...)
+	s.b.Write(buf)
+	s.attrBuf = buf[:0]
+}
+
+// flushTagClosed is flushTag(">" + "</" + qname + ">") without the
+// concatenation: an empty element written as a start and an end tag.
+func (s *serializer) flushTagClosed(qname string) {
+	buf := append(s.attrBuf, "></"...)
+	buf = append(buf, qname...)
+	buf = append(buf, '>')
+	s.b.Write(buf)
+	s.attrBuf = buf[:0]
 }
 
 // indentSpaces is the longest run of indentation written in one piece.
 const indentSpaces = "                                                                "
 
-// writeIndent writes a line break and two spaces per level, from a constant
-// instead of a string built for every element.
-func (s *serializer) writeIndent(depth int) {
-	s.b.WriteString("\n")
+// appendIndent appends a line break and two spaces per level, from a
+// constant instead of a string built for every element.
+func appendIndent(buf []byte, depth int) []byte {
+	buf = append(buf, '\n')
 	for n := 2 * depth; n > 0; {
 		k := min(n, len(indentSpaces))
-		s.b.WriteString(indentSpaces[:k])
+		buf = append(buf, indentSpaces[:k]...)
 		n -= k
 	}
+	return buf
 }
 
-// closeTag writes an element's end tag and unwinds the scope startTag opened.
+// closeTag writes an element's end tag (with its indentation, in one call
+// to the writer) and unwinds the scope startTag opened.
 func (s *serializer) closeTag(o elemOpen, depth int) {
+	buf := s.attrBuf[:0]
 	if o.indent {
-		s.writeIndent(depth)
+		buf = appendIndent(buf, depth)
 	}
-	s.b.WriteString("</")
-	s.b.WriteString(o.qname)
-	s.b.WriteString(">")
+	buf = append(buf, "</"...)
+	buf = append(buf, o.qname...)
+	buf = append(buf, '>')
+	s.b.Write(buf)
+	s.attrBuf = buf[:0]
 	s.undeclare(o.saves)
 	if o.suppress {
 		s.suppress = false
@@ -925,23 +966,21 @@ func (s *serializer) element(n *Node, depth int) {
 		htmlish := s.opts.Method == "html" || s.opts.Method == "xhtml"
 		switch {
 		case o.meta != "":
-			s.b.WriteString(">" + o.meta + "</" + o.qname + ">")
+			s.flushTag(">" + o.meta + "</" + o.qname + ">")
 		case htmlish && htmlVoidElements[strings.ToLower(n.Name.Local)]:
 			// HTML void element: <br>; XHTML keeps the XML self-close, with the
 			// HTML4-compatibility space before the slash: <br />
 			// (output-0107/0116/0132..0135).
 			if s.opts.Method == "xhtml" {
-				s.b.WriteString(" />")
+				s.flushTag(" />")
 			} else {
-				s.b.WriteString(">")
+				s.flushTag(">")
 			}
 		case htmlish:
 			// Non-void empty element must use a separate end tag (<p></p>).
-			s.b.WriteString("></")
-			s.b.WriteString(o.qname)
-			s.b.WriteString(">")
+			s.flushTagClosed(o.qname)
 		default:
-			s.b.WriteString("/>")
+			s.flushTag("/>")
 		}
 		s.undeclare(o.saves)
 		if o.suppress {
@@ -950,7 +989,7 @@ func (s *serializer) element(n *Node, depth int) {
 		return
 	}
 
-	s.b.WriteString(">")
+	s.flushTag(">")
 	if o.meta != "" {
 		s.b.WriteString(o.meta)
 	}
@@ -1253,12 +1292,30 @@ func (s *serializer) escapeRepertoire(v string) string {
 	return b.String()
 }
 
+// lowerName is strings.ToLower for an element or attribute name: a name of
+// lower-case ASCII, nearly every HTML name, is returned as it is after one
+// look at its bytes, without the call.
+func lowerName(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; 'A' <= c && c <= 'Z' || c >= 0x80 {
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
 // escapeC1 replaces each C1 control character (U+0080-U+009F) with its
 // decimal numeric character reference. The html/xhtml output methods must
 // not emit these raw — a raw C1 byte is exactly the kind of thing that gets
 // silently mis-decoded by legacy single-byte encodings/tools consuming HTML
 // (output-0102e/0103b/0103c/0103e).
 func escapeC1(s string) string {
+	// In UTF-8 every C1 control character is the byte 0xC2 followed by one
+	// of 0x80..0x9F, so a string without a 0xC2 byte has none: that search
+	// is a library call, the rune loop below decodes every character.
+	if strings.IndexByte(s, 0xC2) < 0 {
+		return s
+	}
 	hasC1 := false
 	for _, r := range s {
 		if r >= 0x80 && r <= 0x9F {
@@ -1551,7 +1608,7 @@ func (c *ChunkWriter) commit(n *Node, depth int) bool {
 			}
 		}
 		o = c.s.startTag(n, depth)
-		c.s.b.WriteString(">" + o.meta)
+		c.s.flushTag(">" + o.meta)
 	}
 	c.open = append(c.open, chunkOpen{n: n, o: o, depth: depth})
 	return true

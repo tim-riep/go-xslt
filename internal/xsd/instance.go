@@ -738,10 +738,15 @@ func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, sco
 	// whose scope element is THIS element: a keyref resolves against the node
 	// table at its own scope, and tables propagate UPWARD only — a key on an
 	// ancestor is not visible to a descendant's keyref (idZ010, addB049, TSTF).
+	// ownScopes stays nil for an element declared without constraints,
+	// nearly every element: a map made for each would draw a hash seed from
+	// the runtime's random source (see ctSeen in content.go), and a keyref
+	// reads a nil map as the empty one.
 	childScopes := scopes
-	ownScopes := map[xname]*keyTable{}
+	var ownScopes map[xname]*keyTable
 	if len(decl.constraints) > 0 {
 		childScopes = cloneScopes(scopes)
+		ownScopes = make(map[xname]*keyTable, len(decl.constraints))
 		for _, ic := range decl.constraints {
 			if ic.kind == "keyref" {
 				continue

@@ -45,10 +45,10 @@ func rangeOperand(ctx *Context, o Object) (*big.Int, bool, error) {
 			return nil, false, err
 		}
 	}
-	if !isIntegerType(a.T) || a.i == nil {
+	if !isIntegerType(a.T) {
 		return nil, false, fmt.Errorf("err:XPTY0004: %s is not a valid range operand", a.T)
 	}
-	return a.i, true, nil
+	return a.bigInt(), true, nil
 }
 
 // VarResolver resolves variable references.
@@ -218,7 +218,16 @@ type Context struct {
 // when it returns, so a slice lives exactly as long as the call. Only the
 // functions in argStackSafe, which never keep their argument slice, are
 // called with one; any other call allocates its slice as before.
-type ArgStack struct{ buf []Object }
+type ArgStack struct {
+	buf []Object
+	// nodes is the array a single predicate-free child or attribute step is
+	// evaluated into when its node set is read on the spot and then dropped
+	// (evalStepScratch): an argument converted to its declared atomic type,
+	// a predicate's existence test. It is free again as soon as the reader
+	// is done, and no evaluation happens in between — the step itself
+	// evaluates nothing — so no stack discipline is needed.
+	nodes NodeSet
+}
 
 // NewArgStack returns an empty stack for a root Context.
 func NewArgStack() *ArgStack { return &ArgStack{buf: make([]Object, 0, 32)} }
@@ -432,6 +441,29 @@ func (p *Parsed) EvalNodes(ctx *Context) (ns NodeSet, v Object, isNodes bool, er
 		return ns, nil, true, nil
 	}
 	return nil, v, false, nil
+}
+
+// EvalNodesInto is EvalNodes for a host that reads the node set before its
+// next evaluation and never keeps it: a path of one predicate-free child or
+// attribute step is then built in buf's array when that has room (an
+// xsl:value-of or attribute value template's select, an xsl:if test, a key's
+// use expression): inBuf reports that, and ns aliases buf or, when it
+// outgrew buf, is the array the host keeps as its buf (ns[:0]). Anything
+// else is evaluated as EvalNodes does, with inBuf false.
+func (p *Parsed) EvalNodesInto(ctx *Context, buf NodeSet) (ns NodeSet, v Object, isNodes, inBuf bool, err error) {
+	if st := unionStep(p.root); st != nil {
+		if err := p.checkPrefixedVarRefs(ctx); err != nil {
+			return nil, nil, false, false, err
+		}
+		if ns, ok, err := evalStepScratch(st, ctx, buf); ok {
+			if err != nil {
+				return nil, nil, false, false, err
+			}
+			return ns, nil, true, true, nil
+		}
+	}
+	ns, v, isNodes, err = p.EvalNodes(ctx)
+	return ns, v, isNodes, false, err
 }
 
 // checkPrefixedVarRefs is Eval's static check of the namespace prefixes of
@@ -1379,7 +1411,7 @@ func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error
 		var err error
 		if pathPred != nil {
 			var ns NodeSet
-			ns, v, err = evalPathCounted(pathPred, sub)
+			ns, v, err = evalPathPredicate(pathPred, sub)
 			if err != nil {
 				return nil, err
 			}
@@ -1667,6 +1699,76 @@ func unionStep(e Expr) *Step {
 	return st
 }
 
+// evalStepScratch evaluates the one-step relative path st — unionStep's
+// shape: a predicate-free child:: or attribute:: step with no prefix to
+// resolve — from the context node into buf's array, with the result
+// evalPathNodes gives that path: the step's matches, normalized. ok is false,
+// and nothing has been evaluated, whenever the context is not the plain one
+// (no node, an atomic or synthetic context item, a pattern top): the caller
+// then evaluates the path as before, which raises the errors and applies the
+// child-or-top rule. The result aliases buf when that has room, so a caller
+// reads it before its next evaluation and never keeps it, and gives buf back
+// grown (ns[:0]) when it did not. An empty result is an empty, non-nil set.
+func evalStepScratch(st *Step, ctx *Context, buf NodeSet) (ns NodeSet, ok bool, err error) {
+	if ctx == nil || ctx.PatternTop != nil {
+		return nil, false, nil
+	}
+	cn := ctx.Node
+	if cn == nil {
+		cn, _ = ctx.CtxItem.(*xmltree.Node)
+	}
+	if cn == nil || cn.SynthCtx() {
+		return nil, false, nil
+	}
+	// evalExpr's nesting count, as evalPathCounted keeps it for the path.
+	ctx.evalDepth++
+	if ctx.evalDepth > maxEvalDepth {
+		ctx.evalDepth--
+		return nil, false, fmt.Errorf("err:XPDY0001: expression nesting too deep")
+	}
+	var pc prefixCache
+	ns, err = appendMatches(buf[:0], axisNodes(st.Axis, cn), st, ctx, &pc)
+	ctx.evalDepth--
+	if err != nil {
+		return nil, true, err
+	}
+	return ns.normalize(), true, nil
+}
+
+// keepScratch gives a grown scratch array back to the stack.
+func keepScratch(ctx *Context, ns NodeSet) {
+	if cap(ns) > cap(ctx.ArgStack.nodes) {
+		ctx.ArgStack.nodes = ns[:0]
+	}
+}
+
+// detachNodes is a node set built in a scratch array as a set of its own:
+// nil when empty, as a path evaluates to, else a copy.
+func detachNodes(ns NodeSet) NodeSet {
+	if len(ns) == 0 {
+		return nil
+	}
+	return append(make(NodeSet, 0, len(ns)), ns...)
+}
+
+// evalPathPredicate evaluates the path predicate p for an item's existence
+// test: the unboxed set (v == nil) or, for a postfix last step, the value.
+// A single predicate-free step is built in sub's scratch array, read by the
+// caller's effective-boolean test only.
+func evalPathPredicate(p *PathExpr, sub *Context) (ns NodeSet, v Object, err error) {
+	if sub != nil && sub.ArgStack != nil {
+		if st := unionStep(p); st != nil {
+			if ns, ok, err := evalStepScratch(st, sub, sub.ArgStack.nodes); ok {
+				if err == nil {
+					keepScratch(sub, ns)
+				}
+				return ns, nil, err
+			}
+		}
+	}
+	return evalPathCounted(p, sub)
+}
+
 // evalStepUnion evaluates L|R for two unionStep operands from the context
 // node, with the result the general UnionExpr case computes — each operand
 // is the step's matches normalized, exactly as evalPath returns them, then
@@ -1905,7 +2007,7 @@ func applyPredicateOrdered(ns NodeSet, pred Expr, ctx *Context, _ bool) (NodeSet
 		var err error
 		if pathPred != nil {
 			var ns NodeSet
-			ns, v, err = evalPathCounted(pathPred, sub)
+			ns, v, err = evalPathPredicate(pathPred, sub)
 			if err != nil {
 				return nil, err
 			}
