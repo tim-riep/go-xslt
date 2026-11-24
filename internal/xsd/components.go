@@ -64,6 +64,7 @@ type SimpleType struct {
 	cacheOK   bool
 	primCache xpath.AtomType
 	wsCache   string
+	wsKind    uint8 // wsCache as a wsPreserve/wsReplace/wsCollapse constant
 	// noFacets (cacheOK only): facets constrains nothing, so its check is
 	// skipped; yearZero (cacheOK only): the primitive is one the XSD 1.0
 	// year-zero / +INF rule looks at (yearZeroOK).
