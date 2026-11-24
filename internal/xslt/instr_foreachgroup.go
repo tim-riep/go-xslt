@@ -295,6 +295,11 @@ func (n *fegInstr) fegKeyAtoms(eng *engine, node *xmltree.Node, pos, size int) (
 	if err != nil {
 		return nil, err
 	}
+	return atomsOf(v)
+}
+
+// atomsOf atomizes a grouping key's value.
+func atomsOf(v xpath.Object) ([]*xpath.Atomic, error) {
 	items, err := xpath.Atomize(v)
 	if err != nil {
 		return nil, err
@@ -328,9 +333,42 @@ func (n *fegInstr) fegFormBy(eng *engine, pop []*xmltree.Node, coll func(a, b st
 	idx.coll = coll
 	size := len(pop)
 	for i, node := range pop {
-		atoms, err := n.fegKeyAtoms(eng, node, i+1, size)
-		if err != nil {
-			return nil, err
+		var atoms []*xpath.Atomic
+		if n.composite {
+			var err error
+			if atoms, err = n.fegKeyAtoms(eng, node, i+1, size); err != nil {
+				return nil, err
+			}
+		} else {
+			// The key is read as a node set when it is one, in the
+			// evaluation's scratch array: one plain node under the
+			// codepoint collation — group-by="customer" — is the lexical
+			// form it atomizes to, and its group is the first in that
+			// string's bucket (GroupingBucketClass); no atomic value, key
+			// string or candidate scan is needed to find it. Anything else
+			// is atomized as before.
+			ns, v, isNodes, err := eng.evalNodesScratch(n.key, n.el, rt{node: node, pos: i + 1, size: size})
+			if err != nil {
+				return nil, err
+			}
+			if isNodes && coll == nil && len(ns) == 1 && xpath.NodeAtomizesUntyped(ns[0]) {
+				s := ns[0].StringValue()
+				target := idx.firstString(s)
+				if target == nil {
+					a := xpath.NewUntyped(s)
+					target = &fegGroup{key: a, atoms: []*xpath.Atomic{a}, hasKey: true}
+					groups = append(groups, target)
+					idx.add(target)
+				}
+				target.nodes = append(target.nodes, node)
+				continue
+			}
+			if isNodes {
+				v = ns
+			}
+			if atoms, err = atomsOf(v); err != nil {
+				return nil, err
+			}
 		}
 		if n.composite {
 			// One composite key per item: the item joins exactly one group,
@@ -367,31 +405,42 @@ func (n *fegInstr) fegFormBy(eng *engine, pop []*xmltree.Node, coll func(a, b st
 				idx.add(target)
 			}
 			target.nodes = append(target.nodes, node)
-			joined = append(joined, target)
+			if len(atoms) > 1 {
+				joined = append(joined, target)
+			}
 		}
 	}
 	return groups, nil
 }
 
-// fegIndex files group-by groups by the bucket key of their (single,
-// atomic) grouping key; see fegFormBy.
+// fegIndex files group-by groups by the bucket class and key of their
+// (single, atomic) grouping key; see fegFormBy.
 type fegIndex struct {
 	coll    func(a, b string) int
 	narrow  bool
-	buckets map[string][]*fegGroup
-	other   []*fegGroup // keys of a class with no bucket key
+	buckets [2]map[string][]*fegGroup // numeric keys, then string-family ones
+	other   []*fegGroup               // keys of a class with no bucket key
 }
 
-func (x *fegIndex) cands(a *xpath.Atomic) ([]*fegGroup, string, bool) {
-	k, ok := xpath.GroupingBucketKey(a, x.coll, x.narrow)
-	if !ok {
-		return x.other, "", false
+// bucketOf is the index of class's map in buckets.
+func bucketOf(class byte) int {
+	if class == 'n' {
+		return 0
 	}
-	return x.buckets[k], k, true
+	return 1
+}
+
+func (x *fegIndex) cands(a *xpath.Atomic) ([]*fegGroup, int, string, bool) {
+	class, k, ok := xpath.GroupingBucketClass(a, x.coll, x.narrow)
+	if !ok {
+		return x.other, 0, "", false
+	}
+	b := bucketOf(class)
+	return x.buckets[b][k], b, k, true
 }
 
 func (x *fegIndex) find(a *xpath.Atomic) *fegGroup {
-	cs, _, _ := x.cands(a)
+	cs, _, _, _ := x.cands(a)
 	for _, g := range cs {
 		if xpath.SameGroupingKey(a, g.key.(*xpath.Atomic), x.coll) {
 			return g
@@ -400,23 +449,33 @@ func (x *fegIndex) find(a *xpath.Atomic) *fegGroup {
 	return nil
 }
 
+// firstString is the group of a string-family key of lexical form s under
+// the codepoint collation: the first of its bucket, which find would return
+// (every candidate there is the same grouping key), or nil.
+func (x *fegIndex) firstString(s string) *fegGroup {
+	if cs := x.buckets[1][s]; len(cs) > 0 {
+		return cs[0]
+	}
+	return nil
+}
+
 func (x *fegIndex) add(g *fegGroup) {
-	cs, k, ok := x.cands(g.key.(*xpath.Atomic))
+	cs, b, k, ok := x.cands(g.key.(*xpath.Atomic))
 	if !ok {
 		x.other = append(x.other, g)
 		return
 	}
-	if x.buckets == nil {
-		x.buckets = map[string][]*fegGroup{}
+	if x.buckets[b] == nil {
+		x.buckets[b] = map[string][]*fegGroup{}
 	}
-	x.buckets[k] = append(cs, g)
+	x.buckets[b][k] = append(cs, g)
 }
 
 // rebuild switches to float-precision buckets and refiles the groups made so
 // far, in their creation order.
 func (x *fegIndex) rebuild(groups []*fegGroup) {
 	x.narrow = true
-	x.buckets, x.other = nil, nil
+	x.buckets, x.other = [2]map[string][]*fegGroup{}, nil
 	for _, g := range groups {
 		x.add(g)
 	}

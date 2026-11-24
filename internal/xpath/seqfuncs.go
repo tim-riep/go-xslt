@@ -96,6 +96,18 @@ func fnDistinctValues(c *Context, a []Object) (Object, error) {
 // EQUAL always share it, or bucketed=false when no such key is available for
 // the value's class.
 func dvBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bool) {
+	class, key, ok := dvBucketClass(x, coll, narrow)
+	if !ok {
+		return "", false
+	}
+	return string(class) + "|" + key, true
+}
+
+// dvBucketClass is dvBucketKey in two parts: the class of the key ('n' for
+// a numeric value, 's' for a string-family one) and the key within it, which
+// for a string is its lexical form as it is — a host that files the classes
+// apart looks a string up without building a key.
+func dvBucketClass(x *Atomic, coll func(a, b string) int, narrow bool) (class byte, key string, ok bool) {
 	switch {
 	case x.IsNumeric():
 		// eq over numerics is value equality across every numeric type, so two
@@ -106,7 +118,7 @@ func dvBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bo
 		// with one set too.
 		f := x.Float()
 		if math.IsNaN(f) {
-			return "n|NaN", true // NaN is eq only to NaN here, and never a key
+			return 'n', "NaN", true // NaN is eq only to NaN here, and never a key
 		}
 		if narrow {
 			f = float64(float32(f))
@@ -114,23 +126,26 @@ func dvBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bo
 		if f == 0 {
 			f = 0 // -0.0 eq 0.0, but their bit patterns differ
 		}
-		return "n|" + strconv.FormatFloat(f, 'b', -1, 64), true
+		return 'n', strconv.FormatFloat(f, 'b', -1, 64), true
 	case coll == nil && isComparableAsString(x):
 		// Under the codepoint collation two string-family values are eq iff
 		// their lexical forms are identical. With a real collation they need
 		// not be, so that case is left unbucketed.
-		return "s|" + x.Lexical(), true
+		return 's', x.Lexical(), true
 	}
-	return "", false
+	return 0, "", false
 }
 
-// GroupingBucketKey exposes dvBucketKey to hosts that group by
+// GroupingBucketClass exposes dvBucketClass to hosts that group by
 // SameGroupingKey (xsl:for-each-group group-by): two values SameGroupingKey
-// reports equal always share the key, so a candidate scan may be confined to
-// one bucket. narrow must be true as soon as any compared value is an
-// xs:float (see fnDistinctValues).
-func GroupingBucketKey(x *Atomic, coll func(a, b string) int, narrow bool) (string, bool) {
-	return dvBucketKey(x, coll, narrow)
+// reports equal always share the class and key, so a candidate scan may be
+// confined to one bucket — and under the codepoint collation every
+// string-family value of one bucket is the same grouping key as every other
+// (they compare as strings, equal by lexical form), so the first candidate
+// of a string's bucket is its group. narrow must be true as soon as any
+// compared value is an xs:float (see fnDistinctValues).
+func GroupingBucketClass(x *Atomic, coll func(a, b string) int, narrow bool) (class byte, key string, ok bool) {
+	return dvBucketClass(x, coll, narrow)
 }
 
 // SameGroupingKey reports whether two atomic values count as "the same" for
