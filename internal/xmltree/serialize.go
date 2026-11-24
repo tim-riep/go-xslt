@@ -1259,6 +1259,12 @@ func (s *serializer) escapeRepertoire(v string) string {
 // silently mis-decoded by legacy single-byte encodings/tools consuming HTML
 // (output-0102e/0103b/0103c/0103e).
 func escapeC1(s string) string {
+	// In UTF-8 every C1 control character is the byte 0xC2 followed by one
+	// of 0x80..0x9F, so a string without a 0xC2 byte has none: that search
+	// is a library call, the rune loop below decodes every character.
+	if strings.IndexByte(s, 0xC2) < 0 {
+		return s
+	}
 	hasC1 := false
 	for _, r := range s {
 		if r >= 0x80 && r <= 0x9F {
