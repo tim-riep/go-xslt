@@ -586,7 +586,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 	// reference, no CR — by far the common case) stays that substring
 	// (pendingStr, pendingIsStr) and is never copied at all.
 	var pendingBuf []byte
-	wsRuns := map[string]string{}
+	var wsRuns wsIntern
 	var pendingOpen, pendingIsStr bool
 	var pendingStr string
 	var pendingLine, pendingCol int
@@ -599,7 +599,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 		if pendingIsStr {
 			s, pendingStr, pendingIsStr = pendingStr, "", false
 		} else {
-			s = internText(&pendingBuf, wsRuns)
+			s = internText(&pendingBuf, &wsRuns)
 		}
 		top := open[len(open)-1].node
 		// Whitespace outside the document element (prolog/epilog "Misc") is
@@ -1300,7 +1300,7 @@ const maxInternedWS = 64
 // for reuse. A short run made only of XML whitespace is looked up in (and added
 // to) runs, so repeated indentation allocates once per distinct run, not once
 // per text node.
-func internText(buf *[]byte, runs map[string]string) string {
+func internText(buf *[]byte, runs *wsIntern) string {
 	b := *buf
 	*buf = b[:0]
 	if len(b) == 0 || len(b) > maxInternedWS {
@@ -1311,10 +1311,34 @@ func internText(buf *[]byte, runs map[string]string) string {
 			return string(b)
 		}
 	}
-	if s, ok := runs[string(b)]; ok { // no allocation: map lookup by []byte conversion
+	return runs.get(b)
+}
+
+// wsIntern shares the whitespace-only text runs of one parse (the
+// indentation between tags, mostly), one string per distinct run. The run
+// last seen of each length is kept beside the table: the indentation of a
+// pretty-printed document is one run per depth, each of its own length, so
+// nearly every run is answered by one comparison instead of a map lookup
+// (hashing the run was 1 % of a parse).
+type wsIntern struct {
+	byLen [maxInternedWS + 1]string
+	runs  map[string]string
+}
+
+// get returns the shared copy of b, a whitespace-only run of at most
+// maxInternedWS bytes.
+func (w *wsIntern) get(b []byte) string {
+	if s := w.byLen[len(b)]; s == string(b) { // no allocation: the comparison reads b in place
 		return s
 	}
-	s := string(b)
-	runs[s] = s
+	s, ok := w.runs[string(b)] // no allocation: map lookup by []byte conversion
+	if !ok {
+		s = string(b)
+		if w.runs == nil {
+			w.runs = map[string]string{}
+		}
+		w.runs[s] = s
+	}
+	w.byLen[len(b)] = s
 	return s
 }

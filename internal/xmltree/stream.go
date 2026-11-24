@@ -116,6 +116,9 @@ type StreamReader struct {
 	// document is not holding this reader's memory hostage with ever new
 	// whitespace.
 	wsRuns map[string]string
+	// wsByLen is the run of wsRuns last seen of each length (see wsIntern
+	// in parse.go: one comparison answers most runs).
+	wsByLen [maxInternedWS + 1]string
 
 	// incomplete records the nodes Drop has taken children away from. Only
 	// live ancestors accumulate here (an entry is removed when the node is
@@ -756,7 +759,11 @@ func (s *StreamReader) textString(t string) string {
 			return t
 		}
 	}
+	if v := s.wsByLen[len(t)]; v == t {
+		return v
+	}
 	if v, ok := s.wsRuns[t]; ok {
+		s.wsByLen[len(t)] = v
 		return v
 	}
 	if len(s.wsRuns) < streamMaxWSRuns {
@@ -765,6 +772,7 @@ func (s *StreamReader) textString(t string) string {
 		}
 		v := strings.Clone(t)
 		s.wsRuns[v] = v
+		s.wsByLen[len(t)] = v
 		return v
 	}
 	return t
