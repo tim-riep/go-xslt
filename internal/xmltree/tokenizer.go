@@ -114,6 +114,19 @@ func (t *tokenizer) mustgetc() (byte, bool) {
 	return b, ok
 }
 
+// getcFast is mustgetc's common case, small enough to inline: the next
+// byte while the input is in its ordinary state. When it reports false the
+// caller reads through mustgetc, which then decides as before (a call per
+// structural byte of a start tag was 4 % of a parse).
+func (t *tokenizer) getcFast() (byte, bool) {
+	if t.err == nil && t.pos < len(t.s) {
+		b := t.s[t.pos]
+		t.pos++
+		return b, true
+	}
+	return 0, false
+}
+
 // runOut is what mustgetc does when a scan reaches the end of the input.
 func (t *tokenizer) runOut() {
 	t.pos = len(t.s)
@@ -163,8 +176,10 @@ func (t *tokenizer) next() (tokKind, error) {
 		}
 		return tokText, nil
 	}
-	if b, ok = t.mustgetc(); !ok {
-		return 0, t.err
+	if b, ok = t.getcFast(); !ok {
+		if b, ok = t.mustgetc(); !ok {
+			return 0, t.err
+		}
 	}
 	switch b {
 	case '/':
@@ -274,8 +289,10 @@ func (t *tokenizer) next() (tokKind, error) {
 	empty := false
 	for {
 		t.space()
-		if b, ok = t.mustgetc(); !ok {
-			return 0, t.err
+		if b, ok = t.getcFast(); !ok {
+			if b, ok = t.mustgetc(); !ok {
+				return 0, t.err
+			}
 		}
 		if b == '/' {
 			empty = true
@@ -300,16 +317,20 @@ func (t *tokenizer) next() (tokKind, error) {
 			return 0, t.err
 		}
 		t.space()
-		if b, ok = t.mustgetc(); !ok {
-			return 0, t.err
+		if b, ok = t.getcFast(); !ok {
+			if b, ok = t.mustgetc(); !ok {
+				return 0, t.err
+			}
 		}
 		if b != '=' {
 			t.err = t.syntaxError("attribute name without = in element")
 			return 0, t.err
 		}
 		t.space()
-		if b, ok = t.mustgetc(); !ok {
-			return 0, t.err
+		if b, ok = t.getcFast(); !ok {
+			if b, ok = t.mustgetc(); !ok {
+				return 0, t.err
+			}
 		}
 		if b != '"' && b != '\'' {
 			t.err = t.syntaxError("unquoted or missing attribute value in element")
@@ -785,9 +806,11 @@ func (t *tokenizer) nameStr() (string, bool) {
 // readName consumes the bytes of a name: up to the first ASCII byte that
 // cannot occur in one (every non-ASCII byte is taken; isXMLName judges them).
 func (t *tokenizer) readName() bool {
-	b, ok := t.mustgetc()
+	b, ok := t.getcFast()
 	if !ok {
-		return false
+		if b, ok = t.mustgetc(); !ok {
+			return false
+		}
 	}
 	if b < utf8.RuneSelf && !nameByte[b] {
 		t.ungetc()
