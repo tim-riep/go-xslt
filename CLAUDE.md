@@ -357,6 +357,24 @@ Desktop GUI (**run from `desktop/`**):
   way `applyStatic` does again anyway (shadow attributes are idempotent).
   In the serializer, `defURI`/`defOK` mirror `prefixes[""]`: `declare` and
   `undeclare` are the only writers of `prefixes` and keep the mirror.
+  `startTag` writes nothing: it leaves the whole start tag (indentation,
+  `<`, name, declarations, attributes) in `attrBuf`, and its caller's
+  `flushTag`/`flushTagClosed` writes it with the tail (`>`, `/>`, an end
+  tag) in ONE writer call before anything else is written; `closeTag`
+  builds the end tag in the same buffer. Nothing may write to the output
+  between `startTag` and that flush, and a new caller must flush.
+  In the tokenizer, `getcFast` is `mustgetc`'s inlined common case: a site
+  that uses it falls back to `mustgetc` when it reports false, so every
+  error and position stays encoding/xml's. Both readers share
+  whitespace-only text runs through a table plus the run last seen of each
+  length (`wsIntern` in the parser, `wsRuns`/`wsByLen` in the stream
+  reader); the per-length entry holds only a string the table holds (or,
+  past the stream reader's bound, the run itself as before), never a
+  window substring the table does not. The validator caches a simple type's
+  primitive and effective whitespace (`cacheOK`/`primCache`/`wsCache`) in
+  `cacheSimpleTypes`, the last step of `compile`, and nowhere else: the
+  walks fall back for a type the pass did not reach, and a type built after
+  compile (bridge.go's built-in references) is never cached.
 - **Optional features are per stylesheet** (`internal/xslt/features.go`,
   `engine.Features{SchemaAware, BackwardsCompatible, StrictStreaming}` on
   `Request`): `xslt.CompileWith(…, CompileOptions{Features})` stores them on

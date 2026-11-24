@@ -379,7 +379,74 @@ libxslt's time to where it is now:
   node: 1 %). No workload executes more instructions than before beyond the
   counter's spread, none allocates more, and every output is byte-identical.
 
-The sixth to thirteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a fourteenth round, part B, on the readers, the serializer, the validator
+  and the compiler (part A, in parallel, took the evaluator), under the same
+  harness and rule. The serializer wrote a start tag as four calls to the
+  output writer, its ">" as a fifth and an end tag as three more, each
+  indentation line break and run of spaces another: an element cost eight to
+  ten calls through the writer interface, 9 % of the instructions of a copy
+  of a large document. Each tag now reaches the writer in one call, built in
+  the scratch buffer the attributes already used (copying the whole
+  document: 6.6 % fewer instructions; rebuilding every node: 3.3 %; HTML
+  output: 2.3 %; streaming 1.1 %; 200 transforms in one process: 1 %). The
+  tokenizer's read of one structural byte could not be inlined, so a start
+  tag cost a call per byte between its names and values; the common case is
+  inlined at those sites (copying the whole document: 2.7 % fewer
+  instructions; XSD validation 2.4 %, the XPath 1.0 predicates 2.6 %,
+  streaming 3 %, template dispatch 1.3 %, compiling the DocBook stylesheets
+  1 %). The parser looked three DTD tables up for every element, attribute
+  and text run of a document without a DOCTYPE, and found a token's line
+  with one search call per line; the lookups now run only with a DOCTYPE,
+  and a span of up to 16 bytes — the indentation between two tags — is
+  read by a byte loop while a longer one keeps the library search (together
+  1.2 % fewer instructions copying the document, 1 % validating it, 0.7 %
+  compiling the stylesheets; a first version counted a span's line breaks
+  with strings.Count and walked back to the last one, which cost the long
+  lines of a stylesheet 0.4 % and was taken out again). Both readers shared
+  the indentation runs through a map, one lookup per run; the run last seen
+  of each length answers nearly every run with one comparison (0.3 %). The
+  streaming reader looked the default namespace up for every unprefixed
+  element, asked its nil DTD tables all the same, and checked every
+  attribute value for a tab or line break with strings.ContainsAny, which
+  tests a short value byte by byte against the three characters: it keeps
+  the default namespace in its frame and scans with a byte loop (streaming
+  the 200,000-record document: 8 % fewer instructions). Under the html
+  method every text node and attribute value was decoded rune by rune for a
+  C1 control and every attribute name lower-cased through a call; one byte
+  search (0xC2, the lead byte of U+00A0 and of every C1 control) gates the
+  nbsp mapping and the C1 scan, and a lower-case ASCII name is returned
+  after one look (HTML output: 1.1 %). The validator made two maps
+  for every element validated — the derivation-chain guard of the effective
+  attributes and particle, and the identity-constraint scope table — and a
+  new map, even one that never leaves the stack, draws a hash seed from the
+  runtime's random source; an underived type answers at once, a derived
+  chain is guarded by a list on the stack, and the scope table exists only
+  for an element declared with constraints (XSD 1.0 validation of the
+  200,000-order document: 3 % fewer instructions; XSD 1.1: 1.3 %). A simple
+  type's primitive and whitespace handling, walked down the base chain
+  several times for every value, are recorded once when the schema is
+  compiled (1.5 % and 0.7 %). The use-when pruning walk of the compiler
+  passes a text node without two calls (0.8 %). Over the whole round,
+  against the version before it: copying the whole document executes 10 %
+  fewer instructions, streaming 12 %, XSD 1.0 validation 8 %, template
+  dispatch and HTML output 5 %, regular expressions 4 %, the XPath 1.0
+  predicates, sorting and XSD 1.1 validation 3.4 to 3.7 %, compiling the
+  DocBook stylesheets 2.5 %, and every other workload between 0.1 % and
+  3.3 %. No workload executes more instructions than before beyond the
+  counter's spread, none allocates more, and every output is byte-identical.
+  Tried and dropped: a branch-free gathering of a text run's byte classes
+  in the tokenizer (an OR per byte cost 0.3 to 0.5 % more than the
+  predicted branch it replaced, on every workload that parses); noting a name's colon
+  while the name is read, to spare the search for one (a stylesheet's names
+  are mostly prefixed, so the per-byte test was added and the search still
+  ran: 0.9 % more on the compile workload); a substring pre-check before
+  the XSD 1.0 year-zero rule (two strings.Contains per value cost 3 % more
+  than the short type walk they were to spare); and jumping from tag to tag
+  with strings.IndexByte in the attribute-whitespace normalization (the
+  text between a stylesheet's tags is a few bytes; the call cost more than
+  the byte loop).
+
+The sixth to fourteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 
