@@ -369,6 +369,13 @@ func isElementOnlyCandidate(nd *xmltree.Node) bool {
 // CastTo casts an atomic item to the target type, returning an *Atomic or an
 // error (err:FORG0001 for invalid lexical values).
 func CastTo(it Item, target AtomType) (*Atomic, error) {
+	if nd, ok := it.(*xmltree.Node); ok && plainNode(nd) && nd.RealItem() == nil {
+		// A plain node atomizes to the xs:untypedAtomic of its string
+		// value; the numeric and date/time targets take the string itself.
+		if r, ok, err := castLexical(nd.StringValue(), target); ok {
+			return r, err
+		}
+	}
 	a, err := toAtomic(it)
 	if err != nil {
 		return nil, err
@@ -458,11 +465,7 @@ func CastTo(it Item, target AtomType) (*Atomic, error) {
 			if !stringSource {
 				return nil, fmt.Errorf("err:XPTY0004: cannot cast %s to %s", a.T, target)
 			}
-			tm, hasTZ, err := parseDateTimeValue(target, a.Lexical())
-			if err != nil {
-				return nil, fmt.Errorf("err:FORG0001: %v", err)
-			}
-			res = NewDateTime(target, tm, hasTZ)
+			return dateTimeFromLexical(a.Lexical(), target)
 		}
 		// xs:dateTimeStamp is an xs:dateTime whose timezone is REQUIRED
 		// (xs-dateTimeStamp-3/4: no timezone is FORG0001).
@@ -695,32 +698,81 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 		}
 		z = big.NewInt(n)
 	default:
-		s := strings.TrimSpace(a.Lexical())
-		// A STRING/untypedAtomic source must be a valid xs:integer LEXICAL:
-		// no '.' and no exponent (xs:long("3.0") is FORG0001, not 3). Only a
-		// numeric decimal/double VALUE source truncates, handled above.
-		// strconv.ParseInt accepts exactly the base-10 grammar big.Int.SetString
-		// does (an optional sign, then digits — no underscores, no spaces),
-		// only bounded, so a value it parses is one SetString would parse to
-		// the same number; anything else, overflow included, goes the general
-		// way, which also decides the lexical question.
-		if n, perr := strconv.ParseInt(s, 10, 64); perr == nil {
-			if target == XSinteger {
-				return newIntFast(n), nil
-			}
-			z = big.NewInt(n)
-		} else {
-			var ok bool
-			z, ok = new(big.Int).SetString(s, 10)
-			if !ok {
-				return nil, fmt.Errorf("err:FORG0001: invalid integer %q", s)
-			}
+		return integerFromLexical(a.Lexical(), target)
+	}
+	if err := checkIntegerBounds(z, target); err != nil {
+		return nil, err
+	}
+	return newIntTyped(target, z), nil
+}
+
+// integerFromLexical casts a string or xs:untypedAtomic source's lexical
+// form to the integer type target.
+func integerFromLexical(lex string, target AtomType) (*Atomic, error) {
+	s := strings.TrimSpace(lex)
+	// A STRING/untypedAtomic source must be a valid xs:integer LEXICAL:
+	// no '.' and no exponent (xs:long("3.0") is FORG0001, not 3). Only a
+	// numeric decimal/double VALUE source truncates (castToInteger).
+	// strconv.ParseInt accepts exactly the base-10 grammar big.Int.SetString
+	// does (an optional sign, then digits — no underscores, no spaces),
+	// only bounded, so a value it parses is one SetString would parse to
+	// the same number; anything else, overflow included, goes the general
+	// way, which also decides the lexical question.
+	var z *big.Int
+	if n, perr := strconv.ParseInt(s, 10, 64); perr == nil {
+		if target == XSinteger {
+			return newIntFast(n), nil
+		}
+		z = big.NewInt(n)
+	} else {
+		var ok bool
+		z, ok = new(big.Int).SetString(s, 10)
+		if !ok {
+			return nil, fmt.Errorf("err:FORG0001: invalid integer %q", s)
 		}
 	}
 	if err := checkIntegerBounds(z, target); err != nil {
 		return nil, err
 	}
 	return newIntTyped(target, z), nil
+}
+
+// castLexical casts the string value of a plain node — which atomizes to
+// the xs:untypedAtomic of it — to a numeric or date/time target without
+// that intermediate atom: the branches CastTo takes for such a source, and
+// nothing else (ok is false for any other target, which casts as before).
+func castLexical(s string, target AtomType) (*Atomic, bool, error) {
+	switch {
+	case target == XSdecimal:
+		a, err := decimalFromLexical(s)
+		return a, true, err
+	case isIntegerType(target):
+		a, err := integerFromLexical(s, target)
+		return a, true, err
+	case target == XSdouble || target == XSfloat:
+		a, err := doubleFromLexical(s, target)
+		return a, true, err
+	case isDateTimeType(target):
+		a, err := dateTimeFromLexical(s, target)
+		return a, true, err
+	}
+	return nil, false, nil
+}
+
+// dateTimeFromLexical casts a string or xs:untypedAtomic source's lexical
+// form to the date/time type target.
+func dateTimeFromLexical(lex string, target AtomType) (*Atomic, error) {
+	tm, hasTZ, err := parseDateTimeValue(target, lex)
+	if err != nil {
+		return nil, fmt.Errorf("err:FORG0001: %v", err)
+	}
+	res := NewDateTime(target, tm, hasTZ)
+	// xs:dateTimeStamp is an xs:dateTime whose timezone is REQUIRED
+	// (xs-dateTimeStamp-3/4: no timezone is FORG0001).
+	if target == XSdateTimeStamp && !res.hasTZ {
+		return nil, fmt.Errorf("err:FORG0001: xs:dateTimeStamp requires a timezone")
+	}
+	return res, nil
 }
 
 // integerRange is the value range of a derived integer type; a nil bound is
@@ -788,20 +840,26 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 		}
 		return newDecFast(0, 0), nil
 	default:
-		s := strings.TrimSpace(a.Lexical())
-		if strings.ContainsAny(s, "eE") {
-			return nil, fmt.Errorf("err:FORG0001: decimal lexical may not use exponent %q", s)
-		}
-		if mant, scale, ok := plainDecimal(s); ok {
-			// The usual lexical ("12.5", "-3"): the compact form directly.
-			return newDecFast(mant, scale), nil
-		}
-		r, ok := new(big.Rat).SetString(s)
-		if !ok {
-			return nil, fmt.Errorf("err:FORG0001: invalid decimal %q", s)
-		}
-		return NewDecimal(r), nil
+		return decimalFromLexical(a.Lexical())
 	}
+}
+
+// decimalFromLexical casts a string or xs:untypedAtomic source's lexical
+// form to xs:decimal.
+func decimalFromLexical(lex string) (*Atomic, error) {
+	s := strings.TrimSpace(lex)
+	if strings.ContainsAny(s, "eE") {
+		return nil, fmt.Errorf("err:FORG0001: decimal lexical may not use exponent %q", s)
+	}
+	if mant, scale, ok := plainDecimal(s); ok {
+		// The usual lexical ("12.5", "-3"): the compact form directly.
+		return newDecFast(mant, scale), nil
+	}
+	r, ok := new(big.Rat).SetString(s)
+	if !ok {
+		return nil, fmt.Errorf("err:FORG0001: invalid decimal %q", s)
+	}
+	return NewDecimal(r), nil
 }
 
 // pow10i64 holds the powers of ten an int64 mantissa can be scaled by.
@@ -872,7 +930,13 @@ func castToDouble(a *Atomic, target AtomType) (*Atomic, error) {
 		}
 		return &Atomic{T: target, f: 0}, nil
 	}
-	s := strings.TrimSpace(a.Lexical())
+	return doubleFromLexical(a.Lexical(), target)
+}
+
+// doubleFromLexical casts a string or xs:untypedAtomic source's lexical
+// form to xs:double or xs:float.
+func doubleFromLexical(lex string, target AtomType) (*Atomic, error) {
+	s := strings.TrimSpace(lex)
 	switch s {
 	case "NaN":
 		return &Atomic{T: target, f: math.NaN()}, nil

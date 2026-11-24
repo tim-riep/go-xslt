@@ -1117,7 +1117,13 @@ func callItemAsFunction(base Item, args []Object) (Object, error) {
 			return nil, fmt.Errorf("err:XPTY0004: map invocation requires exactly one argument")
 		}
 		// The key argument is xs:anyAtomicType: exactly one atomic value
-		// (map-call-901/902: an empty or plural key is XPTY0004).
+		// (map-call-901/902: an empty or plural key is XPTY0004). An atomic
+		// value or a plain string is looked up as it is: Atomize would hand
+		// back the atom, or an xs:string whose key is the string's own.
+		switch k := args[0].(type) {
+		case *Atomic, string:
+			return b.Get(k), nil
+		}
 		keys, err := Atomize(args[0])
 		if err != nil {
 			return nil, err

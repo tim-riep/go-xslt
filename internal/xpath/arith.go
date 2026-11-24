@@ -76,17 +76,22 @@ func arithOperand(ctx *Context, o Object) (*Atomic, error) {
 	if ctx != nil && ctx.BC10 {
 		return bc10ArithOperand(o)
 	}
-	items, err := Atomize(o)
-	if err != nil {
-		return nil, err
+	// An atomic value (a cast, an arithmetic result, a variable's value) is
+	// its own atomization, without the one-item sequence Atomize builds.
+	a, ok := o.(*Atomic)
+	if !ok {
+		items, err := Atomize(o)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			return nil, nil
+		}
+		if len(items) > 1 {
+			return nil, fmt.Errorf("err:XPTY0004: arithmetic operand is a sequence of %d items", len(items))
+		}
+		a = items[0].(*Atomic)
 	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	if len(items) > 1 {
-		return nil, fmt.Errorf("err:XPTY0004: arithmetic operand is a sequence of %d items", len(items))
-	}
-	a := items[0].(*Atomic)
 	if a.T == XSuntypedAtomic {
 		return castToDouble(a, XSdouble)
 	}

@@ -909,6 +909,9 @@ func mapArg(fn string, a []Object, i int) (*Map, error) {
 // xs:anyAtomicType): nodes atomize; an empty or plural result is XPTY0004
 // (map-get-901/902, map-contains-901/902).
 func mapKeyArg(fn string, a []Object, i int) (Item, error) {
+	if at, ok := arg(a, i).(*Atomic); ok {
+		return at, nil // its own atomization
+	}
 	items, err := Atomize(arg(a, i))
 	if err != nil {
 		return nil, err
@@ -924,6 +927,9 @@ var mapFuncs = map[string]coreFunc{
 		m, err := mapArg("get", a, 0)
 		if err != nil {
 			return nil, err
+		}
+		if s, ok := arg(a, 1).(string); ok {
+			return m.Get(s), nil // a plain string's key is the string's own
 		}
 		k, err := mapKeyArg("get", a, 1)
 		if err != nil {

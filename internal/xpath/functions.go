@@ -968,6 +968,9 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	if len(a) == 0 {
 		return ToString(o), nil
 	}
+	if s, ok := plainStringArg(o); ok {
+		return s, nil
+	}
 	// The one atomic value without the sequence Atomize builds for it.
 	item, n, err := atomizeOperand(o)
 	if err != nil {
@@ -986,15 +989,35 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", n)
 }
 
+// plainStringArg is the string an xs:string argument of the common shapes
+// converts to, without the atom toAtomic would build for it: a plain Go
+// string (fn:tokenize's items, for one) is the single xs:string itself, and
+// one plain node — the bare node a string parameter is handed, or a set of
+// one — atomizes to the xs:untypedAtomic of its string value, which
+// converts to that string. ok is false for every other argument.
+func plainStringArg(o Object) (string, bool) {
+	switch v := o.(type) {
+	case string:
+		return v, true
+	case *xmltree.Node:
+		if plainNode(v) && v.RealItem() == nil {
+			return v.StringValue(), true
+		}
+	case NodeSet:
+		if len(v) == 1 && plainNode(v[0]) && v[0].RealItem() == nil {
+			return v[0].StringValue(), true
+		}
+	}
+	return "", false
+}
+
 // stringArgStrict returns the xs:string value of argument i under the function
 // conversion rules: nodes atomize, xs:untypedAtomic and xs:anyURI convert, any
 // other atomic type or a plural sequence is XPTY0004, and so is an empty
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
-	if s, ok := arg(a, i).(string); ok {
-		// A plain Go string (fn:tokenize's items, for one) is the single
-		// xs:string itself, without the Atomic toAtomic would build for it.
+	if s, ok := plainStringArg(arg(a, i)); ok {
 		return s, nil
 	}
 	item, n, err := atomizeOperand(arg(a, i))
