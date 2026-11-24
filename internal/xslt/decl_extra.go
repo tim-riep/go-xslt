@@ -194,115 +194,104 @@ func attrSetNames(el *xmltree.Node) []string {
 	return nil
 }
 
-// checkAttributeSetRefs statically validates every use-attribute-sets /
-// xsl:use-attribute-sets reference in the stylesheet (on xsl:copy, xsl:element,
-// xsl:attribute-set, and literal result elements) against the set of
+// checkStaticRefs runs the two static reference checks below over the
+// stylesheet in ONE walk (each had its own walk over every node of every
+// module). An attribute-set error keeps the precedence the two walks gave
+// it: it is returned as soon as it is found, while the first call-template
+// error is held until the walk ends without one.
+func checkStaticRefs(ss *Stylesheet, mods []modChildren) error {
+	var tunnelErr error
+	var walk func(el *xmltree.Node) error
+	walk = func(el *xmltree.Node) error {
+		if el.Kind != xmltree.KindElement {
+			return nil
+		}
+		if err := checkAttributeSetRefsAt(ss, el); err != nil {
+			return err
+		}
+		if tunnelErr == nil && el.Name.Space == NS && el.Name.Local == "call-template" {
+			if name, ok := el.AttrLocal("name"); ok {
+				tunnelErr = checkOneCallTemplate(ss, el, name)
+			}
+		}
+		for _, ch := range el.Children {
+			if err := walk(ch); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, mod := range mods {
+		for _, child := range mod.children {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+	}
+	return tunnelErr
+}
+
+// checkAttributeSetRefsAt statically validates the use-attribute-sets /
+// xsl:use-attribute-sets reference on one element (xsl:copy, xsl:element,
+// xsl:attribute-set, or a literal result element) against the set of
 // xsl:attribute-set names actually declared (XTSE0710) — this must be
 // detected even along a sequence constructor path never executed at runtime,
 // so it cannot rely solely on the dynamic check in applyAttrSetsRec.
-func checkAttributeSetRefs(ss *Stylesheet, mods []modChildren) error {
-	var walk func(el *xmltree.Node) error
-	walk = func(el *xmltree.Node) error {
-		if el.Kind != xmltree.KindElement {
-			return nil
+func checkAttributeSetRefsAt(ss *Stylesheet, el *xmltree.Node) error {
+	var v string
+	var ok bool
+	if el.Name.Space == NS {
+		switch el.Name.Local {
+		case "copy", "element", "attribute-set":
+			v, ok = el.AttrLocal("use-attribute-sets")
 		}
-		var v string
-		var ok bool
-		if el.Name.Space == NS {
-			switch el.Name.Local {
-			case "copy", "element", "attribute-set":
-				v, ok = el.AttrLocal("use-attribute-sets")
-			}
-		} else {
-			v, ok = el.Attr(NS, "use-attribute-sets")
-		}
-		if ok {
-			// A streamable set may only reference streamable sets (XTSE0730):
-			// otherwise a caller's streamability would depend on a declaration
-			// it cannot see.
-			streamable := el.Name.Space == NS && el.Name.Local == "attribute-set"
-			if streamable {
-				sv, has := el.AttrLocal("streamable")
-				streamable = has && isXSLTTrue(strings.TrimSpace(sv))
-			}
-			for _, name := range resolveAttrSetNames(el, strings.Fields(v)) {
-				if name == clark(NS, "original") && el.Name.Space == NS && el.Name.Local == "attribute-set" {
-					continue // xsl:original in an overriding set: expanded at run time
-				}
-				decls, exists := ss.attrSets[name]
-				if exists && ss.hiddenRef(el, "attribute-set#"+name) {
-					exists = false // hidden by the used package
-				}
-				if !exists {
-					return errAt(el, "err:XTSE0710: no xsl:attribute-set named %q", name)
-				}
-				if !streamable {
-					continue
-				}
-				for _, d := range decls {
-					if !d.streamable {
-						return errAt(el, "err:XTSE0730: a streamable xsl:attribute-set may not use %q, which is not declared streamable", name)
-					}
-				}
-			}
-		}
-		for _, ch := range el.Children {
-			if err := walk(ch); err != nil {
-				return err
-			}
-		}
+	} else {
+		v, ok = el.Attr(NS, "use-attribute-sets")
+	}
+	if !ok {
 		return nil
 	}
-	for _, mod := range mods {
-		for _, child := range mod.children {
-			if err := walk(child); err != nil {
-				return err
+	// A streamable set may only reference streamable sets (XTSE0730):
+	// otherwise a caller's streamability would depend on a declaration
+	// it cannot see.
+	streamable := el.Name.Space == NS && el.Name.Local == "attribute-set"
+	if streamable {
+		sv, has := el.AttrLocal("streamable")
+		streamable = has && isXSLTTrue(strings.TrimSpace(sv))
+	}
+	for _, name := range resolveAttrSetNames(el, strings.Fields(v)) {
+		if name == clark(NS, "original") && el.Name.Space == NS && el.Name.Local == "attribute-set" {
+			continue // xsl:original in an overriding set: expanded at run time
+		}
+		decls, exists := ss.attrSets[name]
+		if exists && ss.hiddenRef(el, "attribute-set#"+name) {
+			exists = false // hidden by the used package
+		}
+		if !exists {
+			return errAt(el, "err:XTSE0710: no xsl:attribute-set named %q", name)
+		}
+		if !streamable {
+			continue
+		}
+		for _, d := range decls {
+			if !d.streamable {
+				return errAt(el, "err:XTSE0730: a streamable xsl:attribute-set may not use %q, which is not declared streamable", name)
 			}
 		}
 	}
 	return nil
 }
 
-// checkCallTemplateTunnelParams implements XTSE0680: "In the case of
-// xsl:call-template, it is a static error to pass a non-tunnel parameter
-// named x to a template that does not have a non-tunnel template parameter
-// named x." xsl:call-template's target is always statically named (unlike
-// apply-templates' dynamically-dispatched rule match), so the compiler can
-// check every xsl:with-param against the resolved template's own xsl:param
-// declarations directly (tunnel-0109/0110: with-param par1/par2 supplied
-// non-tunnel against a template whose par1/par2 are BOTH declared
+// checkOneCallTemplate implements XTSE0680 for one xsl:call-template: "In the
+// case of xsl:call-template, it is a static error to pass a non-tunnel
+// parameter named x to a template that does not have a non-tunnel template
+// parameter named x." xsl:call-template's target is always statically named
+// (unlike apply-templates' dynamically-dispatched rule match), so the
+// compiler can check every xsl:with-param against the resolved template's
+// own xsl:param declarations directly (tunnel-0109/0110: with-param par1/par2
+// supplied non-tunnel against a template whose par1/par2 are BOTH declared
 // tunnel="yes"; error-0680a: with-param "my:p" against a template with no
 // params at all).
-func checkCallTemplateTunnelParams(ss *Stylesheet, mods []modChildren) error {
-	var walk func(el *xmltree.Node) error
-	walk = func(el *xmltree.Node) error {
-		if el.Kind != xmltree.KindElement {
-			return nil
-		}
-		if el.Name.Space == NS && el.Name.Local == "call-template" {
-			if name, ok := el.AttrLocal("name"); ok {
-				if err := checkOneCallTemplate(ss, el, name); err != nil {
-					return err
-				}
-			}
-		}
-		for _, ch := range el.Children {
-			if err := walk(ch); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for _, mod := range mods {
-		for _, child := range mod.children {
-			if err := walk(child); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func checkOneCallTemplate(ss *Stylesheet, el *xmltree.Node, name string) error {
 	// Mirrors execCallTemplate's own resolution exactly (transform.go): an
 	// exact raw-lexical-name lookup first, then an expanded-name fallback

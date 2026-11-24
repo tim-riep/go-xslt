@@ -1034,10 +1034,7 @@ func compileModule(src, baseDir, selfPath string, hostStatic map[string]string, 
 	if err := checkStripPreserveConflict(ss); err != nil {
 		return nil, err
 	}
-	if err := checkAttributeSetRefs(ss, mods); err != nil {
-		return nil, err
-	}
-	if err := checkCallTemplateTunnelParams(ss, mods); err != nil {
+	if err := checkStaticRefs(ss, mods); err != nil {
 		return nil, err
 	}
 	if err := checkKeyConflicts(ss); err != nil {
@@ -3960,15 +3957,18 @@ var _ = sort.Strings
 // characters to XML and must survive into the result (xml-version-023's
 // <nel>&#x85;</nel>).
 func isXMLSpaceOnly(s string) bool {
+	// A table look per byte: it runs over every text node of a stylesheet,
+	// and the four-way comparison cost more than the look.
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case ' ', '\t', '\n', '\r':
-		default:
+		if !xmlSpaceByte[s[i]] {
 			return false
 		}
 	}
 	return true
 }
+
+// xmlSpaceByte marks the four XML white space bytes.
+var xmlSpaceByte = [256]bool{' ': true, '\t': true, '\n': true, '\r': true}
 
 // checkGlobalSelfReference reports XPST0008 when a global variable/parameter's
 // own @select refers to the variable being declared: a global variable is OUT
