@@ -73,7 +73,8 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 	// conversion is exactly argSpec.convert's, done before dispatchFunc
 	// repeats the check (which then finds the argument matching), and any
 	// value it does not handle is passed on for that check to decide.
-	var fuse uint32 // bit i: argument i is a path to convert here
+	var fuse uint32    // bit i: argument i is a path to convert here
+	var scratch uint32 // bit i: that path is built in the stack's scratch array
 	var args []Object
 	var stack *ArgStack // the arguments' stack, when they live on one
 	bc := ctx != nil && ctx.BC10
@@ -89,6 +90,9 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 			// (1.0 compatibility passes every argument as it is, a string
 			// parameter's one plain node included — as the bare node.)
 			fuse = plan >> planArgShift
+			if ctx.ArgStack != nil {
+				scratch = n.scratch.Load()
+			}
 		}
 		if plan&planStackArgs != 0 && ctx != nil && ctx.ArgStack != nil {
 			stack = ctx.ArgStack
@@ -101,7 +105,23 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 	for i, a := range n.Args {
 		if fuse&(1<<i) != 0 {
 			p := n.form.Load().spec(i)
-			ns, v, _, err := evalNodes(a, ctx)
+			// A single predicate-free step is built in the stack's scratch
+			// array (evalStepScratch): converted or taken as the bare node
+			// below, the set is dropped right here; passed on as a set, it
+			// is detached first.
+			var ns NodeSet
+			var v Object
+			var err error
+			inBuf := false
+			if scratch&(1<<i) != 0 {
+				ns, inBuf, err = evalStepScratch(a.(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
+				if inBuf && err == nil {
+					keepScratch(ctx, ns)
+				}
+			}
+			if !inBuf {
+				ns, v, _, err = evalNodes(a, ctx)
+			}
 			if err != nil {
 				if stack != nil {
 					stack.pop(len(n.Args))
@@ -127,6 +147,8 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 				// set, and an implementation that tests for a NodeSet
 				// handles the node (fnStringJoin, XSLT's key()).
 				args[i] = ns[0]
+			} else if inBuf {
+				args[i] = detachNodes(ns)
 			} else {
 				args[i] = ns
 			}
@@ -214,15 +236,20 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 		if len(n.Args) > 0 && argStackSafe[n.Local] {
 			plan |= planStackArgs
 		}
+		var scratch uint32
 		for i, a := range n.Args {
 			if _, isPath := a.(*PathExpr); isPath {
 				if p := f.spec(i); p != nil && p.kind == akAtomic {
 					plan |= planFuseArgs | 1<<(planArgShift+i)
+					if unionStep(a) != nil {
+						scratch |= 1 << i
+					}
 				}
 			}
 		}
 		if plan&planFuseArgs != 0 {
 			n.form.Store(f)
+			n.scratch.Store(scratch)
 		}
 	}
 	if n.Prefix == "" {
@@ -276,7 +303,21 @@ func isSetFunc(local string) bool {
 // the set, which it did through a copy of them as a slice; the others take
 // its effective boolean value). Any other value takes the ordinary call.
 func fusedSetFunc(prefix, local string, e Expr, ctx *Context) (Object, error) {
-	ns, v, isPath, err := evalNodes(e, ctx)
+	var ns NodeSet
+	var v Object
+	var err error
+	isPath := false
+	// A single predicate-free step is built in the stack's scratch array:
+	// the set is only counted or tested here.
+	if st := unionStep(e); st != nil && ctx != nil && ctx.ArgStack != nil {
+		ns, isPath, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+		if isPath && err == nil {
+			keepScratch(ctx, ns)
+		}
+	}
+	if !isPath {
+		ns, v, isPath, err = evalNodes(e, ctx)
+	}
 	if !isPath {
 		v, err = evalExpr(e, ctx)
 	}

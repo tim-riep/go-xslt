@@ -271,6 +271,11 @@ func (ns NodeSet) first() *xmltree.Node {
 	return best
 }
 
+// Detach returns ns as a set of its own: a copy, when ns may alias a scratch
+// array (Parsed.EvalNodesInto), for a holder that keeps it. An empty set is
+// nil, as a path evaluates to.
+func (ns NodeSet) Detach() NodeSet { return detachNodes(ns) }
+
 // normalize sorts the node set in document order and removes duplicates.
 func (ns NodeSet) normalize() NodeSet {
 	if len(ns) <= 1 {

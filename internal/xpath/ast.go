@@ -32,6 +32,9 @@ type FuncCall struct {
 	sig  atomic.Pointer[builtinSig]
 	plan atomic.Uint32
 	form atomic.Pointer[sigForm] // the signature of the call's arity, with planFuseArgs
+	// scratch, decided with plan: bit i is set when fused argument i is a
+	// one-step path evalStepScratch builds in the ArgStack's scratch array.
+	scratch atomic.Uint32
 }
 
 // BinaryExpr is an infix operation: and, or, =, !=, <, <=, >, >=, +, -, *, div, mod.
