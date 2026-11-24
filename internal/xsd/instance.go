@@ -931,13 +931,15 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			return ret
 		}
 	}
-	kids := childElements(el)
+	// The element children and whether any text child is more than white
+	// space, both in one pass (contentElementOnly asked them separately).
+	kids, nonWS := childElementsAndText(el)
 	switch ct.kind {
 	case contentEmpty:
 		// An EMPTY content type opened by appliesToEmpty admits wildcard
 		// children (s3_4_1v01, open009-013); character data stays forbidden.
 		if s.effectiveOpenContent(ct) != nil {
-			if hasNonWSText(el) {
+			if nonWS {
 				return invalidf("cvc-complex-type.2.1", "open empty content admits no character data")
 			}
 			if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
@@ -945,7 +947,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			}
 			break
 		}
-		if len(kids) > 0 || hasNonWSText(el) {
+		if len(kids) > 0 || nonWS {
 			return invalidf("cvc-complex-type.2.1", "element must be empty")
 		}
 		// 1.1 cvc-complex-type 2.1 forbids EVERY character information item in
@@ -971,7 +973,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			}
 		}
 	case contentElementOnly:
-		if hasNonWSText(el) {
+		if nonWS {
 			return invalidf("cvc-complex-type.2.3", "element-only content must not contain character data")
 		}
 		// An empty particle IS the empty {content type} per the mapping rules —
@@ -1866,6 +1868,35 @@ func childElements(el *xmltree.Node) []*xmltree.Node {
 		}
 	}
 	return out
+}
+
+// childElementsAndText is childElements(el) together with hasNonWSText(el),
+// in one pass over the children.
+func childElementsAndText(el *xmltree.Node) (kids []*xmltree.Node, nonWS bool) {
+	n := 0
+	for _, ch := range el.Children {
+		switch ch.Kind {
+		case xmltree.KindElement:
+			n++
+		case xmltree.KindText:
+			if !nonWS && strings.TrimSpace(ch.Value) != "" {
+				nonWS = true
+			}
+		}
+	}
+	switch n {
+	case 0:
+		return nil, nonWS
+	case len(el.Children):
+		return el.Children[:n:n], nonWS
+	}
+	out := make([]*xmltree.Node, 0, n)
+	for _, ch := range el.Children {
+		if ch.Kind == xmltree.KindElement {
+			out = append(out, ch)
+		}
+	}
+	return out, nonWS
 }
 
 func hasChildElements(el *xmltree.Node) bool {
