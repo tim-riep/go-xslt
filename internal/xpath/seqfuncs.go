@@ -894,6 +894,9 @@ var mathFuncs = map[string]coreFunc{
 // an empty or plural sequence, or a non-map item, is XPTY0004
 // (map-get-906/map-contains-906: (map{}, map{..}) is not a map).
 func mapArg(fn string, a []Object, i int) (*Map, error) {
+	if m, ok := arg(a, i).(*Map); ok {
+		return m, nil // the one map, without the item slice around it
+	}
 	items := Items(arg(a, i))
 	if len(items) != 1 {
 		return nil, fmt.Errorf("err:XPTY0004: map:%s requires exactly one map, got %d items", fn, len(items))
@@ -909,8 +912,11 @@ func mapArg(fn string, a []Object, i int) (*Map, error) {
 // xs:anyAtomicType): nodes atomize; an empty or plural result is XPTY0004
 // (map-get-901/902, map-contains-901/902).
 func mapKeyArg(fn string, a []Object, i int) (Item, error) {
-	if at, ok := arg(a, i).(*Atomic); ok {
-		return at, nil // its own atomization
+	switch v := arg(a, i).(type) {
+	case *Atomic:
+		return v, nil // its own atomization
+	case string:
+		return NewString(v), nil // what Atomize builds for it, without the slice
 	}
 	items, err := Atomize(arg(a, i))
 	if err != nil {

@@ -911,7 +911,9 @@ func evalExprNode(e Expr, ctx *Context) (Object, error) {
 	case *Placeholder:
 		return nil, fmt.Errorf("argument placeholder '?' outside a function call")
 	case *SequenceExpr:
-		var items []Item
+		// Room for one item per part: a part that is itself a sequence
+		// grows it as before.
+		items := make([]Item, 0, len(n.Items))
 		for _, it := range n.Items {
 			v, err := evalExpr(it, ctx)
 			if err != nil {
@@ -1037,13 +1039,43 @@ func evalExprNode(e Expr, ctx *Context) (Object, error) {
 		if err != nil {
 			return nil, err
 		}
+		holes := 0
+		for _, a := range n.Args {
+			if _, ok := a.(*Placeholder); ok {
+				holes++
+			}
+		}
+		if holes == 0 {
+			// The callee is exactly one item (xqhof12: a sequence of four
+			// functions applied to an argument is XPTY0004).
+			if c := itemCount(baseV); c != 1 {
+				return nil, fmt.Errorf("err:XPTY0004: dynamic function call on %d items", c)
+			}
+			if m, ok := firstItem(baseV).(*Map); ok && len(n.Args) == 1 {
+				// A map lookup, $m($k): the one argument is the key, with
+				// no argument slice around it (callItemAsFunction's map
+				// case, which reads the key the same way).
+				k, err := evalExpr(n.Args[0], ctx)
+				if err != nil {
+					return nil, err
+				}
+				return mapCallGet(m, k)
+			}
+			args := make([]Object, len(n.Args))
+			for i, a := range n.Args {
+				v, err := evalExpr(a, ctx)
+				if err != nil {
+					return nil, err
+				}
+				args[i] = v
+			}
+			return callItemAsFunction(firstItem(baseV), args)
+		}
 		args := make([]Object, len(n.Args))
 		isHole := make([]bool, len(n.Args))
-		holes := 0
 		for i, a := range n.Args {
 			if _, ok := a.(*Placeholder); ok {
 				isHole[i] = true
-				holes++
 				continue
 			}
 			v, err := evalExpr(a, ctx)
@@ -1051,14 +1083,6 @@ func evalExprNode(e Expr, ctx *Context) (Object, error) {
 				return nil, err
 			}
 			args[i] = v
-		}
-		if holes == 0 {
-			// The callee is exactly one item (xqhof12: a sequence of four
-			// functions applied to an argument is XPTY0004).
-			if bi := Items(baseV); len(bi) != 1 {
-				return nil, fmt.Errorf("err:XPTY0004: dynamic function call on %d items", len(bi))
-			}
-			return callItemAsFunction(firstItem(baseV), args)
 		}
 		// Partial application of a dynamic call: $f(?, 3) — the same shape as
 		// evalFunc's named-call case (fn-function-lookup-612).
@@ -1116,24 +1140,29 @@ func callItemAsFunction(base Item, args []Object) (Object, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("err:XPTY0004: map invocation requires exactly one argument")
 		}
-		// The key argument is xs:anyAtomicType: exactly one atomic value
-		// (map-call-901/902: an empty or plural key is XPTY0004). An atomic
-		// value or a plain string is looked up as it is: Atomize would hand
-		// back the atom, or an xs:string whose key is the string's own.
-		switch k := args[0].(type) {
-		case *Atomic, string:
-			return b.Get(k), nil
-		}
-		keys, err := Atomize(args[0])
-		if err != nil {
-			return nil, err
-		}
-		if len(keys) != 1 {
-			return nil, fmt.Errorf("err:XPTY0004: map invocation requires exactly one atomic key, got %d items", len(keys))
-		}
-		return b.Get(keys[0]), nil
+		return mapCallGet(b, args[0])
 	}
 	return nil, fmt.Errorf("err:XPTY0004: value is not a function")
+}
+
+// mapCallGet is a map called as a function, $m($k): the key argument is
+// xs:anyAtomicType, exactly one atomic value (map-call-901/902: an empty or
+// plural key is XPTY0004). An atomic value or a plain string is looked up as
+// it is: Atomize would hand back the atom, or an xs:string whose key is the
+// string's own.
+func mapCallGet(m *Map, key Object) (Object, error) {
+	switch k := key.(type) {
+	case *Atomic, string:
+		return m.Get(k), nil
+	}
+	keys, err := Atomize(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) != 1 {
+		return nil, fmt.Errorf("err:XPTY0004: map invocation requires exactly one atomic key, got %d items", len(keys))
+	}
+	return m.Get(keys[0]), nil
 }
 
 func evalFor(binds []VarBind, i int, ctx *Context, body Expr) (Object, error) {
@@ -1518,6 +1547,17 @@ func evalFilter(n *FilterExpr, ctx *Context) (Object, error) {
 
 func applyPredicateToItems(items []Item, pred Expr, ctx *Context) ([]Item, error) {
 	size := len(items)
+	// A numeric literal predicate selects one position, as in
+	// applyPredicateOrdered: "($m($k), 0)[1]" picks it without a context
+	// per item.
+	if lit, ok := pred.(*LiteralExpr); ok {
+		if num, ok := asPositionalInt(lit.Val); ok {
+			if num >= 1 && num <= size {
+				return items[num-1 : num], nil
+			}
+			return nil, nil
+		}
+	}
 	var out []Item
 	pathPred, _ := pred.(*PathExpr)
 	// One scratch context serves every item, as in applyPredicateOrdered:

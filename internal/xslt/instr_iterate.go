@@ -288,8 +288,16 @@ func (n *itrIterate) exec(eng *engine, r rt, out *xmltree.Node) error {
 		if err == nil {
 			continue
 		}
-		var nx *itrNext
-		if errors.As(err, &nx) {
+		// (The sentinel is the error itself; errors.As, whose target
+		// escapes to the heap, only for a wrapped one.)
+		nx, isNext := err.(*itrNext)
+		if !isNext {
+			var wrapped *itrNext
+			if errors.As(err, &wrapped) {
+				nx, isNext = wrapped, true
+			}
+		}
+		if isNext {
 			// Carry forward updated params; any param not mentioned keeps its
 			// current value.
 			for _, p := range n.params {
