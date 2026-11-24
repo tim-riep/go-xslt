@@ -794,8 +794,20 @@ func (t *tokenizer) checkRune(r rune, n int) bool {
 // nsname reads a name with at most one colon, which splits it into prefix
 // (Space, as RawToken reports it) and local part.
 func (t *tokenizer) nsname() (xml.Name, bool) {
-	s, ok := t.nameStr()
-	if !ok {
+	// nameStr's body, not a call to it: every element and attribute name
+	// comes through here, and the call was a tenth of the name's cost.
+	start := t.pos
+	if !t.readName() {
+		return xml.Name{}, false
+	}
+	s := t.s[start:t.pos]
+	if t.nameASCII {
+		if c := s[0]; c == '-' || c == '.' || '0' <= c && c <= '9' {
+			t.err = t.syntaxError("invalid XML name: " + s)
+			return xml.Name{}, false
+		}
+	} else if !isXMLName(s) {
+		t.err = t.syntaxError("invalid XML name: " + s)
 		return xml.Name{}, false
 	}
 	i := strings.IndexByte(s, ':')
