@@ -534,6 +534,10 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		s.stamp(d)
 	}
 	el.Attrs = attrs
+	// The tokenizer says whether any value of this tag holds a tab, LF or
+	// CR (attrWS); without one — and without DTD-supplied attributes, which
+	// it never saw — no value changes under normalization.
+	norm := s.tok.tz.attrWS || hasDTD
 	for _, a := range t.Attr {
 		if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 			continue
@@ -542,7 +546,10 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		an := &slab[0]
 		an.Kind = KindAttribute
 		an.Name = resolveRawName(frame, a.Name, true)
-		an.Value = streamNormalizeAttrValue(a.Value)
+		an.Value = a.Value
+		if norm {
+			an.Value = streamNormalizeAttrValue(a.Value)
+		}
 		if hasDTD {
 			if m := s.idKinds[t.Name.Local]; m != nil {
 				if k := m[a.Name.Local]; k != 0 {
@@ -581,7 +588,15 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		}
 	}
 	s.appendChild(s.top(), el)
-	s.open = append(s.open, streamFrame{node: el, frame: frame, def: def, raw: t.Name, text: text})
+	// The frame is filled in place (the popped slot is zero, see pop):
+	// appending the literal built it on the stack and copied it over.
+	if len(s.open) < cap(s.open) {
+		s.open = s.open[:len(s.open)+1]
+	} else {
+		s.open = append(s.open, streamFrame{})
+	}
+	fr := &s.open[len(s.open)-1]
+	fr.node, fr.frame, fr.def, fr.raw, fr.text = el, frame, def, t.Name, text
 	return el
 }
 
