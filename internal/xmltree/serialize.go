@@ -497,11 +497,16 @@ func (s *serializer) node(n *Node, depth int) {
 		// (Serialization 3.1 §6), where an undeclared &nbsp; is not
 		// well-formed; U+00A0 is written as the character (or as a character
 		// reference by escapeRepertoire when the encoding lacks it).
-		if s.opts.Method == "html" {
-			v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
-		}
 		if s.opts.Method == "html" || s.opts.Method == "xhtml" {
-			v = escapeC1(v)
+			// U+00A0 and the C1 controls are the only characters these two
+			// steps touch, and in UTF-8 both start with the byte 0xC2: a
+			// value without one needs neither search.
+			if strings.IndexByte(v, 0xC2) >= 0 {
+				if s.opts.Method == "html" {
+					v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
+				}
+				v = escapeC1(v)
+			}
 		}
 		s.b.WriteString(v)
 	case KindComment:
@@ -852,7 +857,7 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		// nothing more.
 		isURIAttr := false
 		if html && a.Name.Space == "" {
-			lower := strings.ToLower(a.Name.Local)
+			lower := lowerName(a.Name.Local)
 			if htmlBooleanAttrs[lower] && strings.EqualFold(a.Value, a.Name.Local) {
 				// HTML boolean attribute (attribute-0701): serialize as a
 				// bare name, not name="value".
@@ -860,9 +865,11 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 				attrs = append(attrs, aq...)
 				continue
 			}
-			isURIAttr = uriAttrs[lower]
+			if uriAttrs != nil {
+				isURIAttr = uriAttrs[lower]
+			}
 		} else if uriAttrs != nil && a.Name.Space == "" {
-			isURIAttr = uriAttrs[strings.ToLower(a.Name.Local)]
+			isURIAttr = uriAttrs[lowerName(a.Name.Local)]
 		}
 		val := a.Value
 		var out string
@@ -1283,6 +1290,18 @@ func (s *serializer) escapeRepertoire(v string) string {
 		}
 	}
 	return b.String()
+}
+
+// lowerName is strings.ToLower for an element or attribute name: a name of
+// lower-case ASCII, nearly every HTML name, is returned as it is after one
+// look at its bytes, without the call.
+func lowerName(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; 'A' <= c && c <= 'Z' || c >= 0x80 {
+			return strings.ToLower(s)
+		}
+	}
+	return s
 }
 
 // escapeC1 replaces each C1 control character (U+0080-U+009F) with its
