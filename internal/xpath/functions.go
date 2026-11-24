@@ -86,6 +86,28 @@ func evalFunc(n *FuncCall, ctx *Context) (Object, error) {
 		if plan&planSetFunc != 0 {
 			return fusedSetFunc(n.Prefix, n.Local, n.Args[0], ctx)
 		}
+		if plan&planBareArg != 0 && ctx != nil && ctx.ArgStack != nil {
+			ns, ok, err := evalStepScratch(n.Args[0].(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
+			if ok {
+				if err != nil {
+					return nil, err
+				}
+				keepScratch(ctx, ns)
+				// The argument slice lives on the stack too: fn:string
+				// (argStackSafe) and the constructors read it during the
+				// call only (CallConstructor and castInContext take the
+				// Object).
+				args := ctx.ArgStack.push(1)
+				if len(ns) == 1 && plainNode(ns[0]) && ns[0].RealItem() == nil {
+					args[0] = ns[0]
+				} else {
+					args[0] = detachNodes(ns)
+				}
+				v, err := dispatchFunc(n.Prefix, n.Local, args, ctx)
+				ctx.ArgStack.pop(1)
+				return v, err
+			}
+		}
 		if plan&planFuseArgs != 0 {
 			// (1.0 compatibility passes every argument as it is, a string
 			// parameter's one plain node included — as the bare node.)
@@ -204,6 +226,7 @@ const (
 	planSetFunc                      // fusedSetFunc answers the call
 	planFuseArgs                     // some argument bit is set
 	planStackArgs                    // the arguments may live on the Context's ArgStack (argStackSafe)
+	planBareArg                      // the one argument is a one-step path passed as its bare node (bareArgCall)
 	// bit planArgShift+i: argument i is a path for an atomic parameter.
 	planArgShift = 8
 	planMaxArgs  = 32 - planArgShift
@@ -220,6 +243,11 @@ const (
 func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 	plan = planDecided
 	if n.Prefix != "" && n.Prefix != "fn" {
+		// A call written with the xs prefix names a constructor whatever the
+		// prefix is bound to (dispatchFunc), so its plan is kept.
+		if n.Prefix == "xs" && n.bareArgCall() {
+			plan |= planBareArg
+		}
 		n.plan.Store(plan)
 		return plan
 	}
@@ -232,6 +260,8 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 	}
 	if len(n.Args) == 1 && isSetFunc(n.Local) {
 		plan |= planSetFunc
+	} else if n.Prefix == "" && n.bareArgCall() {
+		plan |= planBareArg
 	} else if f := sig.form(len(n.Args)); f != nil && len(n.Args) <= planMaxArgs {
 		if len(n.Args) > 0 && argStackSafe[n.Local] {
 			plan |= planStackArgs
@@ -256,6 +286,25 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 		n.plan.Store(plan)
 	}
 	return plan
+}
+
+// bareArgCall reports a call of fn:string, or of an atomic type's xs:
+// constructor, whose one argument is a one-step path (unionStep): evalFunc
+// builds the path's set in the scratch array and passes one plain node as
+// the bare node — fn:string reads its item()? argument through the item
+// helpers and the constructors through itemCount/itemAt/Atomize, all of
+// which read a bare node as the one-node set — and any other result as a
+// detached set, as before. (An extension function named with the xs prefix
+// is never reached: dispatchFunc takes every xs: call to the constructors.)
+func (n *FuncCall) bareArgCall() bool {
+	if len(n.Args) != 1 || unionStep(n.Args[0]) == nil {
+		return false
+	}
+	if n.Prefix == "xs" {
+		_, isType := AtomTypeByName(n.Local)
+		return isType
+	}
+	return n.Local == "string"
 }
 
 // noFnSig marks a FuncCall looked up in the fn: catalogue without result.
