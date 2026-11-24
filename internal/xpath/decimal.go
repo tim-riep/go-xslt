@@ -178,15 +178,78 @@ func decScale(m int64, k int) (int64, bool) {
 // decAdd adds two compact decimals (sub negates mb first); ok is false where
 // int64 does not suffice and the Rat path must be taken.
 func decAdd(ma int64, sa int, mb int64, sb int) (*Atomic, bool) {
-	a, b, s, ok := decAlign(ma, sa, mb, sb)
+	sum, s, ok := decAddRaw(ma, sa, mb, sb)
 	if !ok {
 		return nil, false
 	}
-	sum := a + b
+	return newDecFast(sum, s), true
+}
+
+// decAddRaw is decAdd's sum as a mantissa and scale, not normalized (a
+// running sum is normalized once, at the end).
+func decAddRaw(ma int64, sa int, mb int64, sb int) (sum int64, s int, ok bool) {
+	a, b, s, ok := decAlign(ma, sa, mb, sb)
+	if !ok {
+		return 0, 0, false
+	}
+	sum = a + b
 	if (sum > a) != (b > 0) { // overflow: the sign of the change is wrong
+		return 0, 0, false
+	}
+	return sum, s, true
+}
+
+// decDiv divides two compact decimals: ma/10^sa over mb/10^sb is the
+// quotient ma/mb (intDivRaw: compact only when it terminates) scaled by
+// 10^(sb-sa). ok is false where that does not fit, or mb is zero (the Rat
+// path raises the error), and decimalArith then does the same in big.Rat,
+// whose NewDecimal gives the same compact value (a quotient's compact form
+// is unique).
+func decDiv(ma int64, sa int, mb int64, sb int) (*Atomic, bool) {
+	if mb == 0 {
 		return nil, false
 	}
-	return newDecFast(sum, s), true
+	m, s, ok := intDivRaw(ma, mb)
+	if !ok {
+		return nil, false
+	}
+	s += sa - sb
+	if s < 0 {
+		if m, ok = decScale(m, -s); !ok {
+			return nil, false
+		}
+		s = 0
+	}
+	if s > decMaxScale {
+		return nil, false
+	}
+	return newDecFast(m, s), true
+}
+
+// decIdiv is the xs:integer trunc(a div b) of two compact decimals: the
+// mantissas aligned to one scale divide as integers (Go's quotient
+// truncates toward zero, as big.Int.Quo does). ok is false where the
+// alignment overflows or mb is zero.
+func decIdiv(ma int64, sa int, mb int64, sb int) (*Atomic, bool) {
+	a, b, _, ok := decAlign(ma, sa, mb, sb)
+	if !ok || b == 0 || (a == math.MinInt64 && b == -1) {
+		return nil, false
+	}
+	return newIntFast(a / b), true
+}
+
+// decMod is a - b * trunc(a div b) of two compact decimals: the remainder
+// of the aligned mantissas (Go's % has the dividend's sign, as the exact
+// definition gives) at their scale.
+func decMod(ma int64, sa int, mb int64, sb int) (*Atomic, bool) {
+	a, b, s, ok := decAlign(ma, sa, mb, sb)
+	if !ok || b == 0 {
+		return nil, false
+	}
+	if b == -1 || b == 1 {
+		return newDecFast(0, 0), true
+	}
+	return newDecFast(a%b, s), true
 }
 
 // decMul multiplies two compact decimals; ok is false where the product or

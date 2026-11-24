@@ -76,17 +76,22 @@ func arithOperand(ctx *Context, o Object) (*Atomic, error) {
 	if ctx != nil && ctx.BC10 {
 		return bc10ArithOperand(o)
 	}
-	items, err := Atomize(o)
-	if err != nil {
-		return nil, err
+	// An atomic value (a cast, an arithmetic result, a variable's value) is
+	// its own atomization, without the one-item sequence Atomize builds.
+	a, ok := o.(*Atomic)
+	if !ok {
+		items, err := Atomize(o)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			return nil, nil
+		}
+		if len(items) > 1 {
+			return nil, fmt.Errorf("err:XPTY0004: arithmetic operand is a sequence of %d items", len(items))
+		}
+		a = items[0].(*Atomic)
 	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	if len(items) > 1 {
-		return nil, fmt.Errorf("err:XPTY0004: arithmetic operand is a sequence of %d items", len(items))
-	}
-	a := items[0].(*Atomic)
 	if a.T == XSuntypedAtomic {
 		return castToDouble(a, XSdouble)
 	}
@@ -211,10 +216,10 @@ func integerArith(op string, a, b *big.Int) (Object, error) {
 	return nil, fmt.Errorf("bad operator %q", op)
 }
 
-// decimalArithFast adds, subtracts or multiplies two compact decimals (an
-// integer operand in int64 counts as one of scale 0) in int64; ok is false
-// for any other operator or operand, or on overflow, and decimalArith then
-// does the same in big.Rat.
+// decimalArithFast applies op to two compact decimals (an integer operand
+// in int64 counts as one of scale 0) in int64; ok is false for any other
+// operand, on overflow, for a quotient that does not terminate and for a
+// zero divisor, and decimalArith then does the same in big.Rat.
 func decimalArithFast(op string, a, b *Atomic) (Object, bool) {
 	ma, sa, ok := decOperand(a)
 	if !ok {
@@ -234,6 +239,12 @@ func decimalArithFast(op string, a, b *Atomic) (Object, bool) {
 		return decAdd(ma, sa, -mb, sb)
 	case "*":
 		return decMul(ma, sa, mb, sb)
+	case "div":
+		return decDiv(ma, sa, mb, sb)
+	case "idiv":
+		return decIdiv(ma, sa, mb, sb)
+	case "mod":
+		return decMod(ma, sa, mb, sb)
 	}
 	return nil, false
 }

@@ -394,9 +394,9 @@ func parseRaw(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHook) 
 // over the whole source first, as it always did. Otherwise it is deferred:
 // the pre-pass changes only tab/LF/CR bytes inside the quoted values of what
 // it sees as tags, so as long as no start tag so far had such a byte in an
-// attribute value (checked on the tokenizer's value, which has one wherever
-// the source did — references and line-end handling never turn one into
-// anything else) and no directive came by (the one construct the pre-pass
+// attribute value (the tokenizer's attrWS, judged on its value, which has
+// one wherever the source did — references and line-end handling never
+// turn one into anything else) and no directive came by (the one construct the pre-pass
 // and the tokenizer delimit differently), the pre-pass would have changed
 // nothing before the current token. At the first start tag or directive that
 // breaks this, the source from that token on is normalized — the pre-pass
@@ -667,7 +667,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			}
 			return nil, &ParseError{Line: line, Col: col, Msg: msg}
 		}
-		if lazyAttrNorm && (kind == tokDirective || kind == tokStart && attrsHaveTabOrNewline(tz.attrs)) {
+		if lazyAttrNorm && (kind == tokDirective || kind == tokStart && tz.attrWS) {
 			// See parseDecoded: from here on, the source is the normalized one.
 			// Unless the tokenizer no longer reads src itself — an encoding
 			// declaration other than UTF-8 makes it re-read the rest decoded,
@@ -686,16 +686,22 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 		// kept: an end tag needs them for an error message alone, and a
 		// text token only when it opens a run (lines.at scans forward, so
 		// the lookups stay in offset order).
-		top := open[len(open)-1].node
-
 		switch kind {
 		case tokStart:
 			line, col := lines.at(startOff)
-			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
+			top := open[len(open)-1].node
+			// The token is read from the tokenizer's own fields (they hold
+			// until its next call) instead of a copy made for every tag.
+			attrs := tz.attrs
 			// A new child starting is a run boundary: any pending text run
 			// belongs to the PARENT (top, before this element is pushed) and
-			// must close now, not merge with anything that follows.
-			flushPending()
+			// must close now, not merge with anything that follows. (The
+			// closure checks pendingOpen itself; testing it here first spares
+			// the call where nothing is pending, half the tags of a document
+			// without indentation.)
+			if pendingOpen {
+				flushPending()
+			}
 			// Build this element's namespace frame from the parent's, applying
 			// its own xmlns decls if any — but most elements in a real document
 			// declare none, so cloning the parent's map unconditionally (the
@@ -714,11 +720,11 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// nil map is a call all the same: skip them (here, per
 			// attribute below, and for the defaults further down).
 			if hasDTD {
-				if d := attrDefaults[t.Name.Local]; len(d) > 0 {
-					t.Attr = withNSDefaults(t.Attr, d) // DTD-defaulted xmlns[:p] declarations
+				if d := attrDefaults[tz.name.Local]; len(d) > 0 {
+					attrs = withNSDefaults(attrs, d) // DTD-defaulted xmlns[:p] declarations
 				}
 			}
-			for _, a := range t.Attr {
+			for _, a := range attrs {
 				local, isNS := "", false
 				switch {
 				case a.Name.Space == "xmlns":
@@ -744,10 +750,10 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			}
 			el := newNode() // zeroed: see flushPending
 			el.Kind, el.Line, el.Col = KindElement, int32(line), int32(col)
-			if t.Name.Space == "" {
-				el.Name = Name{Local: t.Name.Local, Space: def} // resolveRawName, without the lookup
+			if tz.name.Space == "" {
+				el.Name = Name{Local: tz.name.Local, Space: def} // resolveRawName, without the lookup
 			} else {
-				el.Name = resolveRawName(frame, t.Name, false)
+				el.Name = resolveRawName(frame, tz.name, false)
 			}
 			el.SetNSDecls(decls)
 			stamp(el)
@@ -755,7 +761,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 				d.Parent = el
 				stamp(d)
 			}
-			if n := len(t.Attr) - len(decls); n > 0 {
+			if n := len(attrs) - len(decls); n > 0 {
 				el.Attrs = ptrSlice(n)[:0]
 			}
 			// xml:space, if present, is noted here (the first match, as
@@ -763,7 +769,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			// these, is never in a namespace) instead of by a second pass
 			// over the attributes of every element below.
 			spaceAttr, hasSpace := "", false
-			for _, a := range t.Attr {
+			for _, a := range attrs {
 				if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 					continue
 				}
@@ -774,7 +780,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 					spaceAttr, hasSpace = an.Value, true
 				}
 				if hasDTD {
-					if m := idKinds[t.Name.Local]; m != nil {
+					if m := idKinds[tz.name.Local]; m != nil {
 						if k := m[a.Name.Local]; k != 0 {
 							an.SetIDKind(k)
 						}
@@ -787,7 +793,7 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			}
 			var defaults map[string]attlistDefault
 			if hasDTD {
-				defaults = attrDefaults[t.Name.Local]
+				defaults = attrDefaults[tz.name.Local]
 			}
 			if len(defaults) > 0 {
 				// DTD ATTLIST default/#FIXED values (attribute-0501): supply
@@ -831,26 +837,35 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			if hasSpace {
 				preserve = spaceAttr == "preserve"
 			}
-			open = append(open, openFrame{node: el, frame: frame, def: def, raw: t.Name, mark: len(childBuf), preserve: preserve})
+			// The frame is filled in place: appending the literal built it
+			// on the stack and copied its ten words into the slot.
+			if len(open) < cap(open) {
+				open = open[:len(open)+1]
+			} else {
+				open = append(open, openFrame{})
+			}
+			fr := &open[len(open)-1]
+			fr.node, fr.frame, fr.def, fr.raw, fr.mark, fr.preserve = el, frame, def, tz.name, len(childBuf), preserve
 			if len(open) > MaxDepth+1 { // open[0] is the document node
 				return nil, errTooDeep
 			}
 
 		case tokEnd:
-			t := xml.EndElement{Name: tz.name}
 			// The closing element's own pending text run must close before
 			// it does — flushPending reads the CURRENT top frame, so this
 			// must run before it is popped below.
-			flushPending()
+			if pendingOpen {
+				flushPending()
+			}
 			if len(open) == 1 {
 				line, col := lines.at(startOff)
-				return nil, &ParseError{Line: line, Col: col, Msg: "unexpected end element </" + rawQName(t.Name) + ">"}
+				return nil, &ParseError{Line: line, Col: col, Msg: "unexpected end element </" + rawQName(tz.name) + ">"}
 			}
-			if o := open[len(open)-1].raw; o != t.Name {
+			if o := open[len(open)-1].raw; o != tz.name {
 				line, col := lines.at(startOff)
-				return nil, &ParseError{Line: line, Col: col, Msg: "element <" + rawQName(o) + "> closed by </" + rawQName(t.Name) + ">"}
+				return nil, &ParseError{Line: line, Col: col, Msg: "element <" + rawQName(o) + "> closed by </" + rawQName(tz.name) + ">"}
 			}
-			closeChildren(top, open[len(open)-1].mark)
+			closeChildren(open[len(open)-1].node, open[len(open)-1].mark)
 			open = open[:len(open)-1]
 
 		case tokText:
@@ -877,21 +892,25 @@ func parseDecoded(src, baseDir string, files *fsaccess.Guard, strip StripSpaceHo
 			}
 
 		case tokComment:
-			flushPending()
+			if pendingOpen {
+				flushPending()
+			}
 			line, col := lines.at(startOff)
 			c := &Node{Kind: KindComment, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(c)
-			addChild(top, c)
+			addChild(open[len(open)-1].node, c)
 
 		case tokPI:
-			flushPending()
+			if pendingOpen {
+				flushPending()
+			}
 			if tz.target == "xml" {
 				continue // XML declaration, not a PI node
 			}
 			line, col := lines.at(startOff)
 			pi := &Node{Kind: KindPI, Name: Name{Local: tz.target}, Value: tz.str, Line: int32(line), Col: int32(col)}
 			stamp(pi)
-			addChild(top, pi)
+			addChild(open[len(open)-1].node, pi)
 		}
 	}
 	if lazyAttrNorm && tz.s != downgradeXMLVersion(src) {
@@ -965,19 +984,6 @@ func cloneNS(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-// attrsHaveTabOrNewline reports whether any attribute value holds a tab, LF
-// or CR — what normalizeAttrWhitespace would have rewritten in the source.
-func attrsHaveTabOrNewline(attrs []xml.Attr) bool {
-	for _, a := range attrs {
-		for i := 0; i < len(a.Value); i++ {
-			if c := a.Value[i]; c == '\t' || c == '\n' || c == '\r' {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // normalizeAttrWhitespace applies the XML attribute-value normalization step

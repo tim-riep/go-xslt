@@ -55,7 +55,12 @@ func (w *streamTokenizer) offset() int { return w.base + w.tz.pos }
 // next reads the next token; at the end of the input it returns io.EOF.
 func (w *streamTokenizer) next() (tokKind, error) {
 	for {
-		start, needClose, toClose := w.tz.pos, w.tz.needClose, w.tz.toClose
+		// Only the position (and the error) is restored for a second scan:
+		// needClose and toClose are set at the very end of a start tag read
+		// whole and cleared by the end tag it then yields, neither of which
+		// is ever scanned again, so a retried scan finds them as it left
+		// them.
+		start := w.tz.pos
 		kind, err := w.tz.next()
 		if err == nil && (kind != tokText || w.tz.pos < len(w.tz.s) || w.eof) {
 			return kind, nil
@@ -71,7 +76,7 @@ func (w *streamTokenizer) next() (tokKind, error) {
 		}
 		// The token may have run into the end of the window: read on and
 		// scan it again from its start, with the state it started from.
-		w.tz.pos, w.tz.err, w.tz.needClose, w.tz.toClose = start, nil, needClose, toClose
+		w.tz.pos, w.tz.err = start, nil
 		if err := w.fill(); err != nil {
 			return 0, err
 		}

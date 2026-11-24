@@ -64,8 +64,14 @@ type SimpleType struct {
 	cacheOK   bool
 	primCache xpath.AtomType
 	wsCache   string
-	facets    facetSet
-	docs      []Documentation // CompileWithDocs only
+	wsKind    uint8 // wsCache as a wsPreserve/wsReplace/wsCollapse constant
+	// noFacets (cacheOK only): facets constrains nothing, so its check is
+	// skipped; yearZero (cacheOK only): the primitive is one the XSD 1.0
+	// year-zero / +INF rule looks at (yearZeroOK).
+	noFacets bool
+	yearZero bool
+	facets   facetSet
+	docs     []Documentation // CompileWithDocs only
 
 	item    *SimpleType   // list
 	members []*SimpleType // union; never leads back to this type (closeUnion)

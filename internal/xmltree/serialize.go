@@ -190,54 +190,115 @@ var htmlVoidElements = map[string]bool{
 	"basefont": true, "frame": true, "isindex": true,
 }
 
-// htmlBooleanAttrs are the HTML4-recognized boolean attributes (attribute-0701):
-// the html output method serializes one of these as a bare `name` rather than
-// `name="value"` when its value equals the attribute's own name (case-
-// insensitively) — per XSLT's HTML output method rules, §16.2.
-var htmlBooleanAttrs = map[string]bool{
-	"checked": true, "compact": true, "declare": true, "defer": true,
-	"disabled": true, "ismap": true, "multiple": true, "noresize": true,
-	"noshade": true, "nowrap": true, "readonly": true, "selected": true,
+// isHTMLBooleanAttr reports whether a lower-cased attribute name is one of
+// the HTML4-recognized boolean attributes (attribute-0701): the html output
+// method serializes one of these as a bare `name` rather than `name="value"`
+// when its value equals the attribute's own name (case-insensitively) — per
+// XSLT's HTML output method rules, §16.2. A switch, not a map: it is asked
+// for every attribute the html method writes, and a string switch compares
+// where a map hashes.
+func isHTMLBooleanAttr(lower string) bool {
+	switch lower {
+	case "checked", "compact", "declare", "defer",
+		"disabled", "ismap", "multiple", "noresize",
+		"noshade", "nowrap", "readonly", "selected":
+		return true
+	}
+	return false
 }
 
-// htmlURIAttrs is the well-known table of HTML attributes whose value is a
-// URI: the html/xhtml output methods percent-escape non-ASCII (and other
-// unsafe) bytes in these — but only these — attribute values by default
-// (escape-uri-attributes, XSLT §21.2; attribute-0301: <a href> is escaped,
-// <input value>/<textarea> content is not). Keyed by lower-cased element then
-// attribute local name.
-var htmlURIAttrs = map[string]map[string]bool{
-	"a":          {"href": true},
-	"applet":     {"codebase": true},
-	"area":       {"href": true},
-	"base":       {"href": true},
-	"blockquote": {"cite": true},
-	"body":       {"background": true},
-	"button":     {"formaction": true},
-	"del":        {"cite": true},
-	"form":       {"action": true},
-	"frame":      {"longdesc": true, "src": true},
-	"head":       {"profile": true},
-	"iframe":     {"longdesc": true, "src": true},
-	"img":        {"longdesc": true, "src": true, "usemap": true, "lowsrc": true, "dynsrc": true},
-	"input":      {"src": true, "usemap": true, "formaction": true},
-	"ins":        {"cite": true},
-	"link":       {"href": true},
-	"object":     {"classid": true, "codebase": true, "data": true, "usemap": true},
-	"q":          {"cite": true},
-	"script":     {"src": true},
-	"audio":      {"src": true},
-	"video":      {"src": true, "poster": true},
-	"source":     {"src": true},
-	"track":      {"src": true},
-	"table":      {"background": true},
-	"tbody":      {"background": true},
-	"td":         {"background": true},
-	"tfoot":      {"background": true},
-	"th":         {"background": true},
-	"thead":      {"background": true},
-	"tr":         {"background": true},
-	"xmp":        {"href": true},
+// The URI-valued attributes of the HTML elements, as bits: htmlURIAttrsOf
+// gives an element's set, htmlURIAttrBit an attribute name's bit, and an
+// attribute is URI-valued when the two meet. This is the well-known table
+// of HTML attributes whose value is a URI: the html/xhtml output methods
+// percent-escape non-ASCII (and other unsafe) bytes in these — but only
+// these — attribute values by default (escape-uri-attributes, XSLT §21.2;
+// attribute-0301: <a href> is escaped, <input value>/<textarea> content is
+// not). Both take lower-cased names.
+const (
+	uriHref uint32 = 1 << iota
+	uriSrc
+	uriCite
+	uriAction
+	uriBackground
+	uriLongdesc
+	uriUsemap
+	uriCodebase
+	uriClassid
+	uriData
+	uriProfile
+	uriFormaction
+	uriLowsrc
+	uriDynsrc
+	uriPoster
+)
+
+func htmlURIAttrsOf(elem string) uint32 {
+	switch elem {
+	case "a", "area", "base", "link", "xmp":
+		return uriHref
+	case "applet":
+		return uriCodebase
+	case "blockquote", "del", "ins", "q":
+		return uriCite
+	case "body", "table", "tbody", "td", "tfoot", "th", "thead", "tr":
+		return uriBackground
+	case "button":
+		return uriFormaction
+	case "form":
+		return uriAction
+	case "frame", "iframe":
+		return uriLongdesc | uriSrc
+	case "head":
+		return uriProfile
+	case "img":
+		return uriLongdesc | uriSrc | uriUsemap | uriLowsrc | uriDynsrc
+	case "input":
+		return uriSrc | uriUsemap | uriFormaction
+	case "object":
+		return uriClassid | uriCodebase | uriData | uriUsemap
+	case "script", "audio", "source", "track":
+		return uriSrc
+	case "video":
+		return uriSrc | uriPoster
+	}
+	return 0
+}
+
+func htmlURIAttrBit(attr string) uint32 {
+	switch attr {
+	case "href":
+		return uriHref
+	case "src":
+		return uriSrc
+	case "cite":
+		return uriCite
+	case "action":
+		return uriAction
+	case "background":
+		return uriBackground
+	case "longdesc":
+		return uriLongdesc
+	case "usemap":
+		return uriUsemap
+	case "codebase":
+		return uriCodebase
+	case "classid":
+		return uriClassid
+	case "data":
+		return uriData
+	case "profile":
+		return uriProfile
+	case "formaction":
+		return uriFormaction
+	case "lowsrc":
+		return uriLowsrc
+	case "dynsrc":
+		return uriDynsrc
+	case "poster":
+		return uriPoster
+	}
+	return 0
 }
 
 // escapeHTMLURIAttr percent-encodes every byte of s outside the printable
@@ -303,7 +364,14 @@ const xmlNS = "http://www.w3.org/XML/1998/namespace"
 func newSerializer(out outWriter, opts SerializeOptions) *serializer {
 	s := &serializer{b: out, opts: opts,
 		declared: map[string]string{xmlNS: "xml"},
-		prefixes: map[string]string{"xml": xmlNS}}
+		prefixes: map[string]string{"xml": xmlNS},
+		html:     opts.Method == "html",
+		xhtml:    opts.Method == "xhtml"}
+	switch opts.NormalizationForm {
+	case "NFC", "NFD", "NFKC", "NFKD":
+	default:
+		s.normNone = true
+	}
 	if opts.Method == "html" || opts.Method == "xhtml" {
 		// Decided once: startTag asked for every element, and parsing the
 		// (usually empty) version string allocated an error each time.
@@ -441,6 +509,13 @@ type serializer struct {
 	// v11 caches xmlVersion11() once v11OK is set, for the same reason.
 	v11   bool
 	v11OK bool
+	// html, xhtml: opts.Method is "html" / "xhtml", decided in newSerializer
+	// (the two comparisons ran for every element and text node); normNone:
+	// opts.NormalizationForm names no normalization, so normalize returns
+	// its argument at once. A serializer built as a bare literal has all
+	// three false, which only sends it down the general paths.
+	html, xhtml bool
+	normNone    bool
 	// defURI mirrors prefixes[""] (defOK: the entry exists): the default
 	// namespace in scope, read for every no-namespace element without the
 	// map lookup. declare and undeclare keep it current.
@@ -480,11 +555,11 @@ func (s *serializer) node(n *Node, depth int) {
 		// CDATA: markup characters are never escaped there — any escaping
 		// needed (e.g. a literal "</script>") is the stylesheet author's own
 		// responsibility (output-0154/0159).
-		rawScriptStyle := s.opts.Method == "html" && n.Parent != nil && n.Parent.Name.Space == "" &&
+		rawScriptStyle := s.html && n.Parent != nil && n.Parent.Name.Space == "" &&
 			(strings.EqualFold(n.Parent.Name.Local, "script") || strings.EqualFold(n.Parent.Name.Local, "style"))
 		if n.Raw() || rawScriptStyle {
 			v = s.mapChars(n.Value, nil)
-		} else if s.opts.Method == "html" {
+		} else if s.html {
 			v = s.mapChars(n.Value, escapeText)
 		} else {
 			v = s.mapChars(n.Value, escapeTextXML)
@@ -497,12 +572,12 @@ func (s *serializer) node(n *Node, depth int) {
 		// (Serialization 3.1 §6), where an undeclared &nbsp; is not
 		// well-formed; U+00A0 is written as the character (or as a character
 		// reference by escapeRepertoire when the encoding lacks it).
-		if s.opts.Method == "html" || s.opts.Method == "xhtml" {
+		if s.html || s.xhtml {
 			// U+00A0 and the C1 controls are the only characters these two
 			// steps touch, and in UTF-8 both start with the byte 0xC2: a
 			// value without one needs neither search.
 			if strings.IndexByte(v, 0xC2) >= 0 {
-				if s.opts.Method == "html" {
+				if s.html {
 					v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
 				}
 				v = escapeC1(v)
@@ -624,8 +699,7 @@ type elemOpen struct {
 // included. Everything after that depends on the children, which the caller
 // owns.
 func (s *serializer) startTag(n *Node, depth int) elemOpen {
-	html := s.opts.Method == "html"
-	xhtml := s.opts.Method == "xhtml"
+	html, xhtml := s.html, s.xhtml
 	htmlish := html || xhtml
 	// An element NAMED in suppress-indentation must itself lose its own
 	// closing tag's indentation too, not just its children's — s.suppress
@@ -684,16 +758,16 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	// "content" attribute is (re)written with the correct value below.
 	fixContentTypeAttr := false
 	// The URI-valued attributes of this HTML element, looked up once per
-	// element (not per attribute); nil for the xml method, which tests
+	// element (not per attribute); zero for the xml method, which tests
 	// nothing else of it, and for an element with none.
-	var uriAttrs map[string]bool
+	var uriAttrs uint32
 	if htmlish {
 		fixContentTypeAttr = s.opts.IncludeContentType && n.Parent != nil &&
 			strings.EqualFold(n.Parent.Name.Local, "head") &&
 			(html || n.Parent.Name.Space == "http://www.w3.org/1999/xhtml") &&
 			isContentTypeMeta(n)
 		if !s.opts.NoEscapeURIAttributes && len(n.Attrs) > 0 {
-			uriAttrs = htmlURIAttrs[strings.ToLower(n.Name.Local)]
+			uriAttrs = htmlURIAttrsOf(lowerName(n.Name.Local))
 		}
 	}
 
@@ -858,18 +932,18 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		isURIAttr := false
 		if html && a.Name.Space == "" {
 			lower := lowerName(a.Name.Local)
-			if htmlBooleanAttrs[lower] && strings.EqualFold(a.Value, a.Name.Local) {
+			if isHTMLBooleanAttr(lower) && strings.EqualFold(a.Value, a.Name.Local) {
 				// HTML boolean attribute (attribute-0701): serialize as a
 				// bare name, not name="value".
 				attrs = append(attrs, ' ')
 				attrs = append(attrs, aq...)
 				continue
 			}
-			if uriAttrs != nil {
-				isURIAttr = uriAttrs[lower]
+			if uriAttrs != 0 {
+				isURIAttr = uriAttrs&htmlURIAttrBit(lower) != 0
 			}
-		} else if uriAttrs != nil && a.Name.Space == "" {
-			isURIAttr = uriAttrs[lowerName(a.Name.Local)]
+		} else if uriAttrs != 0 && a.Name.Space == "" {
+			isURIAttr = uriAttrs&htmlURIAttrBit(lowerName(a.Name.Local)) != 0
 		}
 		val := a.Value
 		var out string
@@ -963,7 +1037,7 @@ func (s *serializer) element(n *Node, depth int) {
 	o := s.startTag(n, depth)
 
 	if len(n.Children) == 0 {
-		htmlish := s.opts.Method == "html" || s.opts.Method == "xhtml"
+		htmlish := s.html || s.xhtml
 		switch {
 		case o.meta != "":
 			s.flushTag(">" + o.meta + "</" + o.qname + ">")
@@ -971,7 +1045,7 @@ func (s *serializer) element(n *Node, depth int) {
 			// HTML void element: <br>; XHTML keeps the XML self-close, with the
 			// HTML4-compatibility space before the slash: <br />
 			// (output-0107/0116/0132..0135).
-			if s.opts.Method == "xhtml" {
+			if s.xhtml {
 				s.flushTag(" />")
 			} else {
 				s.flushTag(">")
@@ -1233,6 +1307,9 @@ func (s *serializer) writeCDATA(v string) {
 
 // normalize applies opts.NormalizationForm (if any) to v.
 func (s *serializer) normalize(v string) string {
+	if s.normNone {
+		return v
+	}
 	switch s.opts.NormalizationForm {
 	case "NFC":
 		return norm.NFC.String(v)

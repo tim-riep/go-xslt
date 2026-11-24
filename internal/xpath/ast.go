@@ -240,6 +240,9 @@ type CompareExpr struct {
 	Op     string
 	L, R   Expr
 	eqSlot // index cache for "x = $long" (compare_index.go)
+	// genID: both operands are fn:generate-id calls and Op tests equality,
+	// decided by the parser (generateIDComparison).
+	genID bool
 }
 
 // StringConcatExpr is the || operator over two-or-more operands.

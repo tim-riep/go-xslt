@@ -107,8 +107,14 @@ type StreamReader struct {
 	elemOnly     map[string]bool
 
 	// nameIntern dedupes element Local/Prefix strings across the stream, the
-	// same reasoning as parseRaw's identical table in parse.go.
+	// same reasoning as parseRaw's identical table in parse.go. nameCache
+	// fronts it (internName): a name is looked for at a slot computed from
+	// its length and first and last bytes and compared with the interned
+	// string there, so a document's few recurring names cost no hashing.
+	// The slots hold interned strings only — a window substring kept here
+	// would pin its window.
 	nameIntern map[string]string
+	nameCache  [64]string
 	// wsRuns shares the whitespace-only text runs (the indentation between
 	// elements, most of a pretty-printed document's text nodes), as
 	// parseRaw's internText does, so each costs a node and not also a copy
@@ -289,19 +295,12 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 		tz := &s.tok.tz
 		switch kind {
 		case tokStart:
+			// Read from the tokenizer's own fields (they hold until its
+			// next call), not a copy made for every tag; startElement
+			// takes the token by pointer for the same reason.
 			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
 			if err := s.countAttrs(t.Attr); err != nil {
 				return StreamEvent{}, err
-			}
-			// A streamed document is XML 1.0 (1.1 is ErrStreamUnsupported), so
-			// a prefix may not be undeclared — parseRaw's identical check.
-			for _, a := range t.Attr {
-				if a.Name.Space == "xmlns" && a.Value == "" {
-					return StreamEvent{}, fmt.Errorf("namespace constraint No Prefix Undeclaring: xmlns:%s may not be empty in an XML 1.0 document", a.Name.Local)
-				}
-			}
-			if len(s.open)-1 >= MaxDepth {
-				return StreamEvent{}, errTooDeep
 			}
 			// The element's first child is a text node when character data
 			// follows the start tag (not '<': a child element, comment, PI
@@ -309,7 +308,10 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			// shows unless the tag ended exactly at its end — then, as for
 			// any other first child, the text node is its own allocation.
 			textNext := !tz.needClose && tz.pos < len(tz.s) && tz.s[tz.pos] != '<'
-			el := s.startElement(t, textNext)
+			el, err := s.startElement(&t, textNext)
+			if err != nil {
+				return StreamEvent{}, err
+			}
 			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.open) - 1}, nil
 
 		case tokEnd:
@@ -464,13 +466,13 @@ func streamHasExternalEntity(sub string) bool {
 	}
 }
 
-func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
+func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) (*Node, error) {
 	// Intern the tag's own name before anything retains it: one string per
 	// distinct name, copied out of the tokenizer's window (see
 	// streamTokenizer), where the element and rawNames would otherwise keep
 	// the window alive.
-	t.Name.Local = internCopy(s.nameIntern, t.Name.Local)
-	t.Name.Space = internCopy(s.nameIntern, t.Name.Space)
+	t.Name.Local = s.internName(t.Name.Local)
+	t.Name.Space = s.internName(t.Name.Space)
 	// Lazy-clone, same reasoning as the buffered parser's identical gate in
 	// parse.go: most elements declare no namespace of their own, so reuse the
 	// parent's frame reference until a decl actually forces a copy.
@@ -498,6 +500,13 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		if !isNS {
 			continue
 		}
+		// A streamed document is XML 1.0 (1.1 is ErrStreamUnsupported), so
+		// a prefix may not be undeclared — parseRaw's identical check, made
+		// here where the declarations are found rather than in a pass of
+		// its own over every attribute.
+		if local != "" && a.Value == "" {
+			return nil, fmt.Errorf("namespace constraint No Prefix Undeclaring: xmlns:%s may not be empty in an XML 1.0 document", local)
+		}
 		if !cloned {
 			frame = cloneNS(frame)
 			cloned = true
@@ -509,7 +518,10 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		if local == "" {
 			def = uri
 		}
-		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: internCopy(s.nameIntern, local)}, Value: uri})
+		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: s.internName(local)}, Value: uri})
+	}
+	if len(s.open)-1 >= MaxDepth { // after the declarations' check, as before
+		return nil, errTooDeep
 	}
 	// The element and its attribute nodes are one allocation: an attribute
 	// keeps its element alive through Parent anyway, so nothing is retained
@@ -534,6 +546,10 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		s.stamp(d)
 	}
 	el.Attrs = attrs
+	// The tokenizer says whether any value of this tag holds a tab, LF or
+	// CR (attrWS); without one — and without DTD-supplied attributes, which
+	// it never saw — no value changes under normalization.
+	norm := s.tok.tz.attrWS || hasDTD
 	for _, a := range t.Attr {
 		if a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns") {
 			continue
@@ -542,7 +558,10 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		an := &slab[0]
 		an.Kind = KindAttribute
 		an.Name = resolveRawName(frame, a.Name, true)
-		an.Value = streamNormalizeAttrValue(a.Value)
+		an.Value = a.Value
+		if norm {
+			an.Value = streamNormalizeAttrValue(a.Value)
+		}
 		if hasDTD {
 			if m := s.idKinds[t.Name.Local]; m != nil {
 				if k := m[a.Name.Local]; k != 0 {
@@ -581,8 +600,16 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		}
 	}
 	s.appendChild(s.top(), el)
-	s.open = append(s.open, streamFrame{node: el, frame: frame, def: def, raw: t.Name, text: text})
-	return el
+	// The frame is filled in place (the popped slot is zero, see pop):
+	// appending the literal built it on the stack and copied it over.
+	if len(s.open) < cap(s.open) {
+		s.open = s.open[:len(s.open)+1]
+	} else {
+		s.open = append(s.open, streamFrame{})
+	}
+	fr := &s.open[len(s.open)-1]
+	fr.node, fr.frame, fr.def, fr.raw, fr.text = el, frame, def, t.Name, text
+	return el, nil
 }
 
 // Element records with up to three attributes, the common shapes, come
@@ -781,6 +808,20 @@ func (s *StreamReader) textString(t string) string {
 // internCopy is intern (parse.go) for strings cut from a tokenizer window:
 // the kept string is a copy, so the table never holds a window. The empty
 // string (most elements' namespace prefix) holds nothing and is not looked up.
+// internName is internCopy over nameIntern, through nameCache (see there).
+func (s *StreamReader) internName(v string) string {
+	if v == "" {
+		return ""
+	}
+	k := (len(v)*31 + int(v[0])*7 + int(v[len(v)-1])) & (len(s.nameCache) - 1)
+	if c := s.nameCache[k]; c == v {
+		return c
+	}
+	v = internCopy(s.nameIntern, v)
+	s.nameCache[k] = v
+	return v
+}
+
 func internCopy(m map[string]string, s string) string {
 	if s == "" {
 		return ""

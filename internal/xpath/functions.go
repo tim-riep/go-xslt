@@ -148,13 +148,22 @@ func (n *FuncCall) evalFusedArg(i int, a Expr, ctx *Context, bc bool) (Object, e
 	var v Object
 	var err error
 	inBuf := false
+	done := false // evaluated already
 	if ctx.ArgStack != nil && n.scratch.Load()&(1<<i) != 0 {
-		ns, inBuf, err = evalStepScratch(a.(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
-		if inBuf && err == nil {
-			keepScratch(ctx, ns)
+		if st := unionStep(a); st != nil {
+			ns, inBuf, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+			if inBuf && err == nil {
+				keepScratch(ctx, ns)
+			}
+			done = inBuf
+		} else {
+			// A path of several steps (scratchPath): its last step's set
+			// is built in the scratch array the same way.
+			ns, v, inBuf, err = evalPathCountedInto(a.(*PathExpr), ctx, &ctx.ArgStack.nodes)
+			done = true
 		}
 	}
-	if !inBuf {
+	if !done {
 		ns, v, _, err = evalNodes(a, ctx)
 	}
 	if err != nil {
@@ -194,14 +203,38 @@ func (n *FuncCall) evalBareArgCall(ctx *Context) (Object, bool, error) {
 	if ctx == nil || ctx.ArgStack == nil {
 		return nil, false, nil
 	}
-	ns, ok, err := evalStepScratch(n.Args[0].(*PathExpr).Steps[0], ctx, ctx.ArgStack.nodes)
-	if !ok {
-		return nil, false, nil
+	var ns NodeSet
+	if st := unionStep(n.Args[0]); st != nil {
+		var ok bool
+		var err error
+		ns, ok, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+		if !ok {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		keepScratch(ctx, ns)
+	} else {
+		// A path of several steps (scratchPath): a postfix value or a
+		// pattern top leaves the call to the plain path.
+		var v Object
+		var inBuf bool
+		var err error
+		if ns, v, inBuf, err = evalPathCountedInto(n.Args[0].(*PathExpr), ctx, &ctx.ArgStack.nodes); err != nil {
+			return nil, true, err
+		}
+		if !inBuf {
+			if v == nil {
+				v = ns
+			}
+			args := ctx.ArgStack.push(1)
+			args[0] = v
+			v, err = dispatchFunc(n.Prefix, n.Local, args, ctx)
+			ctx.ArgStack.pop(1)
+			return v, true, err
+		}
 	}
-	if err != nil {
-		return nil, true, err
-	}
-	keepScratch(ctx, ns)
 	args := ctx.ArgStack.push(1)
 	if len(ns) == 1 && plainNode(ns[0]) && ns[0].RealItem() == nil {
 		args[0] = ns[0]
@@ -292,7 +325,7 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 			if _, isPath := a.(*PathExpr); isPath {
 				if p := f.spec(i); p != nil && p.kind == akAtomic {
 					plan |= planFuseArgs | 1<<(planArgShift+i)
-					if unionStep(a) != nil {
+					if unionStep(a) != nil || scratchPath(a) != nil {
 						scratch |= 1 << i
 					}
 				}
@@ -318,7 +351,7 @@ func (n *FuncCall) fnPlan(ctx *Context) (plan uint32) {
 // detached set, as before. (An extension function named with the xs prefix
 // is never reached: dispatchFunc takes every xs: call to the constructors.)
 func (n *FuncCall) bareArgCall() bool {
-	if len(n.Args) != 1 || unionStep(n.Args[0]) == nil {
+	if len(n.Args) != 1 || (unionStep(n.Args[0]) == nil && scratchPath(n.Args[0]) == nil) {
 		return false
 	}
 	if n.Prefix == "xs" {
@@ -379,10 +412,17 @@ func fusedSetFunc(prefix, local string, e Expr, ctx *Context) (Object, error) {
 	isPath := false
 	// A single predicate-free step is built in the stack's scratch array:
 	// the set is only counted or tested here.
-	if st := unionStep(e); st != nil && ctx != nil && ctx.ArgStack != nil {
-		ns, isPath, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
-		if isPath && err == nil {
-			keepScratch(ctx, ns)
+	if ctx != nil && ctx.ArgStack != nil {
+		if st := unionStep(e); st != nil {
+			ns, isPath, err = evalStepScratch(st, ctx, ctx.ArgStack.nodes)
+			if isPath && err == nil {
+				keepScratch(ctx, ns)
+			}
+		} else if sp := scratchPath(e); sp != nil {
+			// A path of several steps: its last step's set in the scratch
+			// array too (a postfix value comes back as v).
+			ns, v, _, err = evalPathCountedInto(sp, ctx, &ctx.ArgStack.nodes)
+			isPath = true
 		}
 	}
 	if !isPath {
@@ -928,6 +968,9 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	if len(a) == 0 {
 		return ToString(o), nil
 	}
+	if s, ok := plainStringArg(o); ok {
+		return s, nil
+	}
 	// The one atomic value without the sequence Atomize builds for it.
 	item, n, err := atomizeOperand(o)
 	if err != nil {
@@ -946,15 +989,35 @@ func stringOrContextArg(c *Context, a []Object) (string, error) {
 	return "", fmt.Errorf("err:XPTY0004: a single string is required, got %d items", n)
 }
 
+// plainStringArg is the string an xs:string argument of the common shapes
+// converts to, without the atom toAtomic would build for it: a plain Go
+// string (fn:tokenize's items, for one) is the single xs:string itself, and
+// one plain node — the bare node a string parameter is handed, or a set of
+// one — atomizes to the xs:untypedAtomic of its string value, which
+// converts to that string. ok is false for every other argument.
+func plainStringArg(o Object) (string, bool) {
+	switch v := o.(type) {
+	case string:
+		return v, true
+	case *xmltree.Node:
+		if plainNode(v) && v.RealItem() == nil {
+			return v.StringValue(), true
+		}
+	case NodeSet:
+		if len(v) == 1 && plainNode(v[0]) && v[0].RealItem() == nil {
+			return v[0].StringValue(), true
+		}
+	}
+	return "", false
+}
+
 // stringArgStrict returns the xs:string value of argument i under the function
 // conversion rules: nodes atomize, xs:untypedAtomic and xs:anyURI convert, any
 // other atomic type or a plural sequence is XPTY0004, and so is an empty
 // sequence unless the parameter is optional (fn-translate3args-5/6/7,
 // K2-TranslateFunc-1/2).
 func stringArgStrict(fn string, a []Object, i int, optional bool) (string, error) {
-	if s, ok := arg(a, i).(string); ok {
-		// A plain Go string (fn:tokenize's items, for one) is the single
-		// xs:string itself, without the Atomic toAtomic would build for it.
+	if s, ok := plainStringArg(arg(a, i)); ok {
 		return s, nil
 	}
 	item, n, err := atomizeOperand(arg(a, i))

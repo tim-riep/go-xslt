@@ -152,11 +152,20 @@ func integerArithFast(op string, a, b int64) (v Object, ok bool, err error) {
 // or a multiple of five whenever s > 0 — and the magnitudes are checked the
 // way decFromRat checks them.
 func intDivFast(a, b int64) (*Atomic, bool) {
+	m, s, ok := intDivRaw(a, b)
+	if !ok {
+		return nil, false
+	}
+	return newDecFast(m, s), true
+}
+
+// intDivRaw is intDivFast's quotient as a normalized mantissa and scale.
+func intDivRaw(a, b int64) (m int64, s int, ok bool) {
 	if a == 0 {
-		return newDecFast(0, 0), true
+		return 0, 0, true
 	}
 	if a == math.MinInt64 || b == math.MinInt64 {
-		return nil, false
+		return 0, 0, false
 	}
 	neg := (a < 0) != (b < 0)
 	an, bn := uint64(a), uint64(b)
@@ -176,20 +185,20 @@ func intDivFast(a, b int64) (*Atomic, bool) {
 		fives++
 	}
 	if d != 1 {
-		return nil, false // a repeating decimal
+		return 0, 0, false // a repeating decimal
 	}
-	s := max(twos, fives)
+	s = max(twos, fives)
 	if s > decMaxScale {
-		return nil, false
+		return 0, 0, false
 	}
 	q := uint64(pow10i64[s]) / (bn / g) // exact: the denominator divides 10^s
 	hi, lo := bits.Mul64(n, q)
 	if hi != 0 || lo > math.MaxInt64 {
-		return nil, false
+		return 0, 0, false
 	}
-	m := int64(lo)
+	m = int64(lo)
 	if neg {
 		m = -m
 	}
-	return newDecFast(m, s), true
+	return m, s, true
 }

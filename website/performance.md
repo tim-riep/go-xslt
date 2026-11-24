@@ -488,7 +488,165 @@ libxslt's time to where it is now:
   text between a stylesheet's tags is a few bytes; the call cost more than
   the byte loop).
 
-The sixth to fourteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
+- a fifteenth round, part A, on the evaluator, the value model and the
+  XSLT instructions, under the same harness and rule. A path of several
+  steps built the node set of every step as its own, and a step over
+  several context nodes a set per node copied into the step's; the sets of
+  the steps another step follows are now built in two arrays the
+  evaluation scratch lends in turns, a step's nodes are appended straight
+  into the one being built, and the last step's set is built where its
+  reader wants it — the scratch array the readers of a one-step path
+  already use (a fused built-in argument, fn:string's and a constructor's
+  bare argument, count and the set tests, a comparison's operand, a path
+  predicate, xsl:value-of, attribute value templates, tests and keys) — or
+  copied out once at its final size (typed functions over the record:
+  11 % fewer allocations from the first, 10 % more from the second;
+  string functions 23 %; the XPath 1.0 predicates 24 %; XSD 1.1
+  assertions 6 % and 3 %; deep recursion 8 %; group-by 7 %; 200 transforms
+  in one process 9 %). A decimal quotient went through big.Rat even where
+  it terminates, and fn:sum over decimals added every operand as a Rat
+  before compacting the result: div, idiv and mod divide the compact
+  mantissas (a Rat only for a repeating quotient), sum keeps a running
+  int64 while nothing overflows and avg divides it, every path falling
+  back to the Rat and checked against it pairwise (group-by with JSON
+  output: 40 % fewer allocations; number formatting 5 %). Muenchian
+  grouping, generate-id(.) = generate-id(key('k', x)[1]), built two id
+  strings per test only to compare them; the parser marks such a
+  comparison and it is answered from the nodes — an id is the tree root,
+  the document order and a namespace node's prefix, so two are equal
+  exactly when those are, "" only to another empty argument — with every
+  unusual case left to the functions (the Muenchian workload: 9 % fewer
+  instructions, 27 % fewer allocations). xsl:for-each-group's group-by
+  boxed, atomized and bucketed every item's key and scanned the bucket;
+  under the codepoint collation every string in a bucket is the same key
+  as every other, so a key that is one plain node finds its group by the
+  node's string value in a map of the string class alone, building an
+  atom only for a new group (group-by with JSON output: 58 % fewer
+  allocations; 200 transforms in one process 12 %). A for or quantified
+  expression made a binding per item and a context per loop; the argument
+  stack now counts the captures of every context sharing it, so the loop
+  rebinds one binding in place while no function item was made during the
+  body, and the per-item loops lend their scratch contexts from a pool
+  (typed functions: 4.5 % fewer allocations and 9 % fewer bytes; the JSON
+  round trip 1.5 % and 6.5 %). A plain node cast to a numeric or date/time
+  type, an xs:string argument given as a plain node or a plain string, an
+  arithmetic operand that is an atomic value and a map call's key skip the
+  intermediate atom (xsl:iterate with a decimal map: 15 % fewer
+  allocations; string functions 15 %; group-by with JSON output 20 %;
+  number formatting 12 %; deep recursion 9 %). An xsl:iterate iteration
+  keeps its scope frame for the next one under the capture-generation rule
+  a function call's frame already follows, and xsl:next-iteration travels
+  as a pointer holding the values of up to two parameters itself (the
+  decimal map: 7 % fewer allocations; the array: 24 %). And xsl:number's
+  walk over the preceding siblings was quadratic over a long sibling list
+  numbered node after node; the run remembers, per instruction and parent,
+  the last sibling it numbered and counts on from there whenever the match
+  is a function of the node alone (xsl:number with position()/last() over
+  2,000 records: 0.37 s to 0.08 s of CPU, 80 % fewer instructions). A map
+  called as a function, $m($k), allocated an argument slice, a table of
+  argument holes and an item slice around the map to count it, and a
+  literal predicate over a sequence, ($m($k), 0)[1], built a context per
+  item: the one argument of a map call is the key, the hole table exists
+  only for a partial application, the literal indexes the sequence, a
+  sequence constructor starts with room for its parts, and xsl:iterate's
+  loop reads the next-iteration sentinel by a type assertion where
+  errors.As had allocated its target per iteration (the decimal map: 31 %
+  fewer allocations; the array 16 %; typed functions 5 %). Over the whole
+  round, against the version before it: xsl:number with position()/last()
+  executes 80 % fewer instructions, group-by with JSON output 16 %,
+  xsl:iterate with a decimal map 14 %, the Muenchian grouping 9.5 %, number
+  formatting 7 %, typed functions 6.7 %, the string functions 5.7 %, 200
+  transforms in one process 5.5 %, xsl:iterate with an array 4.4 %, deep
+  recursion 1.5 %, regular expressions and the JSON round trip 1.1 %, and
+  the rest between 0 and 0.6 %; allocations fall by half on group-by with
+  JSON output, by 43 % on the decimal map, by a third on the string
+  functions, by 27 to 30 % on typed functions, the array, 200 transforms
+  in one process and Muenchian grouping, by a fifth on the XPath 1.0
+  predicates, number formatting and regular expressions, and by 17 % on
+  deep recursion. No workload executes more instructions than before beyond
+  the counter's spread (0.3 % tonight between two runs of one binary), none
+  allocates more, and every output is byte-identical. Tried and dropped:
+  copying a path's last step
+  set always (a 200,000-node set copied: 1.6 MB more on two workloads),
+  copying a single-node non-direct step's set into the lent array (160 KB
+  more on the JSON round trip), and keeping a last-step set beyond the
+  pool's bound as the scratch (a reader passing a large set on copied it:
+  0.9 MB more on the XPath 1.0 predicates).
+
+- a fifteenth round, part B, on the validator, the readers, the serializer
+  and the compiler (part A, in parallel, took the evaluator), under the same
+  harness and rule. The validator asked, for every attribute use of every
+  element, whether the use's own attribute was present by scanning every use
+  for its name, twice; the use's position answers. Its linear content-model
+  matcher compared a child's name with an element particle twice, once to
+  see whether the particle could start and once to consume the child; one
+  comparison does both. A simple type the compiled schema records knows
+  whether its facets constrain anything, whether the XSD 1.0 year-zero rule
+  has anything to look at for its primitive, and its whiteSpace mode as a
+  constant, so the four facet checks, the rule and a switch on the mode's
+  name are skipped where they decide nothing; the error location is stamped
+  by a wrapper instead of a deferred call per element, the open-content
+  chain is guarded by a list on the stack instead of a map per element, an
+  element's child model is looked up once instead of three times, and its
+  child elements and character data are found in one pass (XSD 1.0
+  validation of the 200,000-order document: 12.3 % fewer instructions, then
+  0.5 %; XSD 1.1: 4.3 %, then 0.5 % and 0.1 %). The parser scanned every
+  attribute value of every start tag for a tab, LF or CR to decide whether
+  its lazy whitespace pre-pass has to run, and the streaming reader scanned
+  them again to normalize; the tokenizer's fast path classifies every byte
+  of a value anyway, so a tab or line feed is now a byte the value needs a
+  look for, and only the rare value that needed one is scanned. The
+  tokenizer's white-space skip takes one table look per byte instead of a
+  four-way comparison (and is inlined at the start-tag sites), both
+  readers' open frames are filled in place instead of appended as a literal
+  copied from the stack, and the parser's pending text run is flushed only
+  when one is open (copying the whole document: 2.7 % fewer instructions;
+  XSD 1.0 validation 2.6 %; compiling the DocBook stylesheets 1.7 %; keys
+  1.5 %; template dispatch 1.4 %; streaming 1.2 %). Both readers read a
+  token from the tokenizer's own fields instead of a copy made for every
+  tag, and the streamed retry restores only its position (copying the whole
+  document: 1.2 %; XSD 1.0 validation 1 %); the ID normalization of an
+  ordinary attribute returns from an inlined test (0.6 % and 0.5 %); an
+  element or attribute name is read without the call between nsname and
+  readName (copying the whole document 0.9 %, XSD 1.0 validation 0.9 %,
+  streaming 0.9 %); and a name's bytes are read with one table look each instead of two
+  comparisons, the high bits gathered by an OR telling afterwards whether
+  the name was all ASCII (0.4 % on every workload that parses the
+  document). The streaming reader interned every element name
+  through a map; a 64-slot cache in front of it, indexed by the name's
+  length and first and last bytes, answers a recurring name with one
+  comparison (streaming the 200,000-record document: 2.8 % fewer
+  instructions), and its prefix-undeclaring check is made where the
+  declarations are found (0.3 %). The html output method looked every
+  attribute name up in the boolean-attribute map and, for an element with
+  URI-valued attributes, in that element's map; both are string switches
+  now (HTML output: 5.9 % fewer instructions), and the serializer decides
+  the output method and the normalization form once instead of comparing
+  their names for every element and value (copying the whole document:
+  0.5 %). The compiler's attribute-set and call-template reference checks
+  walk the stylesheet once instead of twice, with the error reported for
+  any stylesheet unchanged, and white-space-only text is judged by a table
+  (compiling the DocBook stylesheets: 0.8 % fewer instructions); the ASCII
+  rows of the name-character predicates the XPath lexer asks for every
+  character of a name are tables (1.1 %); an element's shadow attributes
+  and use-when are found in one pass over its attributes (0.7 %); and a
+  literal result element's ambient namespaces are gathered into a reused
+  list, with exclude-result-prefixes parsed once per declaring element
+  instead of once per literal result element (1.2 % fewer instructions,
+  2.1 % fewer allocations). Over the whole round, against the version
+  before it: XSD 1.0 validation executes 17 % fewer instructions, the HTML
+  output, streaming, compiling a stylesheet and XSD 1.1 validation 6 to 7 %
+  fewer, copying a document 5 % fewer and the key lookups 3 % fewer (the
+  cumulative per-candidate counts; the whole-round table was measured on the
+  tree combined with part A). No workload executes more instructions than before
+  beyond the counter's spread, none allocates more, and every output is
+  byte-identical. Tried and dropped: comparing an XSD name's local part
+  before its namespace (0.25 % more on XSD 1.0 validation: an equal-length
+  empty namespace costs no comparison call), and walking the parser's node
+  slabs by an index instead of reslicing them (0.5 % more copying the
+  document, confirmed against an A/A pair).
+
+The sixth to fifteenth rounds were measured on Linux (a 4-core x86-64 virtual machine)
 against the previous version rather than against libxslt, so the table
 above is unchanged; its XSLT 1.0 workloads moved by less than the noise.
 

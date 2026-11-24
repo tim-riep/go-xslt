@@ -164,6 +164,15 @@ func digitsApplicable(t xpath.AtomType) bool {
 	return t == xpath.XSdecimal || isIntegerLike(t)
 }
 
+// none reports whether checkIn can reject nothing: no facet of the set
+// constrains a value (whiteSpace is applied before it and is not one).
+func (f *facetSet) none() bool {
+	return len(f.patterns) == 0 && !f.hasEnum &&
+		!f.hasLength && !f.hasMinLength && !f.hasMaxLength &&
+		!f.hasMinIncl && !f.hasMaxIncl && !f.hasMinExcl && !f.hasMaxExcl &&
+		!f.hasTotalDigits && !f.hasFractionDigits && f.explicitTZ == ""
+}
+
 // check applies the atomic constraining facets to an already-normalized value of
 // primitive type prim.
 func (f *facetSet) check(v string, prim xpath.AtomType) error { return f.checkIn(v, prim, nil) }

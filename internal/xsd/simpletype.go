@@ -22,6 +22,11 @@ func (st *SimpleType) validate(raw string) error { return st.validateIn(raw, nil
 // are the only place that can be read from. Every other facet ignores it, and
 // a nil node simply falls back to the lexical comparison this always did.
 func (st *SimpleType) validateIn(raw string, at *xmltree.Node) error {
+	if st.cacheOK {
+		// The cached whiteSpace as a constant: applyWhiteSpace's switch on
+		// the mode's name compared strings for every value validated.
+		return st.checkIn(applyWhiteSpaceKind(st.wsKind, raw), at)
+	}
 	return st.checkIn(applyWhiteSpace(st.effectiveWhiteSpace(), raw), at)
 }
 
@@ -250,8 +255,10 @@ func (st *SimpleType) checkIn(v string, at *xmltree.Node) error {
 				}
 			}
 		}
-		if err := st.facets.checkIn(v, prim, at); err != nil {
-			return err
+		if !(st.cacheOK && st.noFacets) {
+			if err := st.facets.checkIn(v, prim, at); err != nil {
+				return err
+			}
 		}
 		if len(st.assertions) > 0 {
 			if err := evalSimpleAssertions(st.assertions, typedSimpleValue(v, prim)); err != nil {
@@ -333,6 +340,34 @@ func wsRank(w string) int {
 	default:
 		return 0
 	}
+}
+
+// The whiteSpace modes as constants (wsKindOf), for the cached type.
+const (
+	wsPreserve uint8 = iota
+	wsReplace
+	wsCollapse
+)
+
+func wsKindOf(mode string) uint8 {
+	switch mode {
+	case "replace":
+		return wsReplace
+	case "collapse":
+		return wsCollapse
+	}
+	return wsPreserve
+}
+
+// applyWhiteSpaceKind is applyWhiteSpace for a mode given as its constant.
+func applyWhiteSpaceKind(kind uint8, s string) string {
+	switch kind {
+	case wsReplace:
+		return applyWhiteSpace("replace", s)
+	case wsCollapse:
+		return collapseWhiteSpace(s)
+	}
+	return s
 }
 
 func applyWhiteSpace(mode, s string) string {
@@ -901,7 +936,8 @@ func (sch *Schema) cacheSimpleTypes() {
 				visit(m)
 			}
 			prim, ws := tt.resolvePrim(), tt.effectiveWhiteSpace()
-			tt.primCache, tt.wsCache, tt.cacheOK = prim, ws, true
+			tt.noFacets, tt.yearZero = tt.facets.none(), yearZeroPrim(prim)
+			tt.primCache, tt.wsCache, tt.wsKind, tt.cacheOK = prim, ws, wsKindOf(ws), true
 		case *ComplexType:
 			visit(tt.baseType)
 			if tt.simpleType != nil {

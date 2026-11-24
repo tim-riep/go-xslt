@@ -244,7 +244,7 @@ func hintBelow(el *xmltree.Node) bool {
 				return true
 			}
 		}
-		if hintBelow(c) {
+		if len(c.Children) > 0 && hintBelow(c) {
 			return true
 		}
 	}
@@ -640,8 +640,19 @@ func (s *Schema) validateElement(el *xmltree.Node) (err error) {
 // validateElementAgainst validates el against element declaration decl, honouring
 // xsi:type, xsi:nil, and the declaration's identity constraints (scopes carries
 // the key/unique tables in scope for keyref resolution).
-func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) (err error) {
-	defer stampLoc(&err, el)
+func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) error {
+	// The location is stamped on the way out by this wrapper, not by a
+	// deferred call in the body: a defer per element validated cost more
+	// than the call it arranged. A panic (cancellation, a limit) passes
+	// through both the same way, with no error to stamp.
+	err := s.validateElementAgainstIn(decl, el, scopes, extraFixed...)
+	if err != nil {
+		stampLoc(&err, el)
+	}
+	return err
+}
+
+func (s *Schema) validateElementAgainstIn(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) error {
 	typ := decl.typ
 	// The two xsi attributes this function reads are found in one pass over
 	// the element's attributes (each the first of its name, as el.Attr finds
@@ -848,7 +859,7 @@ func (s *Schema) validateAgainstType(typ Type, el *xmltree.Node, scopes map[xnam
 			return invalidf("cvc-type.3.1.2", "simple-typed element must not have child elements")
 		}
 		text := effectiveSimpleText(decl, el)
-		if err := s.yearZeroOK(t, text); err != nil {
+		if err := s.yearZeroOKSimple(t, text); err != nil {
 			return err
 		}
 		if err := t.validateIn(text, el); err != nil {
@@ -880,7 +891,7 @@ func effectiveSimpleText(decl *ElementDecl, el *xmltree.Node) string {
 
 func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
 	if s.assertAnnos == nil {
-		return s.validateComplexContent(ct, el, scopes, decl)
+		return s.validateComplexContent(ct, el, scopes, decl, nil)
 	}
 	// An annotation is read by assertTree alone, for the subtree of an
 	// element whose type has assertions, once that element's content is
@@ -891,11 +902,12 @@ func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[x
 	// million entries in it, rehashed on the way up and scanned by every
 	// collection). clear keeps the buckets, so the map settles at the size
 	// of the largest asserted subtree and allocates nothing further.
-	open := len(s.childModelOf(ct).asserts) > 0
+	cm := s.childModelOf(ct)
+	open := len(cm.asserts) > 0
 	if open {
 		s.assertOpen++
 	}
-	err := s.validateComplexContent(ct, el, scopes, decl)
+	err := s.validateComplexContent(ct, el, scopes, decl, cm)
 	if open {
 		s.assertOpen--
 	}
@@ -907,8 +919,10 @@ func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[x
 }
 
 // validateComplexContent is validateComplex proper; see there for the
-// assertion-annotation bookkeeping around it.
-func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
+// assertion-annotation bookkeeping around it. cm is ct's child model when
+// the caller has looked it up already (nil otherwise): the model is memoised
+// per type, and this element's validation looked it up three times.
+func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl, cm *childModel) error {
 	if ct.abstract {
 		return invalidf("cvc-type.2", "type is abstract and cannot be used directly")
 	}
@@ -917,21 +931,23 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			return ret
 		}
 	}
-	kids := childElements(el)
+	// The element children and whether any text child is more than white
+	// space, both in one pass (contentElementOnly asked them separately).
+	kids, nonWS := childElementsAndText(el)
 	switch ct.kind {
 	case contentEmpty:
 		// An EMPTY content type opened by appliesToEmpty admits wildcard
 		// children (s3_4_1v01, open009-013); character data stays forbidden.
 		if s.effectiveOpenContent(ct) != nil {
-			if hasNonWSText(el) {
+			if nonWS {
 				return invalidf("cvc-complex-type.2.1", "open empty content admits no character data")
 			}
-			if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+			if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 				return s.afterModelError(err, ct, el, kids, scopes)
 			}
 			break
 		}
-		if len(kids) > 0 || hasNonWSText(el) {
+		if len(kids) > 0 || nonWS {
 			return invalidf("cvc-complex-type.2.1", "element must be empty")
 		}
 		// 1.1 cvc-complex-type 2.1 forbids EVERY character information item in
@@ -945,7 +961,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 		}
 		if ct.simpleType != nil {
 			text := effectiveSimpleText(decl, el)
-			if err := s.yearZeroOK(ct.simpleType, text); err != nil {
+			if err := s.yearZeroOKSimple(ct.simpleType, text); err != nil {
 				return err
 			}
 			if err := ct.simpleType.validateIn(text, el); err != nil {
@@ -957,7 +973,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			}
 		}
 	case contentElementOnly:
-		if hasNonWSText(el) {
+		if nonWS {
 			return invalidf("cvc-complex-type.2.3", "element-only content must not contain character data")
 		}
 		// An empty particle IS the empty {content type} per the mapping rules —
@@ -967,15 +983,15 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			s.effectiveOpenContent(ct) == nil && isEmptyParticle(s.effectiveParticle(ct)) {
 			return invalidf("cvc-complex-type.2.1", "empty content admits no character data at all")
 		}
-		if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+		if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 			return s.afterModelError(err, ct, el, kids, scopes)
 		}
 	case contentMixed:
-		if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+		if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 			return s.afterModelError(err, ct, el, kids, scopes)
 		}
 	}
-	return s.checkAsserts(ct, el)
+	return s.checkAssertsIn(ct, el, cm)
 }
 
 // skipWildcardParseExcuses reports whether some parse of the content model
@@ -1028,6 +1044,25 @@ func (s *Schema) yearZeroOK(t Type, raw string) error {
 	}
 	st, ok := t.(*SimpleType)
 	if !ok || st == nil {
+		return nil
+	}
+	return s.yearZeroOKSimple(st, raw)
+}
+
+// yearZeroPrim reports whether yearZeroOK has anything to check for a value
+// of primitive prim.
+func yearZeroPrim(prim xpath.AtomType) bool {
+	switch prim {
+	case xpath.XSdate, xpath.XSdateTime, xpath.XSgYear, xpath.XSgYearMonth, xpath.XSfloat, xpath.XSdouble:
+		return true
+	}
+	return false
+}
+
+// yearZeroOKSimple is yearZeroOK for a simple type held as such; a type the
+// compile pass cached answers without resolving its primitive.
+func (s *Schema) yearZeroOKSimple(st *SimpleType, raw string) error {
+	if s.version != Version10 || st.cacheOK && !st.yearZero {
 		return nil
 	}
 	switch st.resolvePrim() {
@@ -1253,7 +1288,15 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 }
 
 func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xmltree.Node, scopes map[xname]*keyTable) error {
-	cm := s.childModelOf(ct)
+	return s.validateChildrenIn(ct, el, kids, scopes, nil)
+}
+
+// validateChildrenIn is validateChildren given ct's child model when the
+// caller holds it (nil: looked up here).
+func (s *Schema) validateChildrenIn(ct *ComplexType, el *xmltree.Node, kids []*xmltree.Node, scopes map[xname]*keyTable, cm *childModel) error {
+	if cm == nil {
+		cm = s.childModelOf(ct)
+	}
 	p, oc := cm.p, cm.oc
 	matched, ok := s.contentMatchesOpen(p, kids, oc)
 	if !ok {
@@ -1825,6 +1868,35 @@ func childElements(el *xmltree.Node) []*xmltree.Node {
 		}
 	}
 	return out
+}
+
+// childElementsAndText is childElements(el) together with hasNonWSText(el),
+// in one pass over the children.
+func childElementsAndText(el *xmltree.Node) (kids []*xmltree.Node, nonWS bool) {
+	n := 0
+	for _, ch := range el.Children {
+		switch ch.Kind {
+		case xmltree.KindElement:
+			n++
+		case xmltree.KindText:
+			if !nonWS && strings.TrimSpace(ch.Value) != "" {
+				nonWS = true
+			}
+		}
+	}
+	switch n {
+	case 0:
+		return nil, nonWS
+	case len(el.Children):
+		return el.Children[:n:n], nonWS
+	}
+	out := make([]*xmltree.Node, 0, n)
+	for _, ch := range el.Children {
+		if ch.Kind == xmltree.KindElement {
+			out = append(out, ch)
+		}
+	}
+	return out, nonWS
 }
 
 func hasChildElements(el *xmltree.Node) bool {

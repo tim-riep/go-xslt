@@ -65,16 +65,20 @@ func (*itrBreakInstr) instr() {}
 // values for the iteration parameters: vals[i] is the value of the
 // with-param named keys[i] (a clark name; keys is the instruction's own list,
 // shared by every iteration). A map per iteration was one allocation more,
-// hashed every name on both sides and made the value uncomparable.
+// hashed every name on both sides and made the value uncomparable. It
+// travels as a pointer, which boxes into the error without an allocation,
+// and holds the values of up to two parameters itself (small), so a
+// next-iteration is one allocation.
 type itrNext struct {
-	keys []string
-	vals []xpath.Object
+	keys  []string
+	vals  []xpath.Object
+	small [2]xpath.Object // vals' array for up to two parameters
 }
 
-func (itrNext) Error() string { return "xsl:next-iteration" }
+func (*itrNext) Error() string { return "xsl:next-iteration" }
 
 // value returns the new value supplied for the parameter named key.
-func (nx itrNext) value(key string) (xpath.Object, bool) {
+func (nx *itrNext) value(key string) (xpath.Object, bool) {
 	for i, k := range nx.keys {
 		if k == key {
 			return nx.vals[i], true
@@ -269,17 +273,31 @@ func (n *itrIterate) exec(eng *engine, r rt, out *xmltree.Node) error {
 
 	for i, node := range nodes {
 		ir := rt{node: node, pos: i + 1, size: size}
+		// The iteration's frame (the parameters and the body's locals) is
+		// kept for the next iteration when no function item can be holding
+		// it, as a function call keeps its frame (recycleFrame).
+		gen := eng.captureGen
 		eng.pushScope()
 		for _, p := range n.params {
 			eng.bindVar(p.name, cur[clark(p.name.Space, p.name.Local)])
 		}
 		err := eng.execSequence(n.body, ir, out)
+		frame := eng.scopes[len(eng.scopes)-1]
 		eng.popScope()
+		eng.recycleFrame(frame, gen)
 		if err == nil {
 			continue
 		}
-		var nx itrNext
-		if errors.As(err, &nx) {
+		// (The sentinel is the error itself; errors.As, whose target
+		// escapes to the heap, only for a wrapped one.)
+		nx, isNext := err.(*itrNext)
+		if !isNext {
+			var wrapped *itrNext
+			if errors.As(err, &wrapped) {
+				nx, isNext = wrapped, true
+			}
+		}
+		if isNext {
 			// Carry forward updated params; any param not mentioned keeps its
 			// current value.
 			for _, p := range n.params {
@@ -331,15 +349,20 @@ func (n *itrIterate) exec(eng *engine, r rt, out *xmltree.Node) error {
 }
 
 func (n *itrNextInstr) exec(eng *engine, r rt, out *xmltree.Node) error {
-	vals := make([]xpath.Object, len(n.params))
+	nx := &itrNext{keys: n.keys}
+	if len(n.params) <= len(nx.small) {
+		nx.vals = nx.small[:len(n.params)]
+	} else {
+		nx.vals = make([]xpath.Object, len(n.params))
+	}
 	for i, p := range n.params {
 		v, err := eng.evalVarDef(p, r)
 		if err != nil {
 			return err
 		}
-		vals[i] = v
+		nx.vals[i] = v
 	}
-	return itrNext{keys: n.keys, vals: vals}
+	return nx
 }
 
 func (n *itrBreakInstr) exec(eng *engine, r rt, out *xmltree.Node) error {

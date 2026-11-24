@@ -13,6 +13,11 @@ import (
 
 // evalCompareExpr evaluates a CompareExpr (value/general/node comparison).
 func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
+	if n.genID {
+		if v, ok := generateIDComparison(n, ctx); ok {
+			return v, nil
+		}
+	}
 	if n.Kind == compGeneral {
 		// "$c = (32 to 55295)": a general comparison against a range is a
 		// bounds test, not a walk over every integer the range denotes —
@@ -44,6 +49,13 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 					keepScratch(ctx, l.nodes)
 					l.isNodes = true
 				}
+			} else if scratchPath(p) != nil {
+				// A path of several steps: its last step's set in the
+				// scratch array (evalPathInto); lScratch stands for the
+				// evaluation having been done.
+				l.nodes, l.v, _, err = evalPathCountedInto(p, ctx, &ctx.ArgStack.nodes)
+				l.isNodes = l.v == nil
+				lScratch = true
 			}
 		}
 		if !lScratch {
@@ -65,6 +77,10 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 					keepScratch(ctx, r.nodes)
 					r.isNodes = true
 				}
+			} else if scratchPath(p) != nil {
+				r.nodes, r.v, _, err = evalPathCountedInto(p, ctx, &ctx.ArgStack.nodes)
+				r.isNodes = r.v == nil
+				rScratch = true
 			}
 		}
 		if !rScratch {
@@ -1017,4 +1033,95 @@ func bc10ItemKind(it Item) string {
 		}
 	}
 	return "string"
+}
+
+// generateIDComparison answers generate-id(A) = generate-id(B) (and !=, eq,
+// ne) without the two id strings: an id is built from a node's tree root,
+// document order and, for a namespace node, its prefix, so two ids are
+// equal exactly when those are (sameGenerateID), and the id of an empty
+// argument, "", equals only another empty one. ok is false, and the
+// comparison then runs as written, whenever anything is out of the
+// ordinary — a default collation, an argument that fails to evaluate or
+// is not a node, several nodes outside 1.0 compatibility mode, no context
+// node — so every error and every other case stays the functions' own.
+// Muenchian grouping, generate-id(.) = generate-id(key('k', x)[1]), is
+// written this way in nearly every XSLT 1.0 stylesheet that groups.
+func generateIDComparison(n *CompareExpr, ctx *Context) (Object, bool) {
+	if ctx == nil || ctx.DefaultCollation != nil {
+		return nil, false
+	}
+	a, aEmpty, ok := generateIDNode(n.L.(*FuncCall), ctx)
+	if !ok {
+		return nil, false
+	}
+	b, bEmpty, ok := generateIDNode(n.R.(*FuncCall), ctx)
+	if !ok {
+		return nil, false
+	}
+	var eq bool
+	switch {
+	case aEmpty || bEmpty:
+		eq = aEmpty && bEmpty
+	default:
+		eq = sameGenerateID(a, b)
+	}
+	if n.Op == "!=" || n.Op == "ne" {
+		return !eq, true
+	}
+	return eq, true
+}
+
+// generateIDNode is the node a generate-id call's argument denotes (empty
+// for the empty sequence), as fnGenerateID reads it; ok is false where that
+// function would do anything else.
+func generateIDNode(fc *FuncCall, ctx *Context) (n *xmltree.Node, empty, ok bool) {
+	if len(fc.Args) == 0 {
+		if ctx.Node == nil {
+			return nil, false, false
+		}
+		return ctx.Node, false, true
+	}
+	ns, v, isPath, err := evalNodes(fc.Args[0], ctx)
+	if !isPath {
+		v, err = evalExpr(fc.Args[0], ctx)
+	}
+	if err != nil {
+		return nil, false, false
+	}
+	if isPath && v == nil {
+		if len(ns) == 0 {
+			return nil, true, true
+		}
+		if len(ns) > 1 && !ctx.BC10 {
+			return nil, false, false
+		}
+		return ns[0], false, true
+	}
+	count := itemCount(v)
+	if count == 0 {
+		return nil, true, true
+	}
+	nd, isNode := itemAt(v, 0).(*xmltree.Node)
+	if !isNode || (count > 1 && !ctx.BC10) {
+		return nil, false, false
+	}
+	return nd, false, true
+}
+
+// sameGenerateID reports whether two nodes have the same generate-id: the
+// same node, or (a constructed tree numbers every node 0) the same order,
+// root and namespace-node prefix. The order is compared first: it differs
+// for any two nodes of a parsed tree, and the root is a walk to the top.
+func sameGenerateID(a, b *xmltree.Node) bool {
+	if a == b {
+		return true
+	}
+	if a.Order() != b.Order() || a.Root() != b.Root() {
+		return false
+	}
+	aNS, bNS := a.Kind == xmltree.KindNamespace, b.Kind == xmltree.KindNamespace
+	if aNS != bNS {
+		return false
+	}
+	return !aNS || a.Name.Local == b.Name.Local
 }

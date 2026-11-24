@@ -58,6 +58,14 @@ type tokenizer struct {
 	buf []byte
 	// nameASCII: the name the last successful readName took is all ASCII.
 	nameASCII bool
+	// check: the last scanText met a byte its fast path does not clear (a
+	// non-ASCII or control byte, in an attribute value a tab or line feed
+	// too) and ran the character check. attrWS: an attribute value of the
+	// last start tag holds a tab, LF or CR — what normalizeAttrWhitespace
+	// would have rewritten in the source. A value that stayed raw and
+	// needed no check cannot hold one, so only the others are looked at.
+	check  bool
+	attrWS bool
 
 	// The streaming reader runs this tokenizer over a WINDOW of its input
 	// (stream_tok.go): lineBase is the number of newlines before s, so an
@@ -144,16 +152,20 @@ func (t *tokenizer) space() {
 	if t.err != nil {
 		return
 	}
-	for t.pos < len(t.s) {
-		switch t.s[t.pos] {
-		case ' ', '\r', '\n', '\t':
-			t.pos++
-		default:
-			return
-		}
+	// One table look per byte: the first byte is usually not white space
+	// (a start tag's '=' and quote follow their names directly), and the
+	// four-way comparison cost more than the look.
+	for t.pos < len(t.s) && spaceByte[t.s[t.pos]] {
+		t.pos++
+	}
+	if t.pos < len(t.s) {
+		return
 	}
 	t.err = t.eofErr
 }
+
+// spaceByte marks the XML white space bytes.
+var spaceByte = [256]bool{' ': true, '\r': true, '\n': true, '\t': true}
 
 // next reads the next token. At the end of the input it returns io.EOF.
 func (t *tokenizer) next() (tokKind, error) {
@@ -286,6 +298,7 @@ func (t *tokenizer) next() (tokKind, error) {
 		return 0, t.err
 	}
 	t.attrs = t.attrs[:0]
+	t.attrWS = false
 	empty := false
 	for {
 		t.space()
@@ -342,6 +355,9 @@ func (t *tokenizer) next() (tokKind, error) {
 		v := t.str
 		if !t.raw {
 			v = string(t.data)
+		}
+		if (t.check || !t.raw) && hasTabOrNewline(v) {
+			t.attrWS = true
 		}
 		t.attrs = append(t.attrs, xml.Attr{Name: an, Value: v})
 	}
@@ -502,6 +518,22 @@ func init() {
 	for _, c := range "<&'" {
 		sqClass[c] = 1
 	}
+	// A tab or line feed in an attribute value is rare and matters to the
+	// parser (attrWS): the fast path copies it but notes that the value
+	// needs a look, which the character check then passes.
+	for _, tab := range []*[256]uint8{&dqClass, &sqClass} {
+		tab['\t'], tab['\n'] = 2, 2
+	}
+}
+
+// hasTabOrNewline reports whether v holds a tab, LF or CR.
+func hasTabOrNewline(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c == '\t' || c == '\n' || c == '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 // scanText reads character data: text up to the next '<' (quote < 0, !cdata),
@@ -689,7 +721,7 @@ Input:
 		}
 		b0, b1 = b1, b
 	}
-	t.raw = raw
+	t.raw, t.check = raw, check
 	if raw {
 		t.str = s[start : end-trunc]
 		t.buf = buf
@@ -762,8 +794,20 @@ func (t *tokenizer) checkRune(r rune, n int) bool {
 // nsname reads a name with at most one colon, which splits it into prefix
 // (Space, as RawToken reports it) and local part.
 func (t *tokenizer) nsname() (xml.Name, bool) {
-	s, ok := t.nameStr()
-	if !ok {
+	// nameStr's body, not a call to it: every element and attribute name
+	// comes through here, and the call was a tenth of the name's cost.
+	start := t.pos
+	if !t.readName() {
+		return xml.Name{}, false
+	}
+	s := t.s[start:t.pos]
+	if t.nameASCII {
+		if c := s[0]; c == '-' || c == '.' || '0' <= c && c <= '9' {
+			t.err = t.syntaxError("invalid XML name: " + s)
+			return xml.Name{}, false
+		}
+	} else if !isXMLName(s) {
+		t.err = t.syntaxError("invalid XML name: " + s)
 		return xml.Name{}, false
 	}
 	i := strings.IndexByte(s, ':')
@@ -816,25 +860,37 @@ func (t *tokenizer) readName() bool {
 		t.ungetc()
 		return false
 	}
-	ascii := b < utf8.RuneSelf
-	for p := t.pos; p < len(t.s); p++ {
-		if c := t.s[p]; c >= utf8.RuneSelf {
-			ascii = false
-		} else if !nameByte[c] {
-			t.pos = p
-			t.nameASCII = ascii
-			return true
+	// One table look per byte, over all 256 values (a non-ASCII byte is
+	// taken like a name byte), and the high bits gathered by an OR instead
+	// of a second comparison per byte; isXMLName judges the non-ASCII ones.
+	hi := b
+	p := t.pos
+	for ; p < len(t.s); p++ {
+		c := t.s[p]
+		if !nameByteAny[c] {
+			break
 		}
+		hi |= c
 	}
-	t.runOut()
-	return false
+	if p == len(t.s) {
+		t.runOut()
+		return false
+	}
+	t.pos = p
+	t.nameASCII = hi < utf8.RuneSelf
+	return true
 }
 
-// nameByte holds the ASCII bytes a name may contain.
-var nameByte = func() (tab [utf8.RuneSelf]bool) {
-	for c := 0; c < utf8.RuneSelf; c++ {
-		tab[c] = 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' ||
+// nameByte holds the ASCII bytes a name may contain; nameByteAny is the
+// same over all byte values, every non-ASCII byte included.
+var nameByte, nameByteAny = func() (tab [utf8.RuneSelf]bool, any [256]bool) {
+	for c := 0; c < 256; c++ {
+		ok := 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' ||
 			c == '_' || c == ':' || c == '.' || c == '-'
+		if c < utf8.RuneSelf {
+			tab[c] = ok
+		}
+		any[c] = ok || c >= utf8.RuneSelf
 	}
 	return
 }()

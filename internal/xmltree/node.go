@@ -113,7 +113,23 @@ const (
 // run of spaces collapsed to one. It applies to xml:id, which XDM 3.1 §6.3.3
 // gives xml:id processing (fn-doc-37), and to attributes the DTD declares ID,
 // IDREF or IDREFS.
+//
+// The common case — an attribute that is no ID — returns from this small
+// function, inlined where every attribute of a document passes; the
+// normalization itself is normalizeIDValue.
 func normalizeIDAttr(an *Node) {
+	// Without an extension the attribute has no DTD kind (IDKind reads it
+	// from there); the name test is by length alone, to stay within the
+	// inlining budget — normalizeIDValue completes both.
+	if an.extPtr == nil && len(an.Name.Local) != len("id") {
+		return
+	}
+	normalizeIDValue(an)
+}
+
+// normalizeIDValue is normalizeIDAttr for an attribute with an extension or
+// a two-letter name: the ID-kind and xml:id tests are completed here.
+func normalizeIDValue(an *Node) {
 	if an.IDKind() == IDKindNone && (an.Name.Local != "id" || an.Name.Space != xmlNS) {
 		return
 	}

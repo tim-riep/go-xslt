@@ -487,14 +487,51 @@ func (n *num2Number) countSingle(m *num2matcher, node *xmltree.Node) (int64, err
 
 // siblingIndex returns 1 + the number of preceding siblings of node that match
 // @count relative to target.
+//
+// The walk over the preceding siblings is quadratic over a long sibling
+// list numbered one node after the other (every order of a document, every
+// item's order ancestor under level="multiple"), so the run remembers, per
+// instruction and parent, the last sibling it numbered and its index
+// (numSibCache), and counts on from the sibling after it when the next node
+// follows it — whenever the match is a function of the node alone: no
+// @count (the numbered node's kind and name, part of the entry), or a
+// @count that reads nothing of the dynamic context (countStatic). The
+// entry's sibling must still be the child at its position (a tree being
+// built only appends), else the walk starts over.
 func (n *num2Number) siblingIndex(m *num2matcher, node, target *xmltree.Node) (int64, error) {
 	if node.Parent == nil || node.Kind == xmltree.KindAttribute || node.Kind == xmltree.KindNamespace {
 		// An attribute or namespace node is not among its parent's children:
 		// its preceding-sibling axis is empty, so it is number 1 (§12.2).
 		return 1, nil
 	}
+	ch := node.Parent.Children
+	var e *numSibEntry
+	if n.count == nil || m.countStatic {
+		e = m.eng.numSibEntry(n, node.Parent, target)
+		if e.sib != nil && e.pos < len(ch) && ch[e.pos] == e.sib {
+			if node == e.sib {
+				return e.idx, nil // the same node again (every item's order ancestor)
+			}
+			idx := e.idx
+			for i := e.pos + 1; i < len(ch); i++ {
+				sib := ch[i]
+				ok, err := n.matchesCount(m, sib, target)
+				if err != nil {
+					return 0, err
+				}
+				if ok {
+					idx++
+				}
+				if sib == node {
+					e.sib, e.pos, e.idx = node, i, idx
+					return idx, nil
+				}
+			}
+			// node precedes the remembered sibling: counted from the start.
+		}
+	}
 	var idx int64
-	for _, sib := range node.Parent.Children {
+	for i, sib := range ch {
 		ok, err := n.matchesCount(m, sib, target)
 		if err != nil {
 			return 0, err
@@ -503,10 +540,65 @@ func (n *num2Number) siblingIndex(m *num2matcher, node, target *xmltree.Node) (i
 			idx++
 		}
 		if sib == node {
+			if e != nil {
+				e.sib, e.pos, e.idx = node, i, idx
+			}
 			return idx, nil
 		}
 	}
 	return idx, nil
+}
+
+// numSibEntry is one remembered sibling index (siblingIndex): the last
+// sibling numbered under parent by instruction n — for an instruction with
+// no @count, among the nodes of the numbered node's kind and name — its
+// position among the parent's children and its index.
+type numSibEntry struct {
+	n      *num2Number
+	parent *xmltree.Node
+	kind   xmltree.Kind
+	name   xmltree.Name
+	sib    *xmltree.Node
+	pos    int
+	idx    int64
+}
+
+// numSibCache holds a few entries (level="multiple" numbers a node and its
+// ancestors in turn, one parent each), replaced round-robin.
+type numSibCache struct {
+	ents [4]numSibEntry
+	next int
+}
+
+const numSibKey = "number.siblings" // the cache's slot in engine.scratch
+
+// numSibEntry returns the cache entry for n, parent and target's kind and
+// name (read only when n has no @count): the one remembered, else a free
+// or the oldest slot, cleared.
+func (eng *engine) numSibEntry(n *num2Number, parent, target *xmltree.Node) *numSibEntry {
+	if eng.scratch == nil {
+		eng.scratch = map[string]any{}
+	}
+	c, ok := eng.scratch[numSibKey].(*numSibCache)
+	if !ok {
+		c = new(numSibCache)
+		eng.scratch[numSibKey] = c
+	}
+	var kind xmltree.Kind
+	var name xmltree.Name
+	if n.count == nil {
+		kind, name = target.Kind, target.Name
+	}
+	for i := range c.ents {
+		e := &c.ents[i]
+		if e.n == n && e.parent == parent && e.kind == kind && e.name == name {
+			return e
+		}
+	}
+	e := &c.ents[c.next]
+	c.next = (c.next + 1) % len(c.ents)
+	*e = numSibEntry{n: n, parent: parent, kind: kind, name: name}
+	return e
 }
 
 // countMultiple builds the ancestor-or-self chain (root-first) of nodes matching
