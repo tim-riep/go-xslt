@@ -330,7 +330,7 @@ func tcExtractCode(msg string) string {
 // than a real dynamic error.
 func isControlSignal(err error) bool {
 	switch err.(type) {
-	case itrBreak, *itrBreak, itrNext, *itrNext:
+	case itrBreak, *itrBreak, *itrNext:
 		return true
 	}
 	return false

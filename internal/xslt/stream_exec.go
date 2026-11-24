@@ -1709,7 +1709,7 @@ func (s *strbIterState) step(eng *engine, r rt, out *xmltree.Node) (bool, error)
 	if err == nil {
 		return false, nil
 	}
-	var nx itrNext
+	var nx *itrNext
 	if errors.As(err, &nx) {
 		for _, p := range s.it.params {
 			key := clark(p.name.Space, p.name.Local)

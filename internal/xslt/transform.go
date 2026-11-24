@@ -2945,11 +2945,11 @@ type errSite struct {
 
 // sameErr compares two errors by identity without panicking on an
 // uncomparable dynamic type. Two errors of different dynamic types are never
-// equal, and two of one uncomparable type (itrNext, which carries slices)
-// cannot be compared, so both answers are given without the comparison:
-// comparing them used to raise and recover a panic for every
-// xsl:next-iteration. The deferred recovery stays for a comparable type
-// holding an uncomparable value in an interface field.
+// equal, and two of one uncomparable type cannot be compared, so both
+// answers are given without the comparison: comparing them used to raise and
+// recover a panic for every xsl:next-iteration (then a struct of slices; now
+// a pointer, compared as one). The deferred recovery stays for a comparable
+// type holding an uncomparable value in an interface field.
 func sameErr(a, b error) bool {
 	if a == nil || b == nil {
 		return false
