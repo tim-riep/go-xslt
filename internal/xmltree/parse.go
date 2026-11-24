@@ -1210,17 +1210,31 @@ func (p *linePos) at(off int) (int, int) {
 	if off > len(p.src) {
 		off = len(p.src)
 	}
-	if p.scanned < off {
-		// One count of the newlines in the span and one search for the last
-		// of them, instead of one search per line: the lines of a
-		// pretty-printed document are short, so the per-call cost of the
-		// search dominated.
-		span := p.src[p.scanned:off]
-		if n := strings.Count(span, "\n"); n > 0 {
-			p.line += n
-			p.lineStart = p.scanned + strings.LastIndexByte(span, '\n') + 1
+	for p.scanned < off {
+		rest := p.src[p.scanned:off]
+		if len(rest) <= 16 {
+			// A short span (the indentation between two tags of a
+			// pretty-printed document, mostly) is read by a byte loop:
+			// a search call per line cost more than the bytes it looked
+			// at. A long span keeps the library search, which looks at
+			// several bytes at a time.
+			for i := 0; i < len(rest); i++ {
+				if rest[i] == '\n' {
+					p.line++
+					p.lineStart = p.scanned + i + 1
+				}
+			}
+			p.scanned = off
+			break
 		}
-		p.scanned = off
+		i := strings.IndexByte(rest, '\n')
+		if i < 0 {
+			p.scanned = off
+			break
+		}
+		p.scanned += i + 1
+		p.line++
+		p.lineStart = p.scanned
 	}
 	return p.line, off - p.lineStart + 1
 }
