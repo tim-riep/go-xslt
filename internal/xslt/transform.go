@@ -1584,6 +1584,10 @@ type engine struct {
 	// evaluated, and the step itself evaluates nothing, so one array serves
 	// them all.
 	pathBuf xpath.NodeSet
+	// keyChunk is the pool of one-slot entry lists keyAppend hands out while
+	// a key index is built. (The engine is 1024 bytes, the end of its size
+	// class: a field added here costs 128 bytes per run.)
+	keyChunk []*xmltree.Node
 	// selBufs holds spare node lists for staticSelect, taken and given back
 	// around one xsl:apply-templates (see execApplyTemplates).
 	selBufs []xpath.NodeSet
@@ -5600,6 +5604,40 @@ func (eng *engine) evalKeyUse(kd *KeyDef, r rt) (xpath.Object, error) {
 	return fragAsSequence(frag), nil
 }
 
+// keyAppend adds node to a key index entry of an index that has entries
+// keys already. Once the index has keyChunkFrom entries, a new entry is a
+// one-slot list carved from a shared chunk (eng.keyChunk, keyChunkSlots
+// pointers), capacity one: the first node of each key — most keys of a
+// large index have one or two — then costs no allocation of its own, and a
+// second node reallocates the list exactly as it would from a one-slot list
+// of its own. The first keyChunkFrom entries are allocated singly, so a
+// small index (a short document, transformed many times) allocates exactly
+// what it did; a large one allocates at most one chunk's tail more. A chunk
+// stays at 512 bytes: a larger object with pointers carries an allocation
+// header and lands in the next size class, which cost 1,280 bytes per 8 KB
+// chunk. The chunk holds only pointers the index holds anyway. An entry
+// handed out by key() is still a COPY (callFunc): nothing here changes that.
+func (eng *engine) keyAppend(list []*xmltree.Node, node *xmltree.Node, entries int) []*xmltree.Node {
+	if list != nil {
+		return append(list, node)
+	}
+	if entries < keyChunkFrom {
+		return []*xmltree.Node{node}
+	}
+	if len(eng.keyChunk) == 0 {
+		eng.keyChunk = make([]*xmltree.Node, keyChunkSlots)
+	}
+	list = eng.keyChunk[:1:1]
+	eng.keyChunk = eng.keyChunk[1:]
+	list[0] = node
+	return list
+}
+
+const (
+	keyChunkFrom  = 1024 // entries allocated singly before chunks are used
+	keyChunkSlots = 64   // pointers per chunk (512 bytes)
+)
+
 // keyIndexOn lazily builds (and caches) the index for an xsl:key over the tree
 // rooted at root (the source document or a temporary tree). A circular key
 // definition (the key's match/use referencing itself) is XTDE0640.
@@ -5711,7 +5749,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 				// compound tuple key (key-096/097), not a multi-value key —
 				// the opposite of the composite="no" default just below.
 				k := canonKeyString(xpath.CompositeKeyString(xpath.Items(val)), kd.collURI)
-				idx[k] = append(idx[k], node)
+				idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				return
 			}
 			if !isNodes {
@@ -5720,7 +5758,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 			if isNodes {
 				for _, u := range useNodes {
 					k := canonKeyString(keyNodeString(u), kd.collURI)
-					idx[k] = append(idx[k], node)
+					idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				}
 			} else {
 				// A non-node (typed atomic) use value: index the node under
@@ -5735,7 +5773,7 @@ func (eng *engine) keyIndexOn(name string, root *xmltree.Node) (map[string][]*xm
 				// keys so a case-insensitive lookup finds them (collations-0105).
 				for _, it := range xpath.Items(val) {
 					k := canonKeyString(xpath.KeyString(it), kd.collURI)
-					idx[k] = append(idx[k], node)
+					idx[k] = eng.keyAppend(idx[k], node, len(idx))
 				}
 			}
 		}
