@@ -107,8 +107,14 @@ type StreamReader struct {
 	elemOnly     map[string]bool
 
 	// nameIntern dedupes element Local/Prefix strings across the stream, the
-	// same reasoning as parseRaw's identical table in parse.go.
+	// same reasoning as parseRaw's identical table in parse.go. nameCache
+	// fronts it (internName): a name is looked for at a slot computed from
+	// its length and first and last bytes and compared with the interned
+	// string there, so a document's few recurring names cost no hashing.
+	// The slots hold interned strings only — a window substring kept here
+	// would pin its window.
 	nameIntern map[string]string
+	nameCache  [64]string
 	// wsRuns shares the whitespace-only text runs (the indentation between
 	// elements, most of a pretty-printed document's text nodes), as
 	// parseRaw's internText does, so each costs a node and not also a copy
@@ -469,8 +475,8 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 	// distinct name, copied out of the tokenizer's window (see
 	// streamTokenizer), where the element and rawNames would otherwise keep
 	// the window alive.
-	t.Name.Local = internCopy(s.nameIntern, t.Name.Local)
-	t.Name.Space = internCopy(s.nameIntern, t.Name.Space)
+	t.Name.Local = s.internName(t.Name.Local)
+	t.Name.Space = s.internName(t.Name.Space)
 	// Lazy-clone, same reasoning as the buffered parser's identical gate in
 	// parse.go: most elements declare no namespace of their own, so reuse the
 	// parent's frame reference until a decl actually forces a copy.
@@ -509,7 +515,7 @@ func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
 		if local == "" {
 			def = uri
 		}
-		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: internCopy(s.nameIntern, local)}, Value: uri})
+		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: s.internName(local)}, Value: uri})
 	}
 	// The element and its attribute nodes are one allocation: an attribute
 	// keeps its element alive through Parent anyway, so nothing is retained
@@ -796,6 +802,20 @@ func (s *StreamReader) textString(t string) string {
 // internCopy is intern (parse.go) for strings cut from a tokenizer window:
 // the kept string is a copy, so the table never holds a window. The empty
 // string (most elements' namespace prefix) holds nothing and is not looked up.
+// internName is internCopy over nameIntern, through nameCache (see there).
+func (s *StreamReader) internName(v string) string {
+	if v == "" {
+		return ""
+	}
+	k := (len(v)*31 + int(v[0])*7 + int(v[len(v)-1])) & (len(s.nameCache) - 1)
+	if c := s.nameCache[k]; c == v {
+		return c
+	}
+	v = internCopy(s.nameIntern, v)
+	s.nameCache[k] = v
+	return v
+}
+
 func internCopy(m map[string]string, s string) string {
 	if s == "" {
 		return ""
