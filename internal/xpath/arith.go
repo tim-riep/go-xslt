@@ -28,8 +28,11 @@ func unaryArith(ctx *Context, o Object, negate bool) (Object, error) {
 		return a, nil
 	}
 	switch {
-	case isIntegerType(a.T) && a.i != nil:
-		return NewIntegerBig(new(big.Int).Neg(a.i)), nil
+	case isIntegerType(a.T):
+		if n, ok := a.intFast(); ok && n != math.MinInt64 {
+			return newIntFast(-n), nil
+		}
+		return NewIntegerBig(new(big.Int).Neg(a.bigInt())), nil
 	case a.T == XSdecimal:
 		if m, s, ok := a.decFast(); ok && m != math.MinInt64 {
 			return newDecFast(-m, s), nil
@@ -149,7 +152,14 @@ func numericArith(op string, a, b *Atomic) (Object, error) {
 		}
 		return decimalArith(op, toRat(a), toRat(b))
 	case isIntegerType(a.T) && isIntegerType(b.T):
-		return integerArith(op, a.i, b.i)
+		if x, ok := a.intFast(); ok {
+			if y, ok := b.intFast(); ok {
+				if v, ok, err := integerArithFast(op, x, y); ok {
+					return v, err
+				}
+			}
+		}
+		return integerArith(op, a.bigInt(), b.bigInt())
 	default:
 		return doubleArith(op, a.Float(), b.Float())
 	}
@@ -160,6 +170,9 @@ func toRat(a *Atomic) *big.Rat {
 		return a.rat()
 	}
 	if isIntegerType(a.T) {
+		if n, ok := a.intFast(); ok {
+			return new(big.Rat).SetInt64(n)
+		}
 		return new(big.Rat).SetInt(a.i)
 	}
 	r := new(big.Rat).SetFloat64(a.Float())
@@ -230,8 +243,8 @@ func decOperand(a *Atomic) (m int64, s int, ok bool) {
 	if a.T == XSdecimal {
 		return a.decFast()
 	}
-	if isIntegerType(a.T) && a.i != nil && a.i.IsInt64() {
-		return a.i.Int64(), 0, true
+	if n, ok := a.intFast(); ok {
+		return n, 0, true
 	}
 	return 0, 0, false
 }

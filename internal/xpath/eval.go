@@ -45,10 +45,10 @@ func rangeOperand(ctx *Context, o Object) (*big.Int, bool, error) {
 			return nil, false, err
 		}
 	}
-	if !isIntegerType(a.T) || a.i == nil {
+	if !isIntegerType(a.T) {
 		return nil, false, fmt.Errorf("err:XPTY0004: %s is not a valid range operand", a.T)
 	}
-	return a.i, true, nil
+	return a.bigInt(), true, nil
 }
 
 // VarResolver resolves variable references.

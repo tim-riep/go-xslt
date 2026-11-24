@@ -675,7 +675,7 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 	var z *big.Int
 	switch {
 	case isIntegerType(a.T):
-		z = new(big.Int).Set(a.i)
+		z = a.intCopy()
 	case a.T == XSdecimal:
 		if m, s, ok := a.decFast(); ok {
 			z = big.NewInt(m / pow10i64[s]) // truncates toward zero, as Quo does
@@ -705,17 +705,10 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 		// the same number; anything else, overflow included, goes the general
 		// way, which also decides the lexical question.
 		if n, perr := strconv.ParseInt(s, 10, 64); perr == nil {
-			if n >= -16 && n < 1024 {
-				// The cached value's big.Int: an Atomic is never changed
-				// after construction, so the shared one serves (as the
-				// cached xs:integer Atomics themselves are shared).
-				if target == XSinteger {
-					return smallInts[n+16], nil
-				}
-				z = smallInts[n+16].i
-			} else {
-				z = big.NewInt(n)
+			if target == XSinteger {
+				return newIntFast(n), nil
 			}
+			z = big.NewInt(n)
 		} else {
 			var ok bool
 			z, ok = new(big.Int).SetString(s, 10)
@@ -727,7 +720,7 @@ func castToInteger(a *Atomic, target AtomType) (*Atomic, error) {
 	if err := checkIntegerBounds(z, target); err != nil {
 		return nil, err
 	}
-	return &Atomic{T: target, i: z}, nil
+	return newIntTyped(target, z), nil
 }
 
 // integerRange is the value range of a derived integer type; a nil bound is
@@ -776,8 +769,8 @@ func castToDecimal(a *Atomic) (*Atomic, error) {
 	case a.T == XSdecimal:
 		return a, nil
 	case isIntegerType(a.T):
-		if a.i.IsInt64() {
-			return newDecFast(a.i.Int64(), 0), nil
+		if n, ok := a.intFast(); ok {
+			return newDecFast(n, 0), nil
 		}
 		return NewDecimal(new(big.Rat).SetInt(a.i)), nil
 	case a.T == XSdouble || a.T == XSfloat:

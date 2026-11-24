@@ -168,7 +168,7 @@ func TestArrayAppendShared(t *testing.T) {
 			t.Fatalf("array %d: size %d, want %d", i, a.Size(), len(models[i]))
 		}
 		for j, want := range models[i] {
-			if got := a.Get(j + 1).(*Atomic).i.Int64(); got != want {
+			if got := a.Get(j + 1).(*Atomic).bigInt().Int64(); got != want {
 				t.Fatalf("array %d member %d: %d, want %d", i, j+1, got, want)
 			}
 		}

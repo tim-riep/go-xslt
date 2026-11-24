@@ -40,8 +40,8 @@ func mapKey(it Item) mkey {
 	switch v := it.(type) {
 	case *Atomic:
 		switch {
-		case isIntegerType(v.T) && v.i != nil:
-			return mkey{'n', v.i.String()}
+		case isIntegerType(v.T):
+			return mkey{'n', v.formatInt()}
 		case v.T == XSdecimal:
 			return mkey{'n', v.rat().RatString()}
 		case v.IsNumeric():

@@ -220,25 +220,24 @@ func NewFloat(f float64) *Atomic { return &Atomic{T: XSfloat, f: float64(float32
 
 // smallInts caches the xs:integer values -16..1023 as shared Atomics. An
 // Atomic is never mutated after construction, so sharing is safe, and it
-// spares a big.Int allocation per integer on the hottest paths — a range
-// like "1 to 1000" materialized inside a predicate for every item
+// spares an allocation per integer on the hottest paths — a range like
+// "1 to 1000" materialized inside a predicate for every item
 // (normalize-unicode-008 evaluates $lines[position()=1 to 1000] over ~18,000
 // lines: 18 million integers).
 var smallInts = func() [1040]*Atomic {
 	var t [1040]*Atomic
 	for i := range t {
-		t[i] = &Atomic{T: XSinteger, i: big.NewInt(int64(i) - 16)}
+		t[i] = &Atomic{T: XSinteger, f: math.Float64frombits(uint64(int64(i) - 16))}
 	}
 	return t
 }()
 
-func NewInteger(n int64) *Atomic {
-	if n >= -16 && n < 1024 {
-		return smallInts[n+16]
-	}
-	return &Atomic{T: XSinteger, i: big.NewInt(n)}
-}
-func NewIntegerBig(n *big.Int) *Atomic       { return &Atomic{T: XSinteger, i: n} }
+// NewInteger makes the xs:integer n, in the compact form (integer.go).
+func NewInteger(n int64) *Atomic { return newIntFast(n) }
+
+// NewIntegerBig makes the xs:integer of n's value: compact when it fits an
+// int64, else holding n itself.
+func NewIntegerBig(n *big.Int) *Atomic       { return newIntTyped(XSinteger, n) }
 func NewQName(n xmltree.Name) *Atomic        { return &Atomic{T: XSqname, ext: &atomExt{qn: n}} }
 func NewBinary(t AtomType, b []byte) *Atomic { return &Atomic{T: t, ext: &atomExt{bin: b}} }
 
@@ -338,8 +337,8 @@ func (a *Atomic) IsUnorderedDuration() bool { return a.T == XSduration }
 func (a *Atomic) Float() float64 {
 	switch {
 	case isIntegerType(a.T):
-		if a.i.IsInt64() {
-			return float64(a.i.Int64()) // exact below 2^53, and allocation-free
+		if n, ok := a.intFast(); ok {
+			return float64(n) // exact below 2^53, and allocation-free
 		}
 		f := new(big.Float).SetInt(a.i)
 		v, _ := f.Float64()
@@ -392,10 +391,7 @@ func (a *Atomic) Lexical() string {
 		}
 		return "false"
 	case isIntegerType(a.T):
-		if a.i == nil {
-			return "0"
-		}
-		return a.i.String()
+		return a.formatInt()
 	case a.T == XSdecimal:
 		if a.d == nil {
 			return formatDecFast(int64(math.Float64bits(a.f)), int(a.ds))
@@ -541,8 +537,8 @@ var _ = fmt.Sprintf
 // ok is false for every other item kind.
 func IntegerBig(it Item) (*big.Int, bool) {
 	a, isAtomic := it.(*Atomic)
-	if !isAtomic || !isIntegerType(a.T) || a.i == nil {
+	if !isAtomic || !isIntegerType(a.T) {
 		return nil, false
 	}
-	return new(big.Int).Set(a.i), true
+	return a.intCopy(), true
 }
