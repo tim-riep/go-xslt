@@ -518,6 +518,10 @@ Desktop GUI (**run from `desktop/`**):
   call began — `ContextCaptured`, the one place a snapshot of `eng.scopes`
   is taken, increments it — so any new code that keeps a `*scopeFrame` or a
   copy of `eng.scopes` beyond the call must go through `ContextCaptured`.
+  An `xsl:iterate` iteration recycles its frame like a function call
+  (`recycleFrame` under the same `captureGen` rule), and `itrNext` is a
+  pointer (boxed without allocating; `isControlSignal` and `sameErr` see
+  a comparable type) holding up to two values itself.
   `sortNodes` leaves a key's value nil when the key is one unannotated node
   (`xpath.NodeAtomizesUntyped`) or empty; `compareAtomicKey` reads values
   only for a column of date/time/duration keys, which such a key rules out.
@@ -641,7 +645,56 @@ Desktop GUI (**run from `desktop/`**):
   caller. An empty result is an empty non-nil set, where the path gives nil.
   The engine struct is 1,024 bytes, the end of its size class
   (`TestEngineSizeStaysInItsAllocatorClass`): a per-run scratch goes into
-  an existing field's struct, not a new field.
+  an existing field's struct, not a new field (`eng.scratch`, a map of
+  instruction state, holds xsl:number's sibling-index memo `numSibCache`).
+  **A path of several steps builds its sets in lent arrays** (`evalPathInto`):
+  the sets of the steps another step follows live in two arrays taken from
+  `ArgStack.nodeBufs` in turns (`takeNodes`/`giveNodes`; a predicate or
+  postfix step evaluated meanwhile takes others, so a set being read is
+  never written over; an array over `maxNodeBuf` is never kept), a direct
+  step's nodes (`directStep`: no predicates, a forward axis other than
+  namespace, no pattern top) are appended straight into the one being built
+  (`appendStep`), and the last step's set either goes to the reader's own
+  array (`dst`, the one-step scratch's readers extended through
+  `scratchPath`: the rule above applies unchanged, nothing evaluates while
+  the last step is built) or leaves as one copy of its final size. A set
+  that outgrew the pool's bound is returned as the path's own (`inBuf`
+  false), never kept as the scratch. A single-node step evalStep builds a
+  set of its own for is taken as it is, uncopied, as before.
+  **A for or quantified loop rebinds one `localScope` in place** while
+  `ArgStack.captures` — bumped by every `capture()` of a context sharing
+  the stack — has not moved during the body: a function item made there
+  holds a context whose chain of bindings has the scope. Every derived
+  context carries the ArgStack pointer, which is what makes the count
+  complete; the one literal without it (pattern.go's `PatternTop` context)
+  is only ever made by the host for pattern matching, whose contexts chain
+  no XPath bindings. The per-item loops lend their scratch contexts from
+  `ArgStack.ctxs` (`scratchCtx`/`giveCtx`: given back cleared, a captured
+  one left to the collector).
+  **`generate-id(A) = generate-id(B)`** (also `!=`, `eq`, `ne`; unprefixed
+  calls of at most one argument) is marked by the parser
+  (`CompareExpr.genID`) and answered from the nodes (`generateIDComparison`):
+  an id is the root, the order and a namespace node's prefix, so a change
+  to `fnGenerateID`'s format must keep `sameGenerateID` its equal; anything
+  unusual (a default collation, a non-node, several nodes outside BC10, no
+  context node) falls through to the comparison as written, so errors stay
+  the functions' own. `TestGenerateIDComparisonMatchesStrings` checks the
+  two agree.
+  **group-by files its groups in two maps by class** (`fegIndex.buckets`:
+  numeric, string-family; `xpath.GroupingBucketClass`): under the codepoint
+  collation every string-family value of one bucket is the same grouping
+  key as every other, so a key that is one plain node (`evalNodesScratch`,
+  `NodeAtomizesUntyped`) takes the first group of its string's bucket
+  (`firstString`) without an atom; keep `dvBucketKey` = class + "|" + key.
+  `plainStringArg` (string arguments), `castLexical` (a plain node cast to a
+  numeric or date/time type: the lexical branches of CastTo, factored as
+  `decimalFromLexical`/`integerFromLexical`/`doubleFromLexical`/
+  `dateTimeFromLexical`), `arithOperand`'s `*Atomic` case and the map
+  lookups' `*Atomic`/`string` keys skip the intermediate `toAtomic` atom:
+  each must give exactly what the atom's path gives (a plain node atomizes
+  to the xs:untypedAtomic of `StringValue()`; a plain string's map key is
+  `mkey{'s', s}`). `map:put`'s key still goes through `Atomize`: the stored
+  key item must be an `*Atomic`.
 - **An xs:integer has two forms** (`xpath/integer.go`), like a decimal:
   compact — `i == nil`, the int64 in the bits of `f` — or exact, a
   `*big.Int` in `i`, built only for a value outside int64. Read an integer
@@ -651,7 +704,12 @@ Desktop GUI (**run from `desktop/`**):
   overflow and falls back to big.Int (`integerArithFast`, `addInt64`…), and
   `intDivFast` gives the compact decimal of a terminating quotient exactly
   as `NewDecimal` of the Rat would (`TestCompactIntegerMatchesBig` checks
-  every operator pairwise over the int64 boundaries).
+  every operator pairwise over the int64 boundaries). Decimal `div`, `idiv`
+  and `mod` (`decDiv`: `intDivRaw` scaled by the scales' difference;
+  `decIdiv`/`decMod`: the aligned mantissas' truncated quotient and
+  remainder), `sum` (`decAddRaw`, a running int64, normalized once) and
+  `avg` stay compact the same way, every path falling back to the Rat;
+  `TestCompactDecimalMatchesRat` checks them pairwise too.
 - **An xs:decimal has two forms** (`xpath/decimal.go`): compact — `d == nil`,
   the int64 mantissa in the bits of `f`, the scale in `ds`, normalized — or
   exact, a `*big.Rat` in `d`. Read a decimal through `decFast()` on the hot

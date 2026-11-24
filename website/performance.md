@@ -488,6 +488,71 @@ libxslt's time to where it is now:
   text between a stylesheet's tags is a few bytes; the call cost more than
   the byte loop).
 
+- a fifteenth round, part A, on the evaluator, the value model and the
+  XSLT instructions, under the same harness and rule. A path of several
+  steps built the node set of every step as its own, and a step over
+  several context nodes a set per node copied into the step's; the sets of
+  the steps another step follows are now built in two arrays the
+  evaluation scratch lends in turns, a step's nodes are appended straight
+  into the one being built, and the last step's set is built where its
+  reader wants it — the scratch array the readers of a one-step path
+  already use (a fused built-in argument, fn:string's and a constructor's
+  bare argument, count and the set tests, a comparison's operand, a path
+  predicate, xsl:value-of, attribute value templates, tests and keys) — or
+  copied out once at its final size (typed functions over the record:
+  11 % fewer allocations from the first, 10 % more from the second;
+  string functions 23 %; the XPath 1.0 predicates 24 %; XSD 1.1
+  assertions 6 % and 3 %; deep recursion 8 %; group-by 7 %; 200 transforms
+  in one process 9 %). A decimal quotient went through big.Rat even where
+  it terminates, and fn:sum over decimals added every operand as a Rat
+  before compacting the result: div, idiv and mod divide the compact
+  mantissas (a Rat only for a repeating quotient), sum keeps a running
+  int64 while nothing overflows and avg divides it, every path falling
+  back to the Rat and checked against it pairwise (group-by with JSON
+  output: 40 % fewer allocations; number formatting 5 %). Muenchian
+  grouping, generate-id(.) = generate-id(key('k', x)[1]), built two id
+  strings per test only to compare them; the parser marks such a
+  comparison and it is answered from the nodes — an id is the tree root,
+  the document order and a namespace node's prefix, so two are equal
+  exactly when those are, "" only to another empty argument — with every
+  unusual case left to the functions (the Muenchian workload: 9 % fewer
+  instructions, 27 % fewer allocations). xsl:for-each-group's group-by
+  boxed, atomized and bucketed every item's key and scanned the bucket;
+  under the codepoint collation every string in a bucket is the same key
+  as every other, so a key that is one plain node finds its group by the
+  node's string value in a map of the string class alone, building an
+  atom only for a new group (group-by with JSON output: 58 % fewer
+  allocations; 200 transforms in one process 12 %). A for or quantified
+  expression made a binding per item and a context per loop; the argument
+  stack now counts the captures of every context sharing it, so the loop
+  rebinds one binding in place while no function item was made during the
+  body, and the per-item loops lend their scratch contexts from a pool
+  (typed functions: 4.5 % fewer allocations and 9 % fewer bytes; the JSON
+  round trip 1.5 % and 6.5 %). A plain node cast to a numeric or date/time
+  type, an xs:string argument given as a plain node or a plain string, an
+  arithmetic operand that is an atomic value and a map call's key skip the
+  intermediate atom (xsl:iterate with a decimal map: 15 % fewer
+  allocations; string functions 15 %; group-by with JSON output 20 %;
+  number formatting 12 %; deep recursion 9 %). An xsl:iterate iteration
+  keeps its scope frame for the next one under the capture-generation rule
+  a function call's frame already follows, and xsl:next-iteration travels
+  as a pointer holding the values of up to two parameters itself (the
+  decimal map: 7 % fewer allocations; the array: 24 %). And xsl:number's
+  walk over the preceding siblings was quadratic over a long sibling list
+  numbered node after node; the run remembers, per instruction and parent,
+  the last sibling it numbered and counts on from there whenever the match
+  is a function of the node alone (xsl:number with position()/last() over
+  2,000 records: 0.37 s to 0.08 s of CPU). Over the whole round, against
+  the version before it, see the table of the final measurement below in
+  the round's commit messages; no workload executes more instructions than
+  before beyond the counter's spread, none allocates more, and every
+  output is byte-identical. Tried and dropped: copying a path's last step
+  set always (a 200,000-node set copied: 1.6 MB more on two workloads),
+  copying a single-node non-direct step's set into the lent array (160 KB
+  more on the JSON round trip), and keeping a last-step set beyond the
+  pool's bound as the scratch (a reader passing a large set on copied it:
+  0.9 MB more on the XPath 1.0 predicates).
+
 - a fifteenth round, part B, on the validator, the readers, the serializer
   and the compiler (part A, in parallel, took the evaluator), under the same
   harness and rule. The validator asked, for every attribute use of every
