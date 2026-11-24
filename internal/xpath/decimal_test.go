@@ -127,13 +127,19 @@ func TestCompactDecimalMatchesRat(t *testing.T) {
 			if c1, _ := CompareAtomic(a, b); c1 != ra.rat().Cmp(rb.rat()) {
 				t.Errorf("CompareAtomic %s %s", a.Lexical(), b.Lexical())
 			}
+			// sum and avg: the compact running sum and quotient against the Rat's.
+			for _, op := range []string{"sum", "avg"} {
+				x, e1 := aggregate(Sequence{a, b, a}, op, nil, nil)
+				y, e2 := aggregate(Sequence{ra, rb, ra}, op, nil, nil)
+				same(op+"("+a.Lexical()+","+b.Lexical()+","+a.Lexical()+")", x, y, e1, e2)
+			}
 		}
 	}
 	// Integer operands and sums.
 	ints := []*Atomic{NewInteger(0), NewInteger(7), NewInteger(-7), NewInteger(1 << 40), NewIntegerBig(new(big.Int).Lsh(big.NewInt(1), 70))}
 	for i, a := range vals {
 		for _, n := range ints {
-			for _, op := range []string{"+", "-", "*", "div"} {
+			for _, op := range []string{"+", "-", "*", "div", "idiv", "mod"} {
 				x, e1 := numericArith(op, a, n)
 				y, e2 := numericArith(op, rats[i], n)
 				same(a.Lexical()+" "+op+" "+n.Lexical(), x, y, e1, e2)

@@ -331,11 +331,28 @@ func sumNumeric(atoms []*Atomic, kind AtomType) *Atomic {
 		}
 		return NewIntegerBig(z)
 	case XSdecimal:
-		s := new(big.Rat)
+		// In int64 while every operand is compact and no sum overflows.
+		var m int64
+		s := 0
+		ok := true
 		for _, a := range atoms {
-			s.Add(s, toRat(a))
+			mb, sb, fast := decOperand(a)
+			if !fast {
+				ok = false
+				break
+			}
+			if m, s, ok = decAddRaw(m, s, mb, sb); !ok {
+				break
+			}
 		}
-		return NewDecimal(s)
+		if ok {
+			return newDecFast(m, s)
+		}
+		r := new(big.Rat)
+		for _, a := range atoms {
+			r.Add(r, toRat(a))
+		}
+		return NewDecimal(r)
 	default:
 		var s float64
 		for _, a := range atoms {
@@ -527,6 +544,11 @@ func aggregate(o Object, op string, zero Object, coll func(a, b string) int) (Ob
 			}
 			return NewDecimal(new(big.Rat).SetFrac(s.bigInt(), big.NewInt(n))), nil
 		case s.T == XSdecimal:
+			if m, sc, ok := s.decFast(); ok {
+				if d, ok := decDiv(m, sc, n, 0); ok {
+					return d, nil
+				}
+			}
 			return NewDecimal(new(big.Rat).Quo(s.rat(), new(big.Rat).SetInt64(n))), nil
 		case s.T == XSfloat:
 			return NewFloat(s.f / float64(n)), nil
