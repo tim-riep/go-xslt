@@ -1111,6 +1111,16 @@ func convertForParamCtx(st *SeqType, av Object, ctx *Context) (Object, bool) {
 			atoms = append(atoms, it)
 			continue
 		}
+		// An item that atomizes to one value (a plain node, nearly always)
+		// takes Atomize's one-item branch, without the one-item sequence
+		// and the result slice; whatever that does not decide (a list-typed
+		// node, an array, a map) is atomized as before.
+		if a, n, err := atomizeOne(it); err == nil && n < 2 {
+			if n == 1 {
+				atoms = append(atoms, a)
+			}
+			continue
+		}
 		sub, err := Atomize(FromItems([]Item{it}))
 		if err != nil {
 			return av, false
