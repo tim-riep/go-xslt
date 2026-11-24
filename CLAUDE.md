@@ -605,6 +605,36 @@ Desktop GUI (**run from `desktop/`**):
   `ToNumber`, `Items`, `Atomize` and the item helpers read it as a one-node
   set, and a built-in that tests its argument for a `NodeSet` must take the
   node as well (`fnStringJoin`, XSLT's `key()`).
+- **A one-step path's node set may live in a scratch array.**
+  `evalStepScratch` (eval.go) evaluates a predicate-free `child::`/
+  `attribute::` step with nothing to resolve (`unionStep`'s shape) into an
+  array the reader hands it — the ArgStack's `nodes` for the evaluator's
+  own readers (a fused built-in argument, `FuncCall.scratch` decides which;
+  fn:string's and an xs: constructor's one argument, passed as the bare
+  node, `bareArgCall`; count/exists/empty/boolean/not; a path predicate's
+  existence test; a comparison operand, the left one only when the right is
+  a literal), and
+  `engine.pathBuf` for the instructions (`Parsed.EvalNodesInto` behind
+  `eng.evalNodesScratch`: xsl:value-of, AVTs, xsl:if/when tests, a key's
+  use, a sort key). The step evaluates nothing, so nothing can run between
+  building and reading the set; a reader that passes the set on or stores
+  it (a sort key for `sortKeyValue`, an argument passed as a set) takes
+  `NodeSet.Detach` first. A new reader must consume the set before its next
+  evaluation; a result that may alias the array is never returned to a
+  caller. An empty result is an empty non-nil set, where the path gives nil.
+  The engine struct is 1,024 bytes, the end of its size class
+  (`TestEngineSizeStaysInItsAllocatorClass`): a per-run scratch goes into
+  an existing field's struct, not a new field.
+- **An xs:integer has two forms** (`xpath/integer.go`), like a decimal:
+  compact — `i == nil`, the int64 in the bits of `f` — or exact, a
+  `*big.Int` in `i`, built only for a value outside int64. Read an integer
+  through `intFast()` on the hot paths and `bigInt()` elsewhere (a's own
+  big.Int for the exact form, never to be changed; `intCopy()` for one of
+  the caller's own), never `a.i` directly; every int64 operation checks its
+  overflow and falls back to big.Int (`integerArithFast`, `addInt64`…), and
+  `intDivFast` gives the compact decimal of a terminating quotient exactly
+  as `NewDecimal` of the Rat would (`TestCompactIntegerMatchesBig` checks
+  every operator pairwise over the int64 boundaries).
 - **An xs:decimal has two forms** (`xpath/decimal.go`): compact — `d == nil`,
   the int64 mantissa in the bits of `f`, the scale in `ds`, normalized — or
   exact, a `*big.Rat` in `d`. Read a decimal through `decFast()` on the hot

@@ -379,6 +379,48 @@ libxslt's time to where it is now:
   node: 1 %). No workload executes more instructions than before beyond the
   counter's spread, none allocates more, and every output is byte-identical.
 
+- a fourteenth round, part A, on the evaluator, the value model and the
+  key index, under the same harness and rule: a path of one predicate-free
+  child or attribute step ("@id", "customer") allocated its node set on
+  every evaluation, although most readers of such a set drop it at once —
+  a built-in's argument converted to its declared type, count and the other
+  node-set tests, a predicate's existence test, a comparison's operand,
+  xsl:value-of, an attribute value template, xsl:if, a key's use, a sort
+  key — and these now build the set in one scratch array the evaluation
+  owns (the step itself evaluates nothing, so nothing can run between
+  building and reading it; the few readers that pass the set on detach a
+  copy), which fused arguments have that shape being decided once with the
+  call's plan (sort: 6 % fewer instructions, 60 % fewer allocations; the
+  XPath 1.0 predicate workload 3 % and 49 %; regular expressions 3 % and
+  30 %; the string workload 5 % and 18 %; HTML output 6 % and 16 %;
+  streaming 3 % and 12 %; XSD 1.1 assertions 2 % and 10 %); an xs:integer
+  was a big.Int — an allocation or two for every position(), count, sum and
+  parsed lexical, three to format one — and is now held compactly as an
+  int64 inside the Atomic whenever its value fits, with addition,
+  subtraction, multiplication, idiv, mod, sum, comparison, casting,
+  formatting and the map key done in integers, every overflow checked and
+  sent to big.Int, and an integer div whose quotient terminates computed as
+  the compact decimal directly, all checked against the big.Int path
+  pairwise over the int64 boundaries (key lookups: 7 % fewer instructions
+  and 31 % fewer allocations with the two items around it; number
+  formatting 4 % and 13 %); a large key index takes each entry's first slot
+  from a shared 512-byte chunk — a larger chunk carries Go's allocation
+  header and lands in the next size class, which cost 380 KB over the keys
+  workload before it was measured, and a field more on the engine struct,
+  1,024 bytes, the end of its class, cost 128 bytes per run; string(customer)
+  and xs:decimal(price) — fn:string or a constructor over a one-step path —
+  pass the path's one node as the bare node, with the set and the argument
+  slice on the scratch stack (xsl:iterate with a decimal map: 5 % fewer
+  instructions, 15 % fewer allocations; group-by with JSON output 3 % and
+  10 %; 200 transforms in one process 3.5 % and 13 %); a value converted to
+  a declared atomic type atomizes a node item without a one-item sequence
+  around it (deep recursion: 1 % fewer instructions, 10 % fewer
+  allocations); and a JSON object being built grows two lists instead of
+  three, the marks for pre-escaped keys existing only once one is marked
+  (the JSON round trip: 3 % fewer instructions, 6 % fewer allocations). No
+  workload allocates more or executes more instructions beyond the
+  counter's spread, and every output is byte-identical.
+
 - a fourteenth round, part B, on the readers, the serializer, the validator
   and the compiler (part A, in parallel, took the evaluator), under the same
   harness and rule. The serializer wrote a start tag as four calls to the
