@@ -227,6 +227,41 @@ type ArgStack struct {
 	// is done, and no evaluation happens in between — the step itself
 	// evaluates nothing — so no stack discipline is needed.
 	nodes NodeSet
+	// nodeBufs are free arrays for the node sets of a path's steps
+	// (evalPathNodes): an evaluation takes two, builds each step's set in
+	// one while the other holds the set it reads, and gives both back. A
+	// predicate or postfix step evaluated meanwhile takes others, so a set
+	// being read is never written over.
+	nodeBufs []NodeSet
+}
+
+// maxNodeBuf is the largest array nodeBufs keeps: a step over more nodes
+// has its set allocated, as before, and leaves nothing behind.
+const maxNodeBuf = 4096
+
+// takeNodes lends a free node array (nil when none is free: append then
+// allocates one, which giveNodes keeps for the next evaluation).
+func (s *ArgStack) takeNodes() NodeSet {
+	if l := len(s.nodeBufs); l > 0 {
+		b := s.nodeBufs[l-1]
+		s.nodeBufs = s.nodeBufs[:l-1]
+		return b
+	}
+	return nil
+}
+
+// giveNodes returns two lent arrays to the pool. s may be nil (no scratch:
+// the arrays are nil too).
+func (s *ArgStack) giveNodes(a, b NodeSet) {
+	if s == nil {
+		return
+	}
+	if cap(a) != 0 && cap(a) <= maxNodeBuf {
+		s.nodeBufs = append(s.nodeBufs, a[:0])
+	}
+	if cap(b) != 0 && cap(b) <= maxNodeBuf {
+		s.nodeBufs = append(s.nodeBufs, b[:0])
+	}
 }
 
 // NewArgStack returns an empty stack for a root Context.
@@ -1577,6 +1612,20 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 		}
 	}
 
+	// The node set of a step that another step follows is read by that step
+	// and dropped, so it is built in an array the evaluation scratch lends
+	// (two, taken in turns: the one being read and the one being built —
+	// a predicate or postfix step evaluated meanwhile takes others from
+	// the pool), and the last step's set, built there too, leaves as one
+	// copy of its final size. Without a scratch (no ArgStack) every set is
+	// its own allocation, as before.
+	var bufs *ArgStack
+	var cur, nxt NodeSet // the lent arrays; current aliases cur once built there
+	if len(n.Steps) > 0 && ctx != nil && ctx.ArgStack != nil {
+		bufs = ctx.ArgStack
+		cur, nxt = bufs.takeNodes(), bufs.takeNodes()
+	}
+	inScratch := false // current is built in cur
 	for i := 0; i < len(n.Steps); i++ {
 		step := n.Steps[i]
 		if step.Fuse != nil && ctx.PatternTop == nil {
@@ -1594,11 +1643,26 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			if step.Postfix == nil {
 				// Exactly the len(current) == 1 case of the loop below.
 				var pc prefixCache
-				matched, err := evalStep(step, cn, ctx, &pc)
+				if bufs == nil || !directStep(step, ctx) {
+					// (A step evalStep builds a set of its own for is
+					// taken as it is, not copied.)
+					matched, err := evalStep(step, cn, ctx, &pc)
+					if err != nil {
+						bufs.giveNodes(cur, nxt)
+						return nil, nil, err
+					}
+					current = matched.normalize()
+					inScratch = false
+					continue
+				}
+				matched, err := appendStep(nxt[:0], step, cn, ctx, &pc)
 				if err != nil {
+					bufs.giveNodes(cur, nxt)
 					return nil, nil, err
 				}
 				current = matched.normalize()
+				cur, nxt = matched[:0], cur
+				inScratch = true
 				continue
 			}
 			current = NodeSet{cn}
@@ -1618,10 +1682,12 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				*sub = Context{SchemaTypes: ctx.SchemaTypes, Node: cn, Pos: idx + 1, Size: size, CtxItem: cn, Vars: ctx.Vars, NS: ctx.NS, Funcs: ctx.Funcs, Resolver: ctx.Resolver, BaseURI: ctx.BaseURI, BaseNode: ctx.BaseNode, DecimalFormats: ctx.DecimalFormats, DefaultElemNS: ctx.DefaultElemNS, DefaultCollation: ctx.DefaultCollation, RootlessTree: ctx.RootlessTree, nowCache: ctx.nowCache, Interrupt: ctx.Interrupt, locals: ctx.locals, BC10: ctx.BC10, ArgStack: ctx.ArgStack}
 				pv, err := evalExpr(step.Postfix, sub)
 				if err != nil {
+					bufs.giveNodes(cur, nxt)
 					return nil, nil, err
 				}
 				items = appendItems(items, pv)
 			}
+			inScratch = false
 			// XPath 3.1 §3.3.3: when E1/E2 yields NODES the result is returned
 			// in document order with duplicates eliminated. That applies to a
 			// postfix (non-axis) right operand just as much as to an axis step
@@ -1636,11 +1702,13 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				if isPathStep {
 					res, err = pathStepResult(items)
 					if err != nil {
+						bufs.giveNodes(cur, nxt)
 						return nil, nil, err
 					}
 				} else {
 					res = FromItems(items)
 				}
+				bufs.giveNodes(cur, nxt)
 				if ns, isNodes := res.(NodeSet); isNodes {
 					return ns, nil, nil
 				}
@@ -1650,35 +1718,99 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			// Only nodes can be navigated further.
 			ns, ok := ToNodeSet(result)
 			if !ok {
+				bufs.giveNodes(cur, nxt)
 				return nil, nil, fmt.Errorf("path step after a non-node value")
 			}
 			current = ns.normalize()
 			continue
 		}
-		var next NodeSet
 		var pc prefixCache // one prefix resolution for this step across ALL its context nodes
-		for _, cn := range current {
-			matched, err := evalStep(step, cn, ctx, &pc)
+		if len(current) == 1 && (bufs == nil || !directStep(step, ctx)) {
+			// The step's result is taken as is rather than copied: evalStep
+			// always builds it by appending into a slice of its own (never
+			// the tree's Children/Attrs that axisNodes hands it), so nothing
+			// else references it. One context node is the shape of every
+			// select="child" in a template body.
+			matched, err := evalStep(step, current[0], ctx, &pc)
 			if err != nil {
+				bufs.giveNodes(cur, nxt)
 				return nil, nil, err
 			}
-			if len(current) == 1 {
-				// The step's result is taken as is rather than copied: evalStep
-				// always builds it by appending into a slice of its own (never
-				// the tree's Children/Attrs that axisNodes hands it), so nothing
-				// else references it. One context node is the shape of every
-				// select="child" in a template body.
-				next = matched
-				break
+			current = matched.normalize()
+			inScratch = false
+			continue
+		}
+		next := nxt[:0]
+		for _, cn := range current {
+			var err error
+			if next, err = appendStep(next, step, cn, ctx, &pc); err != nil {
+				bufs.giveNodes(cur, nxt)
+				return nil, nil, err
 			}
-			next = append(next, matched...)
 		}
 		current = next.normalize()
+		if bufs != nil {
+			cur, nxt = next[:0], cur
+			inScratch = true
+		}
 	}
 	if one != nil {
 		current = NodeSet{one} // a path without steps: its starting node
 	}
+	if inScratch && cap(current) <= maxNodeBuf {
+		// (A set that outgrew the pool's bound is in an array append made
+		// for it, which the pool would not keep: it is the result as it is.)
+		current = detachNodes(current)
+	}
+	bufs.giveNodes(cur, nxt)
 	return current, nil, nil
+}
+
+// appendStep appends the nodes step selects from context node cn to dst —
+// evalStep's result without the set of its own, for a step whose result is
+// appended to a larger one or read and dropped. A step with predicates, a
+// reverse axis, the namespace axis or a pattern top (evalStep's special
+// cases) is evaluated as before and copied.
+func appendStep(dst NodeSet, step *Step, cn *xmltree.Node, ctx *Context, pc *prefixCache) (NodeSet, error) {
+	if directStep(step, ctx) {
+		switch step.Axis {
+		case "descendant", "descendant-or-self":
+			if step.Axis == "descendant-or-self" {
+				ok, err := matchTestC(&step.Test, step.Axis, cn, ctx, pc)
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					dst = append(dst, cn)
+				}
+			}
+			if err := collectDescendantsFiltered(cn, &step.Test, step.Axis, ctx, pc, &dst); err != nil {
+				return nil, err
+			}
+			return dst, nil
+		default:
+			return appendMatches(dst, axisNodes(step.Axis, cn), step, ctx, pc)
+		}
+	}
+	matched, err := evalStep(step, cn, ctx, pc)
+	if err != nil {
+		return nil, err
+	}
+	return append(dst, matched...), nil
+}
+
+// directStep reports whether step's nodes can be appended to a set as they
+// are matched (appendStep): no predicates, a forward axis other than
+// namespace, and no pattern top (evalStep's special cases).
+func directStep(step *Step, ctx *Context) bool {
+	if len(step.Preds) != 0 || (ctx != nil && ctx.PatternTop != nil) {
+		return false
+	}
+	switch step.Axis {
+	case "child", "attribute", "self", "following-sibling", "following", "descendant", "descendant-or-self":
+		return true
+	}
+	return false
 }
 
 // unionStep returns e's step when e is a relative path of one predicate-free
