@@ -54,10 +54,21 @@ func inRanges5e(r rune, rs [][2]rune) bool {
 	return false
 }
 
+// The ASCII rows of the two predicates as tables: the XPath lexer asks
+// them for every character of every name it reads, and a look costs less
+// than the range comparisons.
+var nameStartASCII, nameCharASCII = func() (start, char [utf8.RuneSelf]bool) {
+	for r := rune(0); r < utf8.RuneSelf; r++ {
+		start[r] = inRanges5e(r, nameStartRanges5e)
+		char[r] = start[r] || inRanges5e(r, nameExtraRanges5e)
+	}
+	return
+}()
+
 // IsNameStartChar reports whether r is a NameStartChar (':' included).
 func IsNameStartChar(r rune) bool {
 	if r < utf8.RuneSelf {
-		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_' || r == ':'
+		return r >= 0 && nameStartASCII[r]
 	}
 	return inRanges5e(r, nameStartRanges5e)
 }
@@ -65,8 +76,7 @@ func IsNameStartChar(r rune) bool {
 // IsNameChar reports whether r is a NameChar (':' included).
 func IsNameChar(r rune) bool {
 	if r < utf8.RuneSelf {
-		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_' || r == ':' ||
-			r >= '0' && r <= '9' || r == '-' || r == '.'
+		return r >= 0 && nameCharASCII[r]
 	}
 	return inRanges5e(r, nameStartRanges5e) || inRanges5e(r, nameExtraRanges5e)
 }
