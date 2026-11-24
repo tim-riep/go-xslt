@@ -891,7 +891,7 @@ func effectiveSimpleText(decl *ElementDecl, el *xmltree.Node) string {
 
 func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
 	if s.assertAnnos == nil {
-		return s.validateComplexContent(ct, el, scopes, decl)
+		return s.validateComplexContent(ct, el, scopes, decl, nil)
 	}
 	// An annotation is read by assertTree alone, for the subtree of an
 	// element whose type has assertions, once that element's content is
@@ -902,11 +902,12 @@ func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[x
 	// million entries in it, rehashed on the way up and scanned by every
 	// collection). clear keeps the buckets, so the map settles at the size
 	// of the largest asserted subtree and allocates nothing further.
-	open := len(s.childModelOf(ct).asserts) > 0
+	cm := s.childModelOf(ct)
+	open := len(cm.asserts) > 0
 	if open {
 		s.assertOpen++
 	}
-	err := s.validateComplexContent(ct, el, scopes, decl)
+	err := s.validateComplexContent(ct, el, scopes, decl, cm)
 	if open {
 		s.assertOpen--
 	}
@@ -918,8 +919,10 @@ func (s *Schema) validateComplex(ct *ComplexType, el *xmltree.Node, scopes map[x
 }
 
 // validateComplexContent is validateComplex proper; see there for the
-// assertion-annotation bookkeeping around it.
-func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl) error {
+// assertion-annotation bookkeeping around it. cm is ct's child model when
+// the caller has looked it up already (nil otherwise): the model is memoised
+// per type, and this element's validation looked it up three times.
+func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scopes map[xname]*keyTable, decl *ElementDecl, cm *childModel) error {
 	if ct.abstract {
 		return invalidf("cvc-type.2", "type is abstract and cannot be used directly")
 	}
@@ -937,7 +940,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			if hasNonWSText(el) {
 				return invalidf("cvc-complex-type.2.1", "open empty content admits no character data")
 			}
-			if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+			if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 				return s.afterModelError(err, ct, el, kids, scopes)
 			}
 			break
@@ -978,15 +981,15 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 			s.effectiveOpenContent(ct) == nil && isEmptyParticle(s.effectiveParticle(ct)) {
 			return invalidf("cvc-complex-type.2.1", "empty content admits no character data at all")
 		}
-		if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+		if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 			return s.afterModelError(err, ct, el, kids, scopes)
 		}
 	case contentMixed:
-		if err := s.validateChildren(ct, el, kids, scopes); err != nil {
+		if err := s.validateChildrenIn(ct, el, kids, scopes, cm); err != nil {
 			return s.afterModelError(err, ct, el, kids, scopes)
 		}
 	}
-	return s.checkAsserts(ct, el)
+	return s.checkAssertsIn(ct, el, cm)
 }
 
 // skipWildcardParseExcuses reports whether some parse of the content model
@@ -1283,7 +1286,15 @@ func (s *Schema) childModelOf(ct *ComplexType) *childModel {
 }
 
 func (s *Schema) validateChildren(ct *ComplexType, el *xmltree.Node, kids []*xmltree.Node, scopes map[xname]*keyTable) error {
-	cm := s.childModelOf(ct)
+	return s.validateChildrenIn(ct, el, kids, scopes, nil)
+}
+
+// validateChildrenIn is validateChildren given ct's child model when the
+// caller holds it (nil: looked up here).
+func (s *Schema) validateChildrenIn(ct *ComplexType, el *xmltree.Node, kids []*xmltree.Node, scopes map[xname]*keyTable, cm *childModel) error {
+	if cm == nil {
+		cm = s.childModelOf(ct)
+	}
 	p, oc := cm.p, cm.oc
 	matched, ok := s.contentMatchesOpen(p, kids, oc)
 	if !ok {

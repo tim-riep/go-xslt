@@ -428,10 +428,19 @@ func (s *Schema) annotateAssertNode(dst, src *xmltree.Node, a assertAnno, alloc 
 
 // checkAsserts evaluates a complex type's assertions against el (1.1 only).
 func (s *Schema) checkAsserts(ct *ComplexType, el *xmltree.Node) error {
+	return s.checkAssertsIn(ct, el, nil)
+}
+
+// checkAssertsIn is checkAsserts given ct's child model when the caller
+// holds it (nil: looked up here).
+func (s *Schema) checkAssertsIn(ct *ComplexType, el *xmltree.Node, cm *childModel) error {
 	if s.version != Version11 || !s.hasAsserts {
 		return nil
 	}
-	asserts := s.childModelOf(ct).asserts
+	if cm == nil {
+		cm = s.childModelOf(ct)
+	}
+	asserts := cm.asserts
 	if len(asserts) == 0 {
 		return nil
 	}
