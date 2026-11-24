@@ -295,6 +295,9 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 		tz := &s.tok.tz
 		switch kind {
 		case tokStart:
+			// Read from the tokenizer's own fields (they hold until its
+			// next call), not a copy made for every tag; startElement
+			// takes the token by pointer for the same reason.
 			t := xml.StartElement{Name: tz.name, Attr: tz.attrs}
 			if err := s.countAttrs(t.Attr); err != nil {
 				return StreamEvent{}, err
@@ -315,7 +318,7 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			// shows unless the tag ended exactly at its end — then, as for
 			// any other first child, the text node is its own allocation.
 			textNext := !tz.needClose && tz.pos < len(tz.s) && tz.s[tz.pos] != '<'
-			el := s.startElement(t, textNext)
+			el := s.startElement(&t, textNext)
 			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.open) - 1}, nil
 
 		case tokEnd:
@@ -470,7 +473,7 @@ func streamHasExternalEntity(sub string) bool {
 	}
 }
 
-func (s *StreamReader) startElement(t xml.StartElement, textNext bool) *Node {
+func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) *Node {
 	// Intern the tag's own name before anything retains it: one string per
 	// distinct name, copied out of the tokenizer's window (see
 	// streamTokenizer), where the element and rawNames would otherwise keep
