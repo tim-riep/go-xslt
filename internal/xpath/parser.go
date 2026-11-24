@@ -359,7 +359,14 @@ func (p *parser) parseComparison() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CompareExpr{Kind: kind, Op: op, L: left, R: right}, nil
+	return &CompareExpr{Kind: kind, Op: op, L: left, R: right, genID: isGenerateIDCall(left) && isGenerateIDCall(right) && (op == "=" || op == "!=" || op == "eq" || op == "ne")}, nil
+}
+
+// isGenerateIDCall reports whether e is an unprefixed fn:generate-id call
+// of zero or one argument.
+func isGenerateIDCall(e Expr) bool {
+	fc, ok := e.(*FuncCall)
+	return ok && fc.Prefix == "" && fc.Local == "generate-id" && len(fc.Args) <= 1
 }
 
 func isValueComp(s string) bool {
