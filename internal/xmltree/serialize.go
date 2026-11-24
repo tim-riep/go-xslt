@@ -364,7 +364,14 @@ const xmlNS = "http://www.w3.org/XML/1998/namespace"
 func newSerializer(out outWriter, opts SerializeOptions) *serializer {
 	s := &serializer{b: out, opts: opts,
 		declared: map[string]string{xmlNS: "xml"},
-		prefixes: map[string]string{"xml": xmlNS}}
+		prefixes: map[string]string{"xml": xmlNS},
+		html:     opts.Method == "html",
+		xhtml:    opts.Method == "xhtml"}
+	switch opts.NormalizationForm {
+	case "NFC", "NFD", "NFKC", "NFKD":
+	default:
+		s.normNone = true
+	}
 	if opts.Method == "html" || opts.Method == "xhtml" {
 		// Decided once: startTag asked for every element, and parsing the
 		// (usually empty) version string allocated an error each time.
@@ -502,6 +509,13 @@ type serializer struct {
 	// v11 caches xmlVersion11() once v11OK is set, for the same reason.
 	v11   bool
 	v11OK bool
+	// html, xhtml: opts.Method is "html" / "xhtml", decided in newSerializer
+	// (the two comparisons ran for every element and text node); normNone:
+	// opts.NormalizationForm names no normalization, so normalize returns
+	// its argument at once. A serializer built as a bare literal has all
+	// three false, which only sends it down the general paths.
+	html, xhtml bool
+	normNone    bool
 	// defURI mirrors prefixes[""] (defOK: the entry exists): the default
 	// namespace in scope, read for every no-namespace element without the
 	// map lookup. declare and undeclare keep it current.
@@ -541,11 +555,11 @@ func (s *serializer) node(n *Node, depth int) {
 		// CDATA: markup characters are never escaped there — any escaping
 		// needed (e.g. a literal "</script>") is the stylesheet author's own
 		// responsibility (output-0154/0159).
-		rawScriptStyle := s.opts.Method == "html" && n.Parent != nil && n.Parent.Name.Space == "" &&
+		rawScriptStyle := s.html && n.Parent != nil && n.Parent.Name.Space == "" &&
 			(strings.EqualFold(n.Parent.Name.Local, "script") || strings.EqualFold(n.Parent.Name.Local, "style"))
 		if n.Raw() || rawScriptStyle {
 			v = s.mapChars(n.Value, nil)
-		} else if s.opts.Method == "html" {
+		} else if s.html {
 			v = s.mapChars(n.Value, escapeText)
 		} else {
 			v = s.mapChars(n.Value, escapeTextXML)
@@ -558,12 +572,12 @@ func (s *serializer) node(n *Node, depth int) {
 		// (Serialization 3.1 §6), where an undeclared &nbsp; is not
 		// well-formed; U+00A0 is written as the character (or as a character
 		// reference by escapeRepertoire when the encoding lacks it).
-		if s.opts.Method == "html" || s.opts.Method == "xhtml" {
+		if s.html || s.xhtml {
 			// U+00A0 and the C1 controls are the only characters these two
 			// steps touch, and in UTF-8 both start with the byte 0xC2: a
 			// value without one needs neither search.
 			if strings.IndexByte(v, 0xC2) >= 0 {
-				if s.opts.Method == "html" {
+				if s.html {
 					v = strings.ReplaceAll(v, "\u00a0", "&nbsp;")
 				}
 				v = escapeC1(v)
@@ -685,8 +699,7 @@ type elemOpen struct {
 // included. Everything after that depends on the children, which the caller
 // owns.
 func (s *serializer) startTag(n *Node, depth int) elemOpen {
-	html := s.opts.Method == "html"
-	xhtml := s.opts.Method == "xhtml"
+	html, xhtml := s.html, s.xhtml
 	htmlish := html || xhtml
 	// An element NAMED in suppress-indentation must itself lose its own
 	// closing tag's indentation too, not just its children's — s.suppress
@@ -1024,7 +1037,7 @@ func (s *serializer) element(n *Node, depth int) {
 	o := s.startTag(n, depth)
 
 	if len(n.Children) == 0 {
-		htmlish := s.opts.Method == "html" || s.opts.Method == "xhtml"
+		htmlish := s.html || s.xhtml
 		switch {
 		case o.meta != "":
 			s.flushTag(">" + o.meta + "</" + o.qname + ">")
@@ -1032,7 +1045,7 @@ func (s *serializer) element(n *Node, depth int) {
 			// HTML void element: <br>; XHTML keeps the XML self-close, with the
 			// HTML4-compatibility space before the slash: <br />
 			// (output-0107/0116/0132..0135).
-			if s.opts.Method == "xhtml" {
+			if s.xhtml {
 				s.flushTag(" />")
 			} else {
 				s.flushTag(">")
@@ -1294,6 +1307,9 @@ func (s *serializer) writeCDATA(v string) {
 
 // normalize applies opts.NormalizationForm (if any) to v.
 func (s *serializer) normalize(v string) string {
+	if s.normNone {
+		return v
+	}
 	switch s.opts.NormalizationForm {
 	case "NFC":
 		return norm.NFC.String(v)
