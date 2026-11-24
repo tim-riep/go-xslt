@@ -860,25 +860,37 @@ func (t *tokenizer) readName() bool {
 		t.ungetc()
 		return false
 	}
-	ascii := b < utf8.RuneSelf
-	for p := t.pos; p < len(t.s); p++ {
-		if c := t.s[p]; c >= utf8.RuneSelf {
-			ascii = false
-		} else if !nameByte[c] {
-			t.pos = p
-			t.nameASCII = ascii
-			return true
+	// One table look per byte, over all 256 values (a non-ASCII byte is
+	// taken like a name byte), and the high bits gathered by an OR instead
+	// of a second comparison per byte; isXMLName judges the non-ASCII ones.
+	hi := b
+	p := t.pos
+	for ; p < len(t.s); p++ {
+		c := t.s[p]
+		if !nameByteAny[c] {
+			break
 		}
+		hi |= c
 	}
-	t.runOut()
-	return false
+	if p == len(t.s) {
+		t.runOut()
+		return false
+	}
+	t.pos = p
+	t.nameASCII = hi < utf8.RuneSelf
+	return true
 }
 
-// nameByte holds the ASCII bytes a name may contain.
-var nameByte = func() (tab [utf8.RuneSelf]bool) {
-	for c := 0; c < utf8.RuneSelf; c++ {
-		tab[c] = 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' ||
+// nameByte holds the ASCII bytes a name may contain; nameByteAny is the
+// same over all byte values, every non-ASCII byte included.
+var nameByte, nameByteAny = func() (tab [utf8.RuneSelf]bool, any [256]bool) {
+	for c := 0; c < 256; c++ {
+		ok := 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' ||
 			c == '_' || c == ':' || c == '.' || c == '-'
+		if c < utf8.RuneSelf {
+			tab[c] = ok
+		}
+		any[c] = ok || c >= utf8.RuneSelf
 	}
 	return
 }()
