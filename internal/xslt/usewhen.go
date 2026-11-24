@@ -589,11 +589,18 @@ func (c *compiler) pruneChild(ch *xmltree.Node) (bool, error) {
 		// Shadow attributes are expanded before use-when is consulted —
 		// _use-when itself is a shadow attribute (shadow-005) — and only
 		// for elements that survive, so a shadow AVT inside an excluded
-		// subtree is never evaluated.
-		if err := c.expandShadowAttrs(ch); err != nil {
-			return false, err
+		// subtree is never evaluated. One pass over the attributes finds
+		// both whether there is a shadow attribute and the use-when; with
+		// a shadow attribute present the use-when is read again after the
+		// expansion, which may have produced it.
+		hasShadow, uw, ok := pruneAttrs(ch)
+		if hasShadow {
+			if err := c.expandShadowAttrs(ch); err != nil {
+				return false, err
+			}
+			uw, ok = useWhenAttr(ch)
 		}
-		if uw, ok := useWhenAttr(ch); ok {
+		if ok {
 			env := &staticEnv{el: ch, params: c.staticParams, resolver: c.staticResolver()}
 			v, err := env.eval(uw)
 			if err != nil {
@@ -721,6 +728,24 @@ func resolveShadowAttrs(node *xmltree.Node, staticParams map[string]xpath.Object
 
 // useWhenAttr returns the use-when expression of an element: the no-namespace
 // "use-when" on XSLT elements, or "xsl:use-when" on literal result elements.
+// pruneAttrs reports, in one pass over el's attributes, whether one is a
+// shadow attribute (expandShadowAttrs' test) and the use-when attribute
+// (useWhenAttr's: the first of its name).
+func pruneAttrs(el *xmltree.Node) (hasShadow bool, useWhen string, ok bool) {
+	xsltElem := el.Name.Space == NS
+	for _, a := range el.Attrs {
+		if len(a.Name.Local) >= 2 && a.Name.Local[0] == '_' {
+			hasShadow = true
+		}
+		if !ok && a.Name.Local == "use-when" {
+			if xsltElem && a.Name.Space == "" || !xsltElem && a.Name.Space == NS {
+				useWhen, ok = a.Value, true
+			}
+		}
+	}
+	return
+}
+
 func useWhenAttr(el *xmltree.Node) (string, bool) {
 	if el.Name.Space == NS {
 		return el.AttrLocal("use-when")
