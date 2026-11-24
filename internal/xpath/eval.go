@@ -532,6 +532,23 @@ func (p *Parsed) EvalNodesInto(ctx *Context, buf NodeSet) (ns NodeSet, v Object,
 			}
 			return ns, nil, true, true, nil
 		}
+	} else if sp := scratchPath(p.root); sp != nil && ctx != nil {
+		// A path of several steps: its last step's set is built in buf
+		// (evalPathInto), the steps before it as EvalNodes builds them.
+		if err := p.checkPrefixedVarRefs(ctx); err != nil {
+			return nil, nil, false, false, err
+		}
+		ns, v, inBuf, err = evalPathCountedInto(sp, ctx, &buf)
+		if err != nil {
+			return nil, nil, false, false, err
+		}
+		if inBuf {
+			return ns, nil, true, true, nil
+		}
+		if v == nil {
+			return ns, nil, true, false, nil
+		}
+		return nil, v, false, false, nil
 	}
 	ns, v, isNodes, err = p.EvalNodes(ctx)
 	return ns, v, isNodes, false, err
@@ -1594,10 +1611,37 @@ func evalPathCounted(p *PathExpr, ctx *Context) (ns NodeSet, v Object, err error
 	return evalPathNodes(p, ctx)
 }
 
+// evalPathCountedInto is evalPathCounted building the last step's set in
+// dst's array (evalPathInto). ctx is not nil.
+func evalPathCountedInto(p *PathExpr, ctx *Context, dst *NodeSet) (ns NodeSet, v Object, inBuf bool, err error) {
+	ctx.evalDepth++
+	if ctx.evalDepth > maxEvalDepth {
+		ctx.evalDepth--
+		return nil, nil, false, fmt.Errorf("err:XPDY0001: expression nesting too deep")
+	}
+	defer func() { ctx.evalDepth-- }()
+	return evalPathInto(p, ctx, dst)
+}
+
 // evalPathNodes evaluates the path n to its node set; v is set instead (and
 // ns is nil) when the last step is a postfix step whose items are not all
 // nodes, the one case a path's value is not a node set.
 func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) {
+	ns, v, _, err = evalPathInto(n, ctx, nil)
+	return ns, v, err
+}
+
+// evalPathInto is evalPathNodes with a destination for the last step's set:
+// when dst is not nil and the last step is a direct one (directStep, no
+// postfix), its set is built in dst's array — grown, the array is given back
+// through dst, as keepScratch does — and inBuf reports that ns aliases it
+// (an empty result is then an empty non-nil set). The caller reads such a
+// set before its next evaluation and never keeps it: the readers of a
+// one-step scratch set (evalStepScratch), whose rule this extends to a path
+// of several steps. The steps before the last may evaluate predicates and
+// postfix expressions, which may use dst's array themselves; the last
+// step evaluates nothing while it is built.
+func evalPathInto(n *PathExpr, ctx *Context, dst *NodeSet) (ns NodeSet, v Object, inBuf bool, err error) {
 	// XPST0081 is STATIC: a name-test prefix with no binding is an error
 	// regardless of whether any node is selected (K2-NameTest-11/41/42, an
 	// empty input must still raise it). "xmlns" is never a legal name-test
@@ -1607,16 +1651,16 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 		if step.Test.Braced && step.Test.URI == "http://www.w3.org/2000/xmlns/" {
 			// The xmlns namespace can never be the namespace of a name test
 			// (eqname-910: XQST0070).
-			return nil, nil, fmt.Errorf("err:XQST0070: the xmlns namespace URI cannot be used in a name")
+			return nil, nil, false, fmt.Errorf("err:XQST0070: the xmlns namespace URI cannot be used in a name")
 		}
 		if p == "" || step.Test.URI != "" {
 			continue
 		}
 		if p == "xmlns" {
-			return nil, nil, fmt.Errorf("err:XPST0081: xmlns is not a valid namespace prefix")
+			return nil, nil, false, fmt.Errorf("err:XPST0081: xmlns is not a valid namespace prefix")
 		}
 		if _, err := resolvePrefix(ctx, p); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 	}
 	var current NodeSet
@@ -1628,11 +1672,11 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 	if n.Start != nil {
 		sv, err := evalExpr(n.Start, ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		ns, ok := ToNodeSet(sv)
 		if !ok {
-			return nil, nil, fmt.Errorf("path step applied to non-node-set")
+			return nil, nil, false, fmt.Errorf("path step applied to non-node-set")
 		}
 		current = ns
 	} else if n.Absolute {
@@ -1641,10 +1685,10 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			if nd, ok := ctx.CtxItem.(*xmltree.Node); ok {
 				cn = nd
 			} else if ctx.CtxItem != nil {
-				return nil, nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
+				return nil, nil, false, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
 			} else if ctx.NoFocus {
 				// '/' with no focus at all is XPDY0002 (K2-Axes-45).
-				return nil, nil, fmt.Errorf("err:XPDY0002: the context item is absent for '/'")
+				return nil, nil, false, fmt.Errorf("err:XPDY0002: the context item is absent for '/'")
 			}
 		}
 		if cn != nil && cn.SynthCtx() {
@@ -1652,7 +1696,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			// (xsl:for-each / xsl:analyze-string over a non-node sequence):
 			// a path expression rooted at it has no tree to navigate
 			// (error-XPTY0020a/b).
-			return nil, nil, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
+			return nil, nil, false, fmt.Errorf("err:XPTY0020: the context item for a path expression is not a node")
 		}
 		if cn != nil {
 			root := cn.Root()
@@ -1666,7 +1710,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				root = effectiveRoot(cn)
 				if root.Kind != xmltree.KindDocument {
 					// XPDY0050: '/' requires a tree rooted at a document node.
-					return nil, nil, fmt.Errorf("XPDY0050: the tree has no document root")
+					return nil, nil, false, fmt.Errorf("XPDY0050: the tree has no document root")
 				}
 			}
 			one = root
@@ -1674,7 +1718,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 	} else {
 		if ctx.Node != nil {
 			if ctx.Node.SynthCtx() {
-				return nil, nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
+				return nil, nil, false, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
 			}
 			one = ctx.Node
 		} else if nd, ok := ctx.CtxItem.(*xmltree.Node); ok {
@@ -1683,11 +1727,11 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 		} else if ctx.CtxItem != nil {
 			// An axis step with an atomic (or function) context item is
 			// XPTY0020 (K2-Axes-38/39: 123[..], 1[element()]).
-			return nil, nil, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
+			return nil, nil, false, fmt.Errorf("err:XPTY0020: the context item for an axis step is not a node")
 		} else if ctx.CtxItem == nil {
 			// A relative path with no context item at all is XPDY0002
 			// (format-integer-019 in the "empty" environment), not empty.
-			return nil, nil, fmt.Errorf("err:XPDY0002: the context item is absent")
+			return nil, nil, false, fmt.Errorf("err:XPDY0002: the context item is absent")
 		}
 	}
 
@@ -1716,19 +1760,31 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			step = step.Fuse
 			i++
 		}
+		last := i == len(n.Steps)-1
 		if one != nil {
 			cn := one
 			one = nil
 			if step.Postfix == nil {
 				// Exactly the len(current) == 1 case of the loop below.
 				var pc prefixCache
-				if bufs == nil || !directStep(step, ctx) {
+				direct := directStep(step, ctx)
+				if dst != nil && last && direct {
+					matched, err := appendStep((*dst)[:0], step, cn, ctx, &pc)
+					if err != nil {
+						bufs.giveNodes(cur, nxt)
+						return nil, nil, false, err
+					}
+					bufs.giveNodes(cur, nxt)
+					ns, inBuf = intoDst(matched, dst)
+					return ns, nil, inBuf, nil
+				}
+				if bufs == nil || !direct {
 					// (A step evalStep builds a set of its own for is
 					// taken as it is, not copied.)
 					matched, err := evalStep(step, cn, ctx, &pc)
 					if err != nil {
 						bufs.giveNodes(cur, nxt)
-						return nil, nil, err
+						return nil, nil, false, err
 					}
 					current = matched.normalize()
 					inScratch = false
@@ -1737,7 +1793,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				matched, err := appendStep(nxt[:0], step, cn, ctx, &pc)
 				if err != nil {
 					bufs.giveNodes(cur, nxt)
-					return nil, nil, err
+					return nil, nil, false, err
 				}
 				current = matched.normalize()
 				cur, nxt = matched[:0], cur
@@ -1762,7 +1818,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 				pv, err := evalExpr(step.Postfix, sub)
 				if err != nil {
 					bufs.giveNodes(cur, nxt)
-					return nil, nil, err
+					return nil, nil, false, err
 				}
 				items = appendItems(items, pv)
 			}
@@ -1783,29 +1839,43 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 					res, err = pathStepResult(items)
 					if err != nil {
 						bufs.giveNodes(cur, nxt)
-						return nil, nil, err
+						return nil, nil, false, err
 					}
 				} else {
 					res = FromItems(items)
 				}
 				bufs.giveNodes(cur, nxt)
 				if ns, isNodes := res.(NodeSet); isNodes {
-					return ns, nil, nil
+					return ns, nil, false, nil
 				}
-				return nil, res, nil
+				return nil, res, false, nil
 			}
 			result := FromItems(items)
 			// Only nodes can be navigated further.
 			ns, ok := ToNodeSet(result)
 			if !ok {
 				bufs.giveNodes(cur, nxt)
-				return nil, nil, fmt.Errorf("path step after a non-node value")
+				return nil, nil, false, fmt.Errorf("path step after a non-node value")
 			}
 			current = ns.normalize()
 			continue
 		}
 		var pc prefixCache // one prefix resolution for this step across ALL its context nodes
-		if len(current) == 1 && (bufs == nil || !directStep(step, ctx)) {
+		direct := directStep(step, ctx)
+		if dst != nil && last && direct {
+			next := (*dst)[:0]
+			for _, cn := range current {
+				var err error
+				if next, err = appendStep(next, step, cn, ctx, &pc); err != nil {
+					bufs.giveNodes(cur, nxt)
+					return nil, nil, false, err
+				}
+			}
+			bufs.giveNodes(cur, nxt)
+			ns, inBuf = intoDst(next, dst)
+			return ns, nil, inBuf, nil
+		}
+		if len(current) == 1 && (bufs == nil || !direct) {
 			// The step's result is taken as is rather than copied: evalStep
 			// always builds it by appending into a slice of its own (never
 			// the tree's Children/Attrs that axisNodes hands it), so nothing
@@ -1814,7 +1884,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			matched, err := evalStep(step, current[0], ctx, &pc)
 			if err != nil {
 				bufs.giveNodes(cur, nxt)
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			current = matched.normalize()
 			inScratch = false
@@ -1825,7 +1895,7 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 			var err error
 			if next, err = appendStep(next, step, cn, ctx, &pc); err != nil {
 				bufs.giveNodes(cur, nxt)
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 		}
 		current = next.normalize()
@@ -1843,7 +1913,43 @@ func evalPathNodes(n *PathExpr, ctx *Context) (ns NodeSet, v Object, err error) 
 		current = detachNodes(current)
 	}
 	bufs.giveNodes(cur, nxt)
-	return current, nil, nil
+	return current, nil, false, nil
+}
+
+// intoDst is a last step's set built in *dst's array: normalized in place,
+// and the array given back through dst when the set outgrew it. A set that
+// outgrew the pool's bound (maxNodeBuf) is in an array append made for it,
+// which is not kept as the scratch (it would pin that much for the run and
+// be copied by a reader that passes the set on): inBuf is false for it, as
+// for a set of a path's own, and it is the result as it is.
+func intoDst(ns NodeSet, dst *NodeSet) (NodeSet, bool) {
+	ns = ns.normalize()
+	if cap(ns) > maxNodeBuf {
+		if len(ns) == 0 {
+			return nil, false
+		}
+		return ns, false
+	}
+	if cap(ns) > cap(*dst) {
+		*dst = ns[:0]
+	}
+	return ns, true
+}
+
+// scratchPath returns e as a path whose last step is a direct one with no
+// postfix — "items/item/@sku", "$o/date", "/orders/order" — for a reader
+// that may have it built in its scratch array (evalPathInto): nil for
+// anything else. A pattern top (checked at evaluation) still rules it out.
+func scratchPath(e Expr) *PathExpr {
+	p, ok := e.(*PathExpr)
+	if !ok || len(p.Steps) == 0 {
+		return nil
+	}
+	st := p.Steps[len(p.Steps)-1]
+	if st.Postfix != nil || !directStep(st, nil) {
+		return nil
+	}
+	return p
 }
 
 // appendStep appends the nodes step selects from context node cn to dst —
@@ -1976,6 +2082,9 @@ func evalPathPredicate(p *PathExpr, sub *Context) (ns NodeSet, v Object, err err
 				}
 				return ns, nil, err
 			}
+		} else if scratchPath(p) != nil {
+			ns, v, _, err = evalPathCountedInto(p, sub, &sub.ArgStack.nodes)
+			return ns, v, err
 		}
 	}
 	return evalPathCounted(p, sub)

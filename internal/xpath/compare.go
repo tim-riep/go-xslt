@@ -49,6 +49,13 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 					keepScratch(ctx, l.nodes)
 					l.isNodes = true
 				}
+			} else if scratchPath(p) != nil {
+				// A path of several steps: its last step's set in the
+				// scratch array (evalPathInto); lScratch stands for the
+				// evaluation having been done.
+				l.nodes, l.v, _, err = evalPathCountedInto(p, ctx, &ctx.ArgStack.nodes)
+				l.isNodes = l.v == nil
+				lScratch = true
 			}
 		}
 		if !lScratch {
@@ -70,6 +77,10 @@ func evalCompareExpr(n *CompareExpr, ctx *Context) (Object, error) {
 					keepScratch(ctx, r.nodes)
 					r.isNodes = true
 				}
+			} else if scratchPath(p) != nil {
+				r.nodes, r.v, _, err = evalPathCountedInto(p, ctx, &ctx.ArgStack.nodes)
+				r.isNodes = r.v == nil
+				rScratch = true
 			}
 		}
 		if !rScratch {
