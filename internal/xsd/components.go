@@ -56,8 +56,16 @@ type SimpleType struct {
 	prim        xpath.AtomType // resolved built-in primitive at the bottom of the base chain
 	base        *SimpleType    // immediate base simple type (nil when the base is a built-in)
 	baseBuiltin bool           // true when base is a built-in (prim is authoritative)
-	facets      facetSet
-	docs        []Documentation // CompileWithDocs only
+	// cached, when cacheOK: resolvePrim's and effectiveWhiteSpace's answers,
+	// recorded once for every type the compiled schema reaches
+	// (cacheSimpleTypes) — the chain is immutable from then on, and both
+	// walks ran for every value validated. A type the pass did not reach
+	// (one made at validation time for a built-in name) walks as before.
+	cacheOK   bool
+	primCache xpath.AtomType
+	wsCache   string
+	facets    facetSet
+	docs      []Documentation // CompileWithDocs only
 
 	item    *SimpleType   // list
 	members []*SimpleType // union; never leads back to this type (closeUnion)

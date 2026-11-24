@@ -529,6 +529,7 @@ func compile(docs []string, baseDir string, v Version, keepDocs bool, files *fsa
 			}
 		}
 	}
+	sch.cacheSimpleTypes()
 	return sch, nil
 }
 
