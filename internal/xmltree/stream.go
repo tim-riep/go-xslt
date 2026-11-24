@@ -302,13 +302,6 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			if err := s.countAttrs(t.Attr); err != nil {
 				return StreamEvent{}, err
 			}
-			// A streamed document is XML 1.0 (1.1 is ErrStreamUnsupported), so
-			// a prefix may not be undeclared — parseRaw's identical check.
-			for _, a := range t.Attr {
-				if a.Name.Space == "xmlns" && a.Value == "" {
-					return StreamEvent{}, fmt.Errorf("namespace constraint No Prefix Undeclaring: xmlns:%s may not be empty in an XML 1.0 document", a.Name.Local)
-				}
-			}
 			if len(s.open)-1 >= MaxDepth {
 				return StreamEvent{}, errTooDeep
 			}
@@ -318,7 +311,10 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			// shows unless the tag ended exactly at its end — then, as for
 			// any other first child, the text node is its own allocation.
 			textNext := !tz.needClose && tz.pos < len(tz.s) && tz.s[tz.pos] != '<'
-			el := s.startElement(&t, textNext)
+			el, err := s.startElement(&t, textNext)
+			if err != nil {
+				return StreamEvent{}, err
+			}
 			return StreamEvent{Kind: StreamEnter, Node: el, Depth: len(s.open) - 1}, nil
 
 		case tokEnd:
@@ -473,7 +469,7 @@ func streamHasExternalEntity(sub string) bool {
 	}
 }
 
-func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) *Node {
+func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) (*Node, error) {
 	// Intern the tag's own name before anything retains it: one string per
 	// distinct name, copied out of the tokenizer's window (see
 	// streamTokenizer), where the element and rawNames would otherwise keep
@@ -506,6 +502,13 @@ func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) *Node {
 		}
 		if !isNS {
 			continue
+		}
+		// A streamed document is XML 1.0 (1.1 is ErrStreamUnsupported), so
+		// a prefix may not be undeclared — parseRaw's identical check, made
+		// here where the declarations are found rather than in a pass of
+		// its own over every attribute.
+		if local != "" && a.Value == "" {
+			return nil, fmt.Errorf("namespace constraint No Prefix Undeclaring: xmlns:%s may not be empty in an XML 1.0 document", local)
 		}
 		if !cloned {
 			frame = cloneNS(frame)
@@ -606,7 +609,7 @@ func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) *Node {
 	}
 	fr := &s.open[len(s.open)-1]
 	fr.node, fr.frame, fr.def, fr.raw, fr.text = el, frame, def, t.Name, text
-	return el
+	return el, nil
 }
 
 // Element records with up to three attributes, the common shapes, come
