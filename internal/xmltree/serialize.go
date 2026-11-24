@@ -190,54 +190,115 @@ var htmlVoidElements = map[string]bool{
 	"basefont": true, "frame": true, "isindex": true,
 }
 
-// htmlBooleanAttrs are the HTML4-recognized boolean attributes (attribute-0701):
-// the html output method serializes one of these as a bare `name` rather than
-// `name="value"` when its value equals the attribute's own name (case-
-// insensitively) — per XSLT's HTML output method rules, §16.2.
-var htmlBooleanAttrs = map[string]bool{
-	"checked": true, "compact": true, "declare": true, "defer": true,
-	"disabled": true, "ismap": true, "multiple": true, "noresize": true,
-	"noshade": true, "nowrap": true, "readonly": true, "selected": true,
+// isHTMLBooleanAttr reports whether a lower-cased attribute name is one of
+// the HTML4-recognized boolean attributes (attribute-0701): the html output
+// method serializes one of these as a bare `name` rather than `name="value"`
+// when its value equals the attribute's own name (case-insensitively) — per
+// XSLT's HTML output method rules, §16.2. A switch, not a map: it is asked
+// for every attribute the html method writes, and a string switch compares
+// where a map hashes.
+func isHTMLBooleanAttr(lower string) bool {
+	switch lower {
+	case "checked", "compact", "declare", "defer",
+		"disabled", "ismap", "multiple", "noresize",
+		"noshade", "nowrap", "readonly", "selected":
+		return true
+	}
+	return false
 }
 
-// htmlURIAttrs is the well-known table of HTML attributes whose value is a
-// URI: the html/xhtml output methods percent-escape non-ASCII (and other
-// unsafe) bytes in these — but only these — attribute values by default
-// (escape-uri-attributes, XSLT §21.2; attribute-0301: <a href> is escaped,
-// <input value>/<textarea> content is not). Keyed by lower-cased element then
-// attribute local name.
-var htmlURIAttrs = map[string]map[string]bool{
-	"a":          {"href": true},
-	"applet":     {"codebase": true},
-	"area":       {"href": true},
-	"base":       {"href": true},
-	"blockquote": {"cite": true},
-	"body":       {"background": true},
-	"button":     {"formaction": true},
-	"del":        {"cite": true},
-	"form":       {"action": true},
-	"frame":      {"longdesc": true, "src": true},
-	"head":       {"profile": true},
-	"iframe":     {"longdesc": true, "src": true},
-	"img":        {"longdesc": true, "src": true, "usemap": true, "lowsrc": true, "dynsrc": true},
-	"input":      {"src": true, "usemap": true, "formaction": true},
-	"ins":        {"cite": true},
-	"link":       {"href": true},
-	"object":     {"classid": true, "codebase": true, "data": true, "usemap": true},
-	"q":          {"cite": true},
-	"script":     {"src": true},
-	"audio":      {"src": true},
-	"video":      {"src": true, "poster": true},
-	"source":     {"src": true},
-	"track":      {"src": true},
-	"table":      {"background": true},
-	"tbody":      {"background": true},
-	"td":         {"background": true},
-	"tfoot":      {"background": true},
-	"th":         {"background": true},
-	"thead":      {"background": true},
-	"tr":         {"background": true},
-	"xmp":        {"href": true},
+// The URI-valued attributes of the HTML elements, as bits: htmlURIAttrsOf
+// gives an element's set, htmlURIAttrBit an attribute name's bit, and an
+// attribute is URI-valued when the two meet. This is the well-known table
+// of HTML attributes whose value is a URI: the html/xhtml output methods
+// percent-escape non-ASCII (and other unsafe) bytes in these — but only
+// these — attribute values by default (escape-uri-attributes, XSLT §21.2;
+// attribute-0301: <a href> is escaped, <input value>/<textarea> content is
+// not). Both take lower-cased names.
+const (
+	uriHref uint32 = 1 << iota
+	uriSrc
+	uriCite
+	uriAction
+	uriBackground
+	uriLongdesc
+	uriUsemap
+	uriCodebase
+	uriClassid
+	uriData
+	uriProfile
+	uriFormaction
+	uriLowsrc
+	uriDynsrc
+	uriPoster
+)
+
+func htmlURIAttrsOf(elem string) uint32 {
+	switch elem {
+	case "a", "area", "base", "link", "xmp":
+		return uriHref
+	case "applet":
+		return uriCodebase
+	case "blockquote", "del", "ins", "q":
+		return uriCite
+	case "body", "table", "tbody", "td", "tfoot", "th", "thead", "tr":
+		return uriBackground
+	case "button":
+		return uriFormaction
+	case "form":
+		return uriAction
+	case "frame", "iframe":
+		return uriLongdesc | uriSrc
+	case "head":
+		return uriProfile
+	case "img":
+		return uriLongdesc | uriSrc | uriUsemap | uriLowsrc | uriDynsrc
+	case "input":
+		return uriSrc | uriUsemap | uriFormaction
+	case "object":
+		return uriClassid | uriCodebase | uriData | uriUsemap
+	case "script", "audio", "source", "track":
+		return uriSrc
+	case "video":
+		return uriSrc | uriPoster
+	}
+	return 0
+}
+
+func htmlURIAttrBit(attr string) uint32 {
+	switch attr {
+	case "href":
+		return uriHref
+	case "src":
+		return uriSrc
+	case "cite":
+		return uriCite
+	case "action":
+		return uriAction
+	case "background":
+		return uriBackground
+	case "longdesc":
+		return uriLongdesc
+	case "usemap":
+		return uriUsemap
+	case "codebase":
+		return uriCodebase
+	case "classid":
+		return uriClassid
+	case "data":
+		return uriData
+	case "profile":
+		return uriProfile
+	case "formaction":
+		return uriFormaction
+	case "lowsrc":
+		return uriLowsrc
+	case "dynsrc":
+		return uriDynsrc
+	case "poster":
+		return uriPoster
+	}
+	return 0
 }
 
 // escapeHTMLURIAttr percent-encodes every byte of s outside the printable
@@ -684,16 +745,16 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 	// "content" attribute is (re)written with the correct value below.
 	fixContentTypeAttr := false
 	// The URI-valued attributes of this HTML element, looked up once per
-	// element (not per attribute); nil for the xml method, which tests
+	// element (not per attribute); zero for the xml method, which tests
 	// nothing else of it, and for an element with none.
-	var uriAttrs map[string]bool
+	var uriAttrs uint32
 	if htmlish {
 		fixContentTypeAttr = s.opts.IncludeContentType && n.Parent != nil &&
 			strings.EqualFold(n.Parent.Name.Local, "head") &&
 			(html || n.Parent.Name.Space == "http://www.w3.org/1999/xhtml") &&
 			isContentTypeMeta(n)
 		if !s.opts.NoEscapeURIAttributes && len(n.Attrs) > 0 {
-			uriAttrs = htmlURIAttrs[strings.ToLower(n.Name.Local)]
+			uriAttrs = htmlURIAttrsOf(lowerName(n.Name.Local))
 		}
 	}
 
@@ -858,18 +919,18 @@ func (s *serializer) startTag(n *Node, depth int) elemOpen {
 		isURIAttr := false
 		if html && a.Name.Space == "" {
 			lower := lowerName(a.Name.Local)
-			if htmlBooleanAttrs[lower] && strings.EqualFold(a.Value, a.Name.Local) {
+			if isHTMLBooleanAttr(lower) && strings.EqualFold(a.Value, a.Name.Local) {
 				// HTML boolean attribute (attribute-0701): serialize as a
 				// bare name, not name="value".
 				attrs = append(attrs, ' ')
 				attrs = append(attrs, aq...)
 				continue
 			}
-			if uriAttrs != nil {
-				isURIAttr = uriAttrs[lower]
+			if uriAttrs != 0 {
+				isURIAttr = uriAttrs&htmlURIAttrBit(lower) != 0
 			}
-		} else if uriAttrs != nil && a.Name.Space == "" {
-			isURIAttr = uriAttrs[lowerName(a.Name.Local)]
+		} else if uriAttrs != 0 && a.Name.Space == "" {
+			isURIAttr = uriAttrs&htmlURIAttrBit(lowerName(a.Name.Local)) != 0
 		}
 		val := a.Value
 		var out string
