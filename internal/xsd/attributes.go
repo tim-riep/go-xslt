@@ -58,7 +58,7 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 				continue
 			}
 			if gd.typ != nil {
-				if err := s.yearZeroOK(gd.typ, a.Value); err != nil {
+				if err := s.yearZeroOKSimple(gd.typ, a.Value); err != nil {
 					return err
 				}
 				if err := gd.typ.validateIn(a.Value, a); err != nil {
@@ -79,7 +79,7 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 		}
 		ix.markPresent(an, ui)
 		if u.decl.typ != nil {
-			if err := s.yearZeroOK(u.decl.typ, a.Value); err != nil {
+			if err := s.yearZeroOKSimple(u.decl.typ, a.Value); err != nil {
 				return err
 			}
 			if err := u.decl.typ.validateIn(a.Value, a); err != nil {
@@ -114,8 +114,12 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 			}
 		}
 	}
-	for _, u := range uses {
-		if u.required && !ix.present(u.decl.name) {
+	for i, u := range uses {
+		// Whether the use's own attribute was present is asked twice below
+		// (required, then defaulted): once, by the use's position, where a
+		// lookup by name scanned every use for every use of every element.
+		present := ix.presentAt(i, u.decl.name)
+		if u.required && !present {
 			e := invalidf("cvc-complex-type.4", "required attribute %s is missing", u.decl.name)
 			// own wording: the xs:attribute's appinfo (the use's, else the
 			// referenced declaration's), msg:message on="missing" or unspecified
@@ -141,7 +145,7 @@ func (s *Schema) validateAttributes(ct *ComplexType, el *xmltree.Node) error {
 		// An absent attribute with a value constraint contributes that value to
 		// the instance, so an ID default still binds (and an IDREF default still
 		// has to resolve).
-		if !ix.present(u.decl.name) && !u.prohibited && u.decl.typ != nil {
+		if !present && !u.prohibited && u.decl.typ != nil {
 			switch {
 			case u.hasDefault:
 				if err := s.noteIDValues(u.decl.typ, u.def, el, el); err != nil {
@@ -207,6 +211,16 @@ func (ix *attrUseIndex) markPresent(n xname, i int) {
 		return
 	}
 	ix.seen |= 1 << uint(i)
+}
+
+// presentAt is present(n) for the use at position i, which is named n: its
+// own bit answers at once, and only an unset bit falls back to the scan
+// (another use of the same name may have been the one marked).
+func (ix *attrUseIndex) presentAt(i int, n xname) bool {
+	if ix.seenMap == nil && ix.seen&(1<<uint(i)) != 0 {
+		return true
+	}
+	return ix.present(n)
 }
 
 func (ix *attrUseIndex) present(n xname) bool {

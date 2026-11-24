@@ -212,9 +212,13 @@ type mkey struct {
 // effectiveOpenContent walks the derivation chain for the nearest {open
 // content}; an explicit mode "none" shadows any inherited one.
 func (s *Schema) effectiveOpenContent(ct *ComplexType) *openContent {
-	seen := map[*ComplexType]bool{}
-	for cur := ct; cur != nil && !seen[cur]; {
-		seen[cur] = true
+	// The chain guard is a list on the stack, like effAttrs': this runs for
+	// every element of empty content type, and a map costs an allocation
+	// and a hash seed each time.
+	var buf [8]*ComplexType
+	seen := ctSeen(buf[:0])
+	for cur := ct; cur != nil && !seen.has(cur); {
+		seen = append(seen, cur)
 		if cur.openContent != nil {
 			if cur.openContent.mode == "none" {
 				// §3.4.2.5.2: on an EXTENSION step mode="none" merely adds

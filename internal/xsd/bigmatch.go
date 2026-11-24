@@ -75,7 +75,22 @@ func (r *bigRun) particle(p *particle, pos int) (int, bool) {
 			}
 			break
 		}
-		if pos >= len(r.kids) || !r.s.firstAcceptsTerm(p.term, nameOf(r.kids[pos])) {
+		if pos >= len(r.kids) {
+			break
+		}
+		nn := nameOf(r.kids[pos])
+		if ed, isElem := p.term.(*ElementDecl); isElem {
+			// For an element particle, firstAcceptsTerm and term ask the
+			// same question — does this child's name match the declaration
+			// — and one comparison answers both.
+			if !r.s.matchesElementName(ed, nn) {
+				break
+			}
+			pos++
+			count++
+			continue
+		}
+		if !r.s.firstAcceptsTerm(p.term, nn) {
 			break
 		}
 		np, ok := r.term(p.term, pos)

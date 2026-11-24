@@ -244,7 +244,7 @@ func hintBelow(el *xmltree.Node) bool {
 				return true
 			}
 		}
-		if hintBelow(c) {
+		if len(c.Children) > 0 && hintBelow(c) {
 			return true
 		}
 	}
@@ -640,8 +640,19 @@ func (s *Schema) validateElement(el *xmltree.Node) (err error) {
 // validateElementAgainst validates el against element declaration decl, honouring
 // xsi:type, xsi:nil, and the declaration's identity constraints (scopes carries
 // the key/unique tables in scope for keyref resolution).
-func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) (err error) {
-	defer stampLoc(&err, el)
+func (s *Schema) validateElementAgainst(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) error {
+	// The location is stamped on the way out by this wrapper, not by a
+	// deferred call in the body: a defer per element validated cost more
+	// than the call it arranged. A panic (cancellation, a limit) passes
+	// through both the same way, with no error to stamp.
+	err := s.validateElementAgainstIn(decl, el, scopes, extraFixed...)
+	if err != nil {
+		stampLoc(&err, el)
+	}
+	return err
+}
+
+func (s *Schema) validateElementAgainstIn(decl *ElementDecl, el *xmltree.Node, scopes map[xname]*keyTable, extraFixed ...string) error {
 	typ := decl.typ
 	// The two xsi attributes this function reads are found in one pass over
 	// the element's attributes (each the first of its name, as el.Attr finds
@@ -848,7 +859,7 @@ func (s *Schema) validateAgainstType(typ Type, el *xmltree.Node, scopes map[xnam
 			return invalidf("cvc-type.3.1.2", "simple-typed element must not have child elements")
 		}
 		text := effectiveSimpleText(decl, el)
-		if err := s.yearZeroOK(t, text); err != nil {
+		if err := s.yearZeroOKSimple(t, text); err != nil {
 			return err
 		}
 		if err := t.validateIn(text, el); err != nil {
@@ -945,7 +956,7 @@ func (s *Schema) validateComplexContent(ct *ComplexType, el *xmltree.Node, scope
 		}
 		if ct.simpleType != nil {
 			text := effectiveSimpleText(decl, el)
-			if err := s.yearZeroOK(ct.simpleType, text); err != nil {
+			if err := s.yearZeroOKSimple(ct.simpleType, text); err != nil {
 				return err
 			}
 			if err := ct.simpleType.validateIn(text, el); err != nil {
@@ -1028,6 +1039,25 @@ func (s *Schema) yearZeroOK(t Type, raw string) error {
 	}
 	st, ok := t.(*SimpleType)
 	if !ok || st == nil {
+		return nil
+	}
+	return s.yearZeroOKSimple(st, raw)
+}
+
+// yearZeroPrim reports whether yearZeroOK has anything to check for a value
+// of primitive prim.
+func yearZeroPrim(prim xpath.AtomType) bool {
+	switch prim {
+	case xpath.XSdate, xpath.XSdateTime, xpath.XSgYear, xpath.XSgYearMonth, xpath.XSfloat, xpath.XSdouble:
+		return true
+	}
+	return false
+}
+
+// yearZeroOKSimple is yearZeroOK for a simple type held as such; a type the
+// compile pass cached answers without resolving its primitive.
+func (s *Schema) yearZeroOKSimple(st *SimpleType, raw string) error {
+	if s.version != Version10 || st.cacheOK && !st.yearZero {
 		return nil
 	}
 	switch st.resolvePrim() {

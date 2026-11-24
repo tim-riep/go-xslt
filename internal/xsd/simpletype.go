@@ -250,8 +250,10 @@ func (st *SimpleType) checkIn(v string, at *xmltree.Node) error {
 				}
 			}
 		}
-		if err := st.facets.checkIn(v, prim, at); err != nil {
-			return err
+		if !(st.cacheOK && st.noFacets) {
+			if err := st.facets.checkIn(v, prim, at); err != nil {
+				return err
+			}
 		}
 		if len(st.assertions) > 0 {
 			if err := evalSimpleAssertions(st.assertions, typedSimpleValue(v, prim)); err != nil {
@@ -901,6 +903,7 @@ func (sch *Schema) cacheSimpleTypes() {
 				visit(m)
 			}
 			prim, ws := tt.resolvePrim(), tt.effectiveWhiteSpace()
+			tt.noFacets, tt.yearZero = tt.facets.none(), yearZeroPrim(prim)
 			tt.primCache, tt.wsCache, tt.cacheOK = prim, ws, true
 		case *ComplexType:
 			visit(tt.baseType)
