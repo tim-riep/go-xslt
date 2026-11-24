@@ -302,9 +302,6 @@ func (s *StreamReader) advance() (StreamEvent, error) {
 			if err := s.countAttrs(t.Attr); err != nil {
 				return StreamEvent{}, err
 			}
-			if len(s.open)-1 >= MaxDepth {
-				return StreamEvent{}, errTooDeep
-			}
 			// The element's first child is a text node when character data
 			// follows the start tag (not '<': a child element, comment, PI
 			// or CDATA section; not the end tag of <x/>), which the window
@@ -522,6 +519,9 @@ func (s *StreamReader) startElement(t *xml.StartElement, textNext bool) (*Node, 
 			def = uri
 		}
 		decls = append(decls, &Node{Kind: KindNamespace, Name: Name{Local: s.internName(local)}, Value: uri})
+	}
+	if len(s.open)-1 >= MaxDepth { // after the declarations' check, as before
+		return nil, errTooDeep
 	}
 	// The element and its attribute nodes are one allocation: an attribute
 	// keeps its element alive through Parent anyway, so nothing is retained
